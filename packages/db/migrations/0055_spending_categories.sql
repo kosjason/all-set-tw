@@ -3,15 +3,22 @@
 -- - 舊分類 salary → income.salary（收入子類，推導為收入）。
 -- - 舊分類 transfer、investment 不再是分類：個別覆寫改寫成 activity_role_overrides
 --   （own_transfer／investment），使用者規則改成帶 economic_role 的規則。
--- - 其餘舊系統分類對應到新 id；使用者自訂分類依名稱對應，對應不到的歸入「其他」(misc)。
--- 所有改變 id 的覆寫與使用者規則都記錄在 classification_migration_notes（保留原名稱）。
+-- - 其餘舊系統分類對應到新 id 後刪除。
+-- - 使用者自訂分類（is_system = 0）一律保留 id、名稱與所有引用（覆寫、規則），
+--   成為自訂消費分類；只有與新系統分類撞名（NOCASE）者加註「（自訂）」。
+-- - 系統規則換成新版預設，但保留使用者的調整：停用（enabled）、優先序（priority）
+--   與改過的 pattern 都保留；被拆分或移除的舊系統規則，停用狀態沿用到接替的新規則，
+--   改過 pattern 者轉成使用者規則（user:legacy-*）。
+-- 所有改變 id 的覆寫與使用者規則、改名的自訂分類、保留下來的自訂 pattern 都記錄在
+-- classification_migration_notes（保留原名稱與原 pattern），可由
+-- GET /api/classification/migration-notes 查看。
 -- 分類 id 與名稱須與 packages/core/src/categories.ts 一致。
 
 PRAGMA defer_foreign_keys = ON;
 
 CREATE TABLE classification_migration_notes (
   id TEXT NOT NULL PRIMARY KEY,
-  subject_type TEXT NOT NULL CHECK (subject_type IN ('override', 'rule')),
+  subject_type TEXT NOT NULL CHECK (subject_type IN ('override', 'rule', 'category')),
   subject_id TEXT NOT NULL,
   target_type TEXT,
   target_id TEXT,
@@ -23,7 +30,12 @@ CREATE TABLE classification_migration_notes (
     OR new_economic_role IN ('spending', 'income', 'own_transfer', 'investment', 'card_payment')
   ),
   needs_attention INTEGER NOT NULL DEFAULT 0 CHECK (needs_attention IN (0, 1)),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- subject_type = 'category'：自訂分類因撞名改名後的名稱（legacy_label 為原名）。
+  new_label TEXT,
+  -- subject_type = 'rule'：保留下來的使用者 pattern 與（未套用的）新版預設 pattern。
+  legacy_pattern TEXT,
+  new_pattern TEXT
 );
 
 ALTER TABLE classification_categories
@@ -109,58 +121,72 @@ SELECT category.id, category.label, system_map.new_category_id, system_map.new_r
 FROM classification_categories category
 JOIN system_map ON system_map.legacy_id = category.id;
 
--- 使用者自訂分類：先比對新分類名稱，再以常見字詞推測；都不符合者歸入「其他」並標記待處理。
-INSERT INTO _0055_category_map (legacy_id, legacy_label, new_category_id, new_role)
-SELECT
-  category.id,
-  category.label,
-  COALESCE(
-    (SELECT candidate.id FROM _0055_categories candidate
-      WHERE candidate.label = category.label COLLATE NOCASE),
-    CASE
-      WHEN category.label LIKE '%咖啡%' OR category.label LIKE '%飲料%' OR category.label LIKE '%手搖%' THEN 'food.drinks'
-      WHEN category.label LIKE '%超市%' OR category.label LIKE '%雜貨%' OR category.label LIKE '%買菜%' OR category.label LIKE '%生鮮%' THEN 'food.groceries'
-      WHEN category.label LIKE '%餐%' OR category.label LIKE '%外食%' OR category.label LIKE '%吃%' OR category.label LIKE '%飯%' THEN 'food.dining'
-      WHEN category.label LIKE '%計程車%' OR category.label LIKE '%叫車%' OR category.label LIKE '%uber%' THEN 'transport.ride'
-      WHEN category.label LIKE '%捷運%' OR category.label LIKE '%公車%' OR category.label LIKE '%高鐵%' OR category.label LIKE '%火車%' OR category.label LIKE '%大眾%' THEN 'transport.transit'
-      WHEN category.label LIKE '%加油%' OR category.label LIKE '%油資%' OR category.label LIKE '%停車%' OR category.label LIKE '%汽車%' OR category.label LIKE '%機車%' THEN 'transport.car'
-      WHEN category.label LIKE '%房租%' OR category.label LIKE '%租金%' OR category.label LIKE '%房貸%' THEN 'housing.rent'
-      WHEN category.label LIKE '%水電%' OR category.label LIKE '%電費%' OR category.label LIKE '%水費%' OR category.label LIKE '%瓦斯%' THEN 'housing.utilities'
-      WHEN category.label LIKE '%電信%' OR category.label LIKE '%電話%' OR category.label LIKE '%網路%' THEN 'housing.telecom'
-      WHEN category.label LIKE '%網購%' THEN 'shopping.online'
-      WHEN category.label LIKE '%日用%' OR category.label LIKE '%生活用品%' THEN 'shopping.daily'
-      WHEN category.label LIKE '%服飾%' OR category.label LIKE '%衣%' OR category.label LIKE '%鞋%' THEN 'shopping.clothing'
-      WHEN category.label LIKE '%3C%' OR category.label LIKE '%家電%' OR category.label LIKE '%電器%' OR category.label LIKE '%電腦%' OR category.label LIKE '%數位%' THEN 'tech.hardware'
-      WHEN category.label LIKE '%軟體%' OR category.label LIKE '%雲端%' OR category.label LIKE '%網域%' OR category.label LIKE '%主機%' THEN 'tech.software'
-      WHEN category.label LIKE '%訂閱%' THEN 'lifestyle.subscriptions'
-      WHEN category.label LIKE '%旅%' OR category.label LIKE '%住宿%' THEN 'lifestyle.travel'
-      WHEN category.label LIKE '%娛樂%' OR category.label LIKE '%遊戲%' OR category.label LIKE '%電影%' THEN 'lifestyle.entertainment'
-      WHEN category.label LIKE '%學%' OR category.label LIKE '%教育%' OR category.label LIKE '%書%' OR category.label LIKE '%課%' THEN 'lifestyle.education'
-      WHEN category.label LIKE '%保險%' THEN 'health.insurance'
-      WHEN category.label LIKE '%醫%' OR category.label LIKE '%藥%' THEN 'health.medical'
-      WHEN category.label LIKE '%紅包%' OR category.label LIKE '%禮%' THEN 'social.gifts'
-      WHEN category.label LIKE '%捐%' THEN 'social.donations'
-      WHEN category.label LIKE '%稅%' THEN 'fees.tax'
-      WHEN category.label LIKE '%手續費%' THEN 'fees.bank'
-      WHEN category.label LIKE '%薪%' THEN 'income.salary'
-      WHEN category.label LIKE '%股利%' OR category.label LIKE '%利息%' THEN 'income.investment'
-      WHEN category.label LIKE '%收入%' THEN 'income.other'
-    END
-  ),
-  NULL
+-- 其他未知的舊系統分類（理論上不存在）歸入「其他」並標記待處理。
+INSERT INTO _0055_category_map (legacy_id, legacy_label, new_category_id, new_role, needs_attention)
+SELECT category.id, category.label, 'misc', NULL, 1
 FROM classification_categories category
-WHERE category.id <> 'other'
+WHERE category.is_system = 1
+  AND category.id <> 'other'
   AND category.id NOT IN (SELECT legacy_id FROM _0055_category_map)
   AND category.id NOT IN (SELECT id FROM _0055_categories);
 
-UPDATE _0055_category_map
-SET new_category_id = 'misc', needs_attention = 1
-WHERE new_category_id IS NULL AND new_role IS NULL;
+-- 舊系統規則的快照（含分類名稱），用來保留使用者對系統規則的調整。
+CREATE TABLE _0055_old_system_rules AS
+SELECT rule.id, rule.category_id, category.label AS category_label, rule.target_type,
+  rule.field, rule.operator, rule.pattern, rule.priority, rule.enabled, rule.description,
+  rule.excluded_from_calculation
+FROM classification_rules rule
+LEFT JOIN classification_categories category ON category.id = rule.category_id
+WHERE rule.is_system = 1;
 
--- 暫時改名舊分類，避免與新分類名稱（NOCASE 唯一）衝突；稍後刪除或以新名稱覆寫。
+-- 自訂分類與新系統分類撞名時加註「（自訂）」（加註後仍撞名則再附 id），並留下紀錄。
+CREATE TABLE _0055_renamed_categories (
+  id TEXT NOT NULL PRIMARY KEY,
+  old_label TEXT NOT NULL,
+  new_label TEXT NOT NULL
+);
+
+INSERT INTO _0055_renamed_categories (id, old_label, new_label)
+SELECT category.id, category.label,
+  CASE
+    WHEN EXISTS (
+      SELECT 1 FROM classification_categories other
+      WHERE other.label = category.label || '（自訂）' COLLATE NOCASE
+    ) OR EXISTS (
+      SELECT 1 FROM _0055_categories candidate
+      WHERE candidate.label = category.label || '（自訂）' COLLATE NOCASE
+    )
+      THEN category.label || '（自訂 ' || category.id || '）'
+    ELSE category.label || '（自訂）'
+  END
+FROM classification_categories category
+WHERE category.is_system = 0
+  AND EXISTS (
+    SELECT 1 FROM _0055_categories candidate
+    WHERE candidate.label = category.label COLLATE NOCASE
+  );
+
+INSERT INTO classification_migration_notes
+  (id, subject_type, subject_id, target_type, target_id, legacy_category_id, legacy_label,
+   new_category_id, new_economic_role, needs_attention, created_at, new_label)
+SELECT 'category:0055:' || id, 'category', id, NULL, NULL, id, old_label,
+  id, NULL, 0, '2026-09-26T00:00:00.000Z', new_label
+FROM _0055_renamed_categories;
+
+UPDATE classification_categories
+SET label = (
+    SELECT renamed.new_label FROM _0055_renamed_categories renamed
+    WHERE renamed.id = classification_categories.id
+  ),
+  updated_at = '2026-09-26T00:00:00.000Z'
+WHERE id IN (SELECT id FROM _0055_renamed_categories);
+
+DROP TABLE _0055_renamed_categories;
+
+-- 暫時改名舊系統分類，避免與新分類名稱（NOCASE 唯一）衝突；稍後刪除或以新名稱覆寫。
 UPDATE classification_categories
 SET label = label || ' #' || id
-WHERE id <> 'other';
+WHERE id <> 'other' AND is_system = 1;
 
 INSERT INTO classification_categories
   (id, label, sort_order, is_system, parent_id, created_at, updated_at)
@@ -272,8 +298,11 @@ CREATE INDEX idx_classification_rules_category
 CREATE INDEX idx_classification_rules_enabled_priority
   ON classification_rules (enabled, target_type, priority);
 
+-- 只刪除不再使用的舊系統分類；自訂分類保留。
 DELETE FROM classification_categories
-WHERE id <> 'other' AND id NOT IN (SELECT id FROM _0055_categories);
+WHERE id <> 'other'
+  AND is_system = 1
+  AND id NOT IN (SELECT id FROM _0055_categories);
 
 -- 系統規則：角色規則保留原 id（程式以 id 辨識繳卡費、電支儲值與轉帳提示）；
 -- 分類規則改對應新分類，shared 規則同時適用於發票賣方名稱。
@@ -362,6 +391,160 @@ INSERT INTO classification_rules
   ('system:shared:shopping-keywords', 'shopping', NULL, NULL, 'any_text', 'regex',
    '購物|商店|百貨|store|shop',
    90, 1, 1, 'system', '其他購物', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any');
+
+-- 保留使用者對系統規則的調整（0049、0050 的「使用者改過的不覆寫」在此維持）。
+-- _0055_rule_defaults：0055 以前各系統規則曾出現過的上游預設 pattern 與 priority；
+-- 舊值不在其中者視為使用者改過。
+CREATE TABLE _0055_rule_defaults (
+  id TEXT NOT NULL,
+  pattern TEXT NOT NULL,
+  priority INTEGER NOT NULL
+);
+
+INSERT INTO _0055_rule_defaults (id, pattern, priority) VALUES
+  ('system:bank:creditcard-payment',
+   '信用卡.*繳|信用卡款|繳卡費|credit.?card.*(pay|bill|repay)', 106),
+  ('system:bank:creditcard-payment',
+   '信用卡.*繳|繳卡費|credit.?card.*(pay|bill|repay)', 106),
+  ('system:bank:ewallet-topup',
+   '^(?!.*手續費).*(?:電支.{0,12}儲值|(?:街口|連加|一卡通|全支付|悠遊付|全盈|icash ?pay|line ?pay).{0,8}儲值)', 107),
+  ('system:bank:food-keywords',
+   '餐|飯|咖啡|飲|food|restaurant|cafe|mcdonald|starbucks|ubereats|foodpanda', 100),
+  ('system:bank:investment-keywords',
+   '投資|證券|股票|基金|etf|broker|tdcc|交割', 100),
+  ('system:bank:other-income-keywords',
+   '^(?!.*(?:退刷|退款|退貨|折抵|利息調整|利息退還|貸款|借款|融資|循環利息|手續費)).*(?:^利息$|利息存入|存款利息|活存利息|定存利息|股息|股利|配息|現金回饋|回饋金|現金回存|租金補貼|租屋補助|育兒津貼|生育補助|政府補助|稿費|稿酬|接案收入|退稅|^interest$|\binterest\s+(?:credit|income)\b|\bdividends?\b|\bcashback\b)', 108),
+  ('system:bank:salary-keywords',
+   '薪|salary|payroll|工資|獎金|bonus', 110),
+  ('system:bank:shopping-keywords',
+   '購物|商店|百貨|超商|market|store|shop|momo|pchome|costco|全聯|統一|seven|family', 90),
+  ('system:bank:software-keywords',
+   '^(?!.*(?:手續費|交易服務費|\bforeign\s+transaction\s+fee\b)).*(?:\b(?:openai|cursor|cloudflare)(?:\b|o[0-9])|\bchatgpt\b|\banthropic\b|\bclaude(?:\.ai|\s+(?:pro|max|subscription))\b|\bgoogle\s*[* ]\s*(?:cloud|one|workspace)\b|\b(?:github|jetbrains|adobe|notion|dropbox)(?:\b|o[0-9])|\b(?:microsoft|office)\s*365\b|\bicloud\b)', 108),
+  ('system:bank:transfer-keywords',
+   '轉帳|轉入|轉出|匯款|transfer|remit|atm|跨行', 105),
+  ('system:bank:utilities-keywords',
+   '^(?!.*(?:手續費|交易服務費|購機|手機|設備|門市|商城|購物)).*(?:中華電信|遠傳電信|台灣大哥大|台灣之星|亞太電信|台灣電力|台灣自來水|臺北自來水|台北自來水|台電|台水|水費|電費|瓦斯費|天然氣費|電信費|電話費|網路費|寬頻費|\bhinet\b)', 108),
+  ('system:shared:fee-keywords',
+   '手續|管理費|利息|fee|charge|interest', 90),
+  ('system:shared:insurance-keywords',
+   '健保|勞保|保費|保險|insurance', 95),
+  ('system:shared:transport-keywords',
+   '交通|捷運|高鐵|台鐵|加油|停車|uber|taxi|metro|rail|parking|fuel', 100);
+
+-- 舊系統規則被拆分或移除時，接替它的新系統規則（同 id 者自動視為接替）。
+CREATE TABLE _0055_rule_successors (
+  old_id TEXT NOT NULL,
+  new_id TEXT NOT NULL
+);
+
+INSERT INTO _0055_rule_successors (old_id, new_id) VALUES
+  ('system:bank:food-keywords', 'system:shared:drinks-keywords'),
+  ('system:bank:food-keywords', 'system:shared:dining-keywords'),
+  ('system:bank:shopping-keywords', 'system:shared:shopping-keywords'),
+  ('system:bank:shopping-keywords', 'system:shared:grocery-keywords'),
+  ('system:bank:shopping-keywords', 'system:shared:convenience-keywords'),
+  ('system:bank:shopping-keywords', 'system:shared:online-shopping-keywords'),
+  ('system:shared:transport-keywords', 'system:shared:transit-keywords'),
+  ('system:shared:transport-keywords', 'system:shared:ride-keywords'),
+  ('system:shared:transport-keywords', 'system:shared:car-keywords'),
+  ('system:bank:utilities-keywords', 'system:bank:telecom-keywords'),
+  ('system:bank:other-income-keywords', 'system:bank:investment-income-keywords');
+
+INSERT INTO _0055_rule_successors (old_id, new_id)
+SELECT old.id, old.id
+FROM _0055_old_system_rules old
+WHERE old.id IN (SELECT id FROM classification_rules WHERE is_system = 1);
+
+-- 停用：使用者停用的舊系統規則，其接替規則也停用。
+UPDATE classification_rules
+SET enabled = 0
+WHERE is_system = 1
+  AND id IN (
+    SELECT successor.new_id
+    FROM _0055_rule_successors successor
+    JOIN _0055_old_system_rules old ON old.id = successor.old_id
+    WHERE old.enabled = 0
+  );
+
+-- 優先序：同 id 且與上游預設不同者保留使用者的值。
+UPDATE classification_rules
+SET priority = (
+  SELECT old.priority FROM _0055_old_system_rules old
+  WHERE old.id = classification_rules.id
+)
+WHERE is_system = 1
+  AND id IN (
+    SELECT old.id FROM _0055_old_system_rules old
+    WHERE NOT EXISTS (
+      SELECT 1 FROM _0055_rule_defaults d
+      WHERE d.id = old.id AND d.priority = old.priority
+    )
+  );
+
+-- pattern：同 id 且使用者改過者保留使用者的 pattern（連同 field／operator），
+-- 並記錄未套用的新版預設，使用者可自行決定是否改用。
+CREATE TABLE _0055_custom_patterns AS
+SELECT old.id, old.category_id, old.category_label, old.target_type, old.field,
+  old.operator, old.pattern, old.priority, old.enabled, old.description,
+  old.excluded_from_calculation
+FROM _0055_old_system_rules old
+WHERE NOT EXISTS (
+  SELECT 1 FROM _0055_rule_defaults d
+  WHERE d.id = old.id AND d.pattern = old.pattern
+);
+
+INSERT INTO classification_migration_notes
+  (id, subject_type, subject_id, target_type, target_id, legacy_category_id, legacy_label,
+   new_category_id, new_economic_role, needs_attention, created_at, legacy_pattern, new_pattern)
+SELECT 'rule-pattern:' || custom.id, 'rule', custom.id, custom.target_type, NULL,
+  custom.category_id, COALESCE(custom.category_label, custom.category_id),
+  rule.category_id, rule.economic_role, 0, '2026-09-26T00:00:00.000Z',
+  custom.pattern, rule.pattern
+FROM _0055_custom_patterns custom
+JOIN classification_rules rule ON rule.id = custom.id AND rule.is_system = 1
+WHERE rule.pattern IS NOT custom.pattern
+   OR rule.field IS NOT custom.field
+   OR rule.operator IS NOT custom.operator;
+
+UPDATE classification_rules
+SET
+  field = (SELECT custom.field FROM _0055_custom_patterns custom WHERE custom.id = classification_rules.id),
+  operator = (SELECT custom.operator FROM _0055_custom_patterns custom WHERE custom.id = classification_rules.id),
+  pattern = (SELECT custom.pattern FROM _0055_custom_patterns custom WHERE custom.id = classification_rules.id)
+WHERE is_system = 1
+  AND id IN (SELECT id FROM _0055_custom_patterns);
+
+-- 被移除的舊系統規則（例如 system:bank:food-keywords）若 pattern 被使用者改過，
+-- 轉成使用者規則 user:legacy-<舊 id 去掉 system: 前綴>，分類依舊分類對照。
+INSERT INTO classification_rules
+  (id, category_id, economic_role, target_type, field, operator, pattern, priority, enabled,
+   is_system, source, description, created_at, updated_at, excluded_from_calculation, amount_direction)
+SELECT 'user:legacy-' || substr(custom.id, 8),
+  CASE WHEN map.legacy_id IS NULL THEN custom.category_id ELSE map.new_category_id END,
+  map.new_role,
+  custom.target_type, custom.field, custom.operator, custom.pattern, custom.priority,
+  custom.enabled, 0, 'user', custom.description, '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z',
+  custom.excluded_from_calculation, 'any'
+FROM _0055_custom_patterns custom
+LEFT JOIN _0055_category_map map ON map.legacy_id = custom.category_id
+WHERE custom.id NOT IN (SELECT id FROM classification_rules WHERE is_system = 1);
+
+INSERT INTO classification_migration_notes
+  (id, subject_type, subject_id, target_type, target_id, legacy_category_id, legacy_label,
+   new_category_id, new_economic_role, needs_attention, created_at, legacy_pattern, new_pattern)
+SELECT 'rule-pattern:' || custom.id, 'rule', 'user:legacy-' || substr(custom.id, 8),
+  custom.target_type, NULL, custom.category_id,
+  COALESCE(custom.category_label, custom.category_id),
+  CASE WHEN map.legacy_id IS NULL THEN custom.category_id ELSE map.new_category_id END,
+  map.new_role, 0, '2026-09-26T00:00:00.000Z', custom.pattern, NULL
+FROM _0055_custom_patterns custom
+LEFT JOIN _0055_category_map map ON map.legacy_id = custom.category_id
+WHERE custom.id NOT IN (SELECT id FROM classification_rules WHERE is_system = 1);
+
+DROP TABLE _0055_custom_patterns;
+DROP TABLE _0055_rule_successors;
+DROP TABLE _0055_rule_defaults;
+DROP TABLE _0055_old_system_rules;
 
 DROP TABLE _0055_category_map;
 DROP TABLE _0055_categories;

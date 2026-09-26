@@ -595,7 +595,7 @@ id → 消費淨額，未分類為 `other`、使用者自訂分類歸入 `misc`�
 分類 id、名稱、emoji 與顏色的正本在 `packages/core` 的 `categories.ts`，資料庫
 `classification_categories` 以相同 id 供 FK 參照（0055）。
 
-- 消費分類只有 9 個頂層、沒有子類（0067 併成 8 類，2026-09 使用者回饋「分類太多太細，不知道選哪個」；0069 依使用者要求另加「捐款」）：
+- 消費分類只有 9 個頂層、沒有子類（0067 併成 9 類，2026-09 使用者回饋「分類太多太細，不知道選哪個」，並依使用者要求加入「捐款」）：
   `food` 🍜 餐飲（餐廳、便當、飲料、咖啡、超市、超商）、`transport` 🚇 交通（大眾運輸、計程車／叫車、油資、停車）、
   `housing` 🏠 居住（房租房貸、水電瓦斯、電信網路）、`shopping` 🛍️ 購物（日用品、服飾、網購）、
   `tech` 💻 3C 數位（3C 硬體、AI 訂閱、SaaS、雲端、網域、軟體）、`entertainment` 🎬 娛樂（電影、遊戲含 Steam、
@@ -605,18 +605,29 @@ id → 消費淨額，未分類為 `other`、使用者自訂分類歸入 `misc`�
 - 顏色依實體固定、不依排名：8 個有色分類依序使用已驗證類別色板的 8 色（`validate_palette`：淺色相鄰
   CVD ΔE 9.1、深色 8.4，皆通過），`misc`、`other` 與收入使用中性灰（`color.neutral = true`），圖例與排行必須
   有文字標籤。
-- 0067 遷移：舊 id 全部對到 8 類——`food.*`→`food`、`transport.*`→`transport`、`housing.*`→`housing`、
+- 0067 遷移：舊 id 全部對到 9 類——`food.*`→`food`、`transport.*`→`transport`、`housing.*`→`housing`、
   `shopping.*`→`shopping`、`tech.*`→`tech`、`lifestyle` 與 `lifestyle.subscriptions`、`lifestyle.entertainment`、`lifestyle.travel`→
-  `entertainment`、`lifestyle.education`→`misc`、`health.*`→`health`、`social*`、`fees*`、`misc.*`→`misc`，
+  `entertainment`、`lifestyle.education`→`misc`、`health.*`→`health`、`social.donations`→`donation`、
+  `social`／`social.gifts`、`fees*`、`misc.*`→`misc`，
   0055 以前遺留的 `education`／`fee`／`tax`→`misc`、`software`→`tech`、`insurance`→`health`、`utilities`→`housing`。
+  `donation` 在 0067 建立（舊捐款引用直接落在 `donation`）；0069 為冪等補齊（撞名處理、`misc` 排序、
+  慈善機構商家規則由 `misc` 改為 `donation`），因此已套用舊版 0067 的資料庫與全新套用得到相同的分類表。
   涵蓋 `classification_overrides`、`classification_rules`（含系統規則）、`merchant_aliases` 與
-  `classification_migration_notes.new_category_id`，再刪除舊分類列；與新名稱撞名的自訂分類加註「（自訂）」。
+  `classification_migration_notes.new_category_id`，再刪除舊分類列。
   summary 的 `spendingBySubcategory` 保留（指定的分類 id → 消費淨額），系統分類沒有子類後與
   `spendingByCategory` 相同，只有使用者自訂分類（`user:*`，在 `spendingByCategory` 歸入 `misc`）會分開列出。
 - 0055 遷移：舊 `salary` → `income.salary`、`software` → `tech.software`；`transfer`／`investment` 的個別覆寫改寫成
   `activity_role_overrides`（`own_transfer`／`investment`，既有角色覆寫優先），使用者規則改為
-  `economic_role` 規則；其餘舊系統分類對應到新 id；使用者自訂分類依名稱與常見字詞對應，對應不到者
-  歸入 `misc`。id 有變動者記錄在 `classification_migration_notes`（`needs_attention = 1` 為需人工處理），
+  `economic_role` 規則；其餘舊系統分類對應到新 id 後刪除（未知的舊系統分類歸入 `misc`，`needs_attention = 1`）。
+- 自訂分類（`is_system = 0`）在 0055、0067、0069 一律保留 id、名稱與所有引用（覆寫、規則、商家規則），
+  成為自訂消費分類；只有與新系統分類撞名（NOCASE）者加註「（自訂）」（仍撞名再附 id），
+  並寫入 `subject_type = 'category'` 的紀錄（`legacy_label` 原名、`new_label` 新名）。
+- 系統規則在 0055 換成新版預設時保留使用者的調整：`enabled = 0` 沿用到同 id 與接替的拆分規則
+  （例如 `system:bank:food-keywords` → `system:shared:drinks-keywords`／`dining-keywords`），`priority`
+  與上游預設不同者保留；pattern 不是任何歷史上游預設者視為使用者改過，同 id 規則保留使用者的
+  pattern（連同 field／operator），被移除的規則轉為使用者規則 `user:legacy-<舊 id 去掉 system:>`；
+  兩者都寫入 `rule-pattern:<舊 id>` 紀錄（`legacy_pattern` 為保留的 pattern，`new_pattern` 為未套用的新版預設）。
+- 以上紀錄都在 `classification_migration_notes`（`needs_attention = 1` 為需人工處理），
   由 `GET /api/classification/migration-notes` 讀取。
 - 規則：`classification_rules.category_id` 與 `economic_role` 可只填其一，`amount_direction`
   限制只套用流入或流出。繳卡費（`system:bank:creditcard-payment`）、電支儲值
@@ -716,6 +727,11 @@ TradingView、Trend Micro／趨勢科技 → `tech`；LINE禮物 → `misc`（�
 | `partial` | 已繳 > 0 但小於應繳                                                                       |
 | `unpaid`  | 看得到應繳金額，結帳日之後沒有任何繳款                                                    |
 | `unknown` | 應繳金額不明且來源沒有已繳旗標                                                            |
+
+中信帳單的已繳金額取自「下一期」摘要的 `pmtAmt`（本期間繳掉的上期帳單），應繳以 `currPmtAmt` 優先；
+0064 把舊版解析器寫入的資料位移成相同結果（每期 `paid_amount` ＝ 同帳戶同幣別下一期的舊值，
+最新一期為 NULL，`statement_amount` 以 raw 的 `currPmtAmt` 修正），0061 拆分帳戶時把指向舊
+`credit:ctbc:<幣別>` 的 `canonical_account_id` 改指同幣別摘要帳戶。
 
 `is_paid = 0` 不視為未繳證據（國泰最新一期以「本期不需繳款」表示）。未出帳為上期結帳日隔天起、
 信用卡帳戶上 `economicRole = spending` 的交易淨額（退款沖減、含待入帳），已入帳交易以入帳日

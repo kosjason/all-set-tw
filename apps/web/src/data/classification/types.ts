@@ -38,10 +38,10 @@ export interface ClassificationCategoryRow {
   color: CategoryColor;
 }
 
-/** 0055 遷移舊分類時 id 有變動的覆寫與使用者規則。 */
+/** 分類遷移紀錄：id 有變動的覆寫與規則、改名的自訂分類、保留的自訂系統規則 pattern。 */
 export interface ClassificationMigrationNoteRow {
   id: string;
-  subjectType: "override" | "rule";
+  subjectType: "override" | "rule" | "category";
   subjectId: string;
   targetType: string | null;
   targetId: string | null;
@@ -52,4 +52,10 @@ export interface ClassificationMigrationNoteRow {
   /** 對應不到而歸入「其他」，需要人工處理。 */
   needsAttention: boolean;
   createdAt: string;
+  /** 自訂分類因與系統分類撞名而改名後的名稱（legacyLabel 為原名）。 */
+  newLabel: string | null;
+  /** 保留下來的使用者 pattern（系統規則被使用者改過）。 */
+  legacyPattern: string | null;
+  /** 未套用的新版預設 pattern；規則已轉為使用者規則時為 NULL。 */
+  newPattern: string | null;
 }

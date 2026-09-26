@@ -217,6 +217,9 @@ export async function listClassificationMigrationNotes(db: D1Database) {
       newEconomicRole: migrationNotes.newEconomicRole,
       needsAttention: migrationNotes.needsAttention,
       createdAt: migrationNotes.createdAt,
+      newLabel: migrationNotes.newLabel,
+      legacyPattern: migrationNotes.legacyPattern,
+      newPattern: migrationNotes.newPattern,
     })
     .from(migrationNotes)
     .orderBy(desc(migrationNotes.needsAttention), migrationNotes.id)

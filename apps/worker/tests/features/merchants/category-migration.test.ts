@@ -75,7 +75,7 @@ function legacyDatabase() {
 }
 
 describe("0055 spending categories migration", () => {
-  it("maps legacy overrides, role categories and user categories", () => {
+  it("maps legacy overrides and role categories, keeping user categories", () => {
     const database = legacyDatabase();
     migrate(database, (name) => name >= "0055");
 
@@ -89,17 +89,17 @@ describe("0055 spending categories migration", () => {
       ).map((row) => [row.target_id, row.category_id]),
     );
     expect(overrides).toEqual({
-      // 跑完全部遷移：0055 的兩層分類再由 0067 併成 8 個頂層。
-      "t-coffee": "food",
+      // 跑完全部遷移：0055 的兩層分類再由 0067 併成 9 個頂層；自訂分類不動。
+      "t-coffee": "user:coffee",
       "t-food": "food",
-      "t-gadget": "tech",
+      "t-gadget": "user:gadget",
       "t-software": "tech",
       "t-health": "health",
       "t-other": "other",
-      "t-pay": "income.salary",
-      "t-pet": "misc",
+      "t-pay": "user:pay",
+      "t-pet": "user:pet",
       "t-salary": "income.salary",
-      "t-trip": "entertainment",
+      "t-trip": "user:trip",
       "t-utilities": "housing",
     });
     // 轉帳、投資改成角色覆寫；既有的使用者角色覆寫保留。
@@ -119,16 +119,24 @@ describe("0055 spending categories migration", () => {
         "SELECT subject_type, subject_id, target_id, legacy_category_id, legacy_label, new_category_id, new_economic_role, needs_attention FROM classification_migration_notes ORDER BY id",
       )
       .all();
-    expect(notes).toContainEqual({
-      subject_type: "override",
-      subject_id: "override:t-pet",
-      target_id: "t-pet",
-      legacy_category_id: "user:pet",
-      legacy_label: "寵物",
-      new_category_id: "misc",
-      new_economic_role: null,
-      needs_attention: 1,
-    });
+    // 指向自訂分類的覆寫與規則沒有變動，不記錄；只有與 0055 系統分類撞名的
+    // 「旅遊」改名並留下紀錄。
+    expect(
+      notes.filter((note) =>
+        String(note.legacy_category_id).startsWith("user:"),
+      ),
+    ).toEqual([
+      {
+        subject_type: "category",
+        subject_id: "user:trip",
+        target_id: null,
+        legacy_category_id: "user:trip",
+        legacy_label: "旅遊",
+        new_category_id: "user:trip",
+        new_economic_role: null,
+        needs_attention: 0,
+      },
+    ]);
     expect(notes).toContainEqual(
       expect.objectContaining({
         subject_id: "override:t-transfer",
@@ -136,15 +144,6 @@ describe("0055 spending categories migration", () => {
         new_category_id: null,
         new_economic_role: "own_transfer",
         needs_attention: 0,
-      }),
-    );
-    expect(notes).toContainEqual(
-      expect.objectContaining({
-        subject_type: "rule",
-        subject_id: "user:pet-shop",
-        legacy_label: "寵物",
-        new_category_id: "misc",
-        needs_attention: 1,
       }),
     );
     // 沒變動的覆寫不記錄。
@@ -175,7 +174,7 @@ describe("0055 spending categories migration", () => {
       },
       {
         id: "user:pet-shop",
-        category_id: "misc",
+        category_id: "user:pet",
         economic_role: null,
         excluded_from_calculation: 0,
         enabled: 1,
@@ -187,13 +186,26 @@ describe("0055 spending categories migration", () => {
         "SELECT id, label, parent_id FROM classification_categories ORDER BY sort_order, id",
       )
       .all();
-    expect(categories).toEqual(
-      CATEGORY_DEFINITIONS.map((category) => ({
-        id: category.id,
-        label: category.label,
-        parent_id: category.parentId,
-      })),
-    );
+    const definitions = CATEGORY_DEFINITIONS.map((category) => ({
+      id: category.id,
+      label: category.label,
+      parent_id: category.parentId,
+      sortOrder: category.sortOrder,
+    }));
+    expect(categories).toEqual([
+      ...definitions
+        .filter((row) => row.sortOrder < 20)
+        .map(({ sortOrder: _sortOrder, ...row }) => row),
+      // 自訂分類保留原 id 與名稱（sort_order 20～24）。
+      { id: "user:coffee", label: "咖啡", parent_id: null },
+      { id: "user:pet", label: "寵物", parent_id: null },
+      { id: "user:pay", label: "薪水", parent_id: null },
+      { id: "user:trip", label: "旅遊（自訂）", parent_id: null },
+      { id: "user:gadget", label: "3C家電", parent_id: null },
+      ...definitions
+        .filter((row) => row.sortOrder >= 20)
+        .map(({ sortOrder: _sortOrder, ...row }) => row),
+    ]);
     expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 
@@ -288,7 +300,7 @@ const LEGACY_TO_0067: Array<[string, string]> = [
   ["health.insurance", "health"],
   ["social", "misc"],
   ["social.gifts", "misc"],
-  ["social.donations", "misc"],
+  ["social.donations", "donation"],
   ["fees", "misc"],
   ["fees.tax", "misc"],
   ["fees.bank", "misc"],
@@ -301,7 +313,7 @@ const LEGACY_TO_0067: Array<[string, string]> = [
 ];
 
 describe("0067 simplify spending categories migration", () => {
-  it("maps every old category id to one of the eight top-level categories", () => {
+  it("maps every old category id to one of the nine top-level categories", () => {
     const database = legacyDatabase();
     migrate(database, (name) => name >= "0055" && name < "0067");
     const insertTransaction = database.prepare(
@@ -375,29 +387,45 @@ describe("0067 simplify spending categories migration", () => {
     expect(
       database
         .prepare(
-          "SELECT id, category_id FROM classification_rules WHERE is_system = 1 AND category_id IS NOT NULL AND category_id NOT LIKE 'income.%' AND category_id NOT IN ('food', 'transport', 'housing', 'shopping', 'tech', 'entertainment', 'health', 'misc')",
+          "SELECT id, category_id FROM classification_rules WHERE is_system = 1 AND category_id IS NOT NULL AND category_id NOT LIKE 'income.%' AND category_id NOT IN ('food', 'transport', 'housing', 'shopping', 'tech', 'entertainment', 'health', 'donation', 'misc')",
         )
         .all(),
     ).toEqual([]);
-    // 分類表只剩 8 個消費頂層、收入、未分類與自訂分類；撞名的自訂分類加註。
+    // 分類表只剩 9 個消費頂層、收入、未分類與自訂分類；撞名的自訂分類加註。
+    const categoryRows = database
+      .prepare(
+        "SELECT id, label, parent_id FROM classification_categories ORDER BY sort_order, id",
+      )
+      .all();
+    expect(
+      categoryRows.filter((row) => !String(row.id).startsWith("user:")),
+    ).toEqual([
+      ...CATEGORY_DEFINITIONS.filter((row) => row.sortOrder < 200).map(
+        (row) => ({
+          id: row.id,
+          label: row.label,
+          parent_id: row.parentId,
+        }),
+      ),
+      { id: "other", label: "未分類", parent_id: null },
+    ]);
+    expect(categoryRows).toContainEqual({
+      id: "user:fun",
+      label: "醫療保險（自訂）",
+      parent_id: null,
+    });
     expect(
       database
         .prepare(
-          "SELECT id, label, parent_id FROM classification_categories ORDER BY sort_order, id",
+          "SELECT subject_type, subject_id, legacy_label, new_label FROM classification_migration_notes WHERE id = 'category:0067:user:fun'",
         )
-        .all(),
-    ).toEqual([
-      ...CATEGORY_DEFINITIONS.filter(
-        // 捐款由 0069 新增，不在 0067 的結果裡。
-        (row) => row.sortOrder < 200 && row.id !== "donation",
-      ).map((row) => ({
-        id: row.id,
-        label: row.label,
-        parent_id: row.parentId,
-      })),
-      { id: "other", label: "未分類", parent_id: null },
-      { id: "user:fun", label: "醫療保險（自訂）", parent_id: null },
-    ]);
+        .get(),
+    ).toEqual({
+      subject_type: "category",
+      subject_id: "user:fun",
+      legacy_label: "醫療保險",
+      new_label: "醫療保險（自訂）",
+    });
     expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 });

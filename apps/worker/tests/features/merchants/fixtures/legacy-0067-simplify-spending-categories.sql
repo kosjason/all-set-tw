@@ -1,8 +1,6 @@
--- 分類簡化（2026-09 使用者回饋「分類太多太細，不知道選哪個」）：消費分類只剩 9 個頂層、
+-- 分類簡化（2026-09 使用者回饋「分類太多太細，不知道選哪個」）：消費分類只剩 8 個頂層、
 -- 沒有子類：food 餐飲、transport 交通、housing 居住、shopping 購物、tech 3C 數位、
--- entertainment 娛樂、health 醫療保險、donation 捐款、misc 其他。收入子類（income.*）與
--- other（未分類）不變。「捐款」原本由 0069 新增，改在此建立，讓舊的 social.donations
--- 直接對到 donation 而不是先併入 misc（併入後就分不出哪些原本是捐款）。
+-- entertainment 娛樂、health 醫療保險、misc 其他。收入子類（income.*）與 other（未分類）不變。
 --
 -- 對照（舊 → 新）：
 --   food.*                         → food
@@ -13,16 +11,13 @@
 --   lifestyle、lifestyle.subscriptions／entertainment／travel → entertainment
 --   lifestyle.education            → misc（學習進修歸其他）
 --   health.*                       → health
---   social.donations（捐款）       → donation
---   social、social.gifts（紅包）   → misc
+--   social、social.*（紅包、捐款）→ misc
 --   fees、fees.*（稅金、手續費）   → misc
 --   misc.*                         → misc
 --   0055 以前的遺留 id（education、entertainment、software、fee、tax、insurance、utilities）
 --   若仍被引用，也一併對照（entertainment 沿用為新 id）。
 -- 涵蓋所有引用分類 id 的表：classification_overrides、classification_rules、merchant_aliases、
--- classification_migration_notes（new_category_id）。使用者自訂分類保留 id、名稱與所有引用；
--- 只有與新系統分類撞名（NOCASE）者加註「（自訂）」，每筆改名都寫入
--- classification_migration_notes（subject_type = 'category'）。
+-- classification_migration_notes（new_category_id）。使用者自訂分類（user:*）不變。
 -- 分類 id、名稱與順序須與 packages/core/src/categories.ts 一致。
 
 PRAGMA defer_foreign_keys = ON;
@@ -56,7 +51,7 @@ INSERT INTO _0067_category_map (old_id, new_id) VALUES
   ('health.insurance', 'health'),
   ('social', 'misc'),
   ('social.gifts', 'misc'),
-  ('social.donations', 'donation'),
+  ('social.donations', 'misc'),
   ('fees', 'misc'),
   ('fees.tax', 'misc'),
   ('fees.bank', 'misc'),
@@ -68,67 +63,11 @@ INSERT INTO _0067_category_map (old_id, new_id) VALUES
   ('insurance', 'health'),
   ('utilities', 'housing');
 
--- 自訂分類與新名稱（NOCASE 唯一）撞名時先加註，避免新增「娛樂」「醫療保險」「捐款」
--- 等失敗；加註後仍撞名則再附 id。每筆改名留下紀錄。
-CREATE TABLE _0067_new_labels (
-  id TEXT NOT NULL PRIMARY KEY,
-  label TEXT NOT NULL
-);
-
-INSERT INTO _0067_new_labels (id, label) VALUES
-  ('food', '餐飲'),
-  ('transport', '交通'),
-  ('housing', '居住'),
-  ('shopping', '購物'),
-  ('tech', '3C 數位'),
-  ('entertainment', '娛樂'),
-  ('health', '醫療保險'),
-  ('donation', '捐款'),
-  ('misc', '其他');
-
-CREATE TABLE _0067_renamed_categories (
-  id TEXT NOT NULL PRIMARY KEY,
-  old_label TEXT NOT NULL,
-  new_label TEXT NOT NULL
-);
-
-INSERT INTO _0067_renamed_categories (id, old_label, new_label)
-SELECT category.id, category.label,
-  CASE
-    WHEN EXISTS (
-      SELECT 1 FROM classification_categories other
-      WHERE other.label = category.label || '（自訂）' COLLATE NOCASE
-    )
-      THEN category.label || '（自訂 ' || category.id || '）'
-    ELSE category.label || '（自訂）'
-  END
-FROM classification_categories category
-WHERE category.is_system = 0
-  AND EXISTS (
-    SELECT 1 FROM _0067_new_labels candidate
-    WHERE candidate.label = category.label COLLATE NOCASE
-      AND candidate.id <> category.id
-  );
-
-INSERT INTO classification_migration_notes
-  (id, subject_type, subject_id, target_type, target_id, legacy_category_id, legacy_label,
-   new_category_id, new_economic_role, needs_attention, created_at, new_label)
-SELECT 'category:0067:' || id, 'category', id, NULL, NULL, id, old_label,
-  id, NULL, 0, '2026-09-27T00:00:00.000Z', new_label
-FROM _0067_renamed_categories
-WHERE true
-ON CONFLICT (id) DO NOTHING;
-
+-- 自訂分類與新名稱（NOCASE 唯一）撞名時先加註，避免新增「娛樂」「醫療保險」失敗。
 UPDATE classification_categories
-SET label = (
-    SELECT renamed.new_label FROM _0067_renamed_categories renamed
-    WHERE renamed.id = classification_categories.id
-  ),
-  updated_at = '2026-09-27T00:00:00.000Z'
-WHERE id IN (SELECT id FROM _0067_renamed_categories);
-
-DROP TABLE _0067_renamed_categories;
-DROP TABLE _0067_new_labels;
+SET label = label || '（自訂）', updated_at = '2026-09-27T00:00:00.000Z'
+WHERE is_system = 0
+  AND lower(label) IN ('娛樂', '醫療保險');
 
 -- 舊的子類與頂層先改名，讓出「娛樂」等名稱；稍後刪除。
 UPDATE classification_categories
@@ -144,8 +83,7 @@ INSERT INTO classification_categories
   ('tech', '3C 數位', 5, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
   ('entertainment', '娛樂', 6, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
   ('health', '醫療保險', 7, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
-  ('donation', '捐款', 8, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
-  ('misc', '其他', 9, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z')
+  ('misc', '其他', 8, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z')
 ON CONFLICT (id) DO UPDATE SET
   label = excluded.label,
   sort_order = excluded.sort_order,

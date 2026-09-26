@@ -122,7 +122,10 @@ export const classificationRules = sqliteTable(
   ],
 );
 
-/** 0055 遷移舊分類時，id 有變動的覆寫與使用者規則（保留原名稱供人工處理）。 */
+/**
+ * 分類遷移紀錄（0055、0067、0069）：id 有變動的覆寫與使用者規則、因撞名改名的自訂分類、
+ * 保留下來的使用者系統規則 pattern（保留原名稱與原 pattern 供人工處理）。
+ */
 export const classificationMigrationNotes = sqliteTable(
   "classification_migration_notes",
   {
@@ -139,12 +142,15 @@ export const classificationMigrationNotes = sqliteTable(
       .notNull()
       .default(sql`0`),
     createdAt: text("created_at").notNull(),
+    newLabel: text("new_label"),
+    legacyPattern: text("legacy_pattern"),
+    newPattern: text("new_pattern"),
   },
   (table) => [
     primaryKey({ columns: [table.id] }),
     check(
       "classification_migration_notes_check_1",
-      sql`subject_type IN ('override', 'rule')`,
+      sql`subject_type IN ('override', 'rule', 'category')`,
     ),
     check(
       "classification_migration_notes_check_2",

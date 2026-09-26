@@ -118,12 +118,12 @@
       "notes": "0055 起分類只描述消費（收入另有 income.* 子類）；收入、轉帳、投資與繳卡費由經濟角色表達。`other` 為「未分類」，`misc` 為「其他」。emoji 與顏色由 core 提供，不存於資料庫。使用者自訂分類（user:*）沒有 parent_id，統計時歸入 misc。"
     },
     "classification_migration_notes": {
-      "description": "0055 遷移舊分類時，id 有變動的個別覆寫與使用者規則紀錄，保留原分類名稱供人工處理。",
-      "notes": "只在 migration 寫入；needs_attention = 1 表示使用者自訂分類對應不到新分類而歸入「其他」(misc)。舊分類 transfer、investment 的覆寫改寫成 activity_role_overrides，new_category_id 為 NULL、new_economic_role 為對應角色。",
+      "description": "分類遷移（0055、0067、0069）紀錄：id 有變動的個別覆寫與使用者規則、因撞名改名的自訂分類，以及保留下來的使用者系統規則 pattern，保留原分類名稱與原 pattern 供人工處理。",
+      "notes": "只在 migration 寫入，由 GET /api/classification/migration-notes 讀取；needs_attention = 1 表示未知的舊系統分類對應不到新分類而歸入「其他」(misc)。舊分類 transfer、investment 的覆寫改寫成 activity_role_overrides，new_category_id 為 NULL、new_economic_role 為對應角色。自訂分類一律保留，撞名改名時 subject_type = category、new_label 為新名稱。使用者改過 pattern 的系統規則保留原 pattern，legacy_pattern 為保留的 pattern、new_pattern 為未套用的新版預設（被移除的系統規則轉為 user:legacy-* 使用者規則時為 NULL）。",
       "columns": {
-        "id": "紀錄識別碼：override:<覆寫 id> 或 rule:<規則 id>。",
-        "subject_type": "被遷移的對象種類：override 或 rule。",
-        "subject_id": "被遷移的覆寫或規則 id。",
+        "id": "紀錄識別碼：override:<覆寫 id>、rule:<規則 id>、rule-pattern:<舊系統規則 id> 或 category:<migration 編號>:<分類 id>。",
+        "subject_type": "被遷移的對象種類：override、rule 或 category。",
+        "subject_id": "被遷移的覆寫、規則或分類 id。",
         "target_type": "覆寫的目標種類或規則的 target_type。",
         "target_id": "覆寫的目標活動 id；規則為 NULL。",
         "legacy_category_id": "遷移前的分類 id。",
@@ -131,7 +131,10 @@
         "new_category_id": "遷移後的分類 id；改由角色表達時為 NULL。",
         "new_economic_role": "遷移後指定的經濟角色；沒有時為 NULL。",
         "needs_attention": "1 表示對應不到新分類、已歸入「其他」，建議人工確認。",
-        "created_at": "遷移紀錄建立的時間。"
+        "created_at": "遷移紀錄建立的時間。",
+        "new_label": "自訂分類因撞名改名後的名稱；其他紀錄為 NULL。",
+        "legacy_pattern": "保留下來的使用者系統規則 pattern；其他紀錄為 NULL。",
+        "new_pattern": "未套用的新版預設 pattern；其他紀錄或已轉為使用者規則時為 NULL。"
       }
     },
     "classification_overrides": {

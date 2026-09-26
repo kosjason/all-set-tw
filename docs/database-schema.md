@@ -11,7 +11,7 @@
 - Tables：36
 - Explicit indexes：45
 - Other objects：0
-- Migrations：60
+- Migrations：62
 
 ## Tables
 
@@ -24,7 +24,7 @@
 | [`bank_transaction_preferences`](#bank_transaction_preferences) | 使用者對銀行交易計算方式的個別偏好。 | 4 | 1 | 1 |
 | [`bank_transactions`](#bank_transactions) | 銀行帳戶、信用卡與其他存款型連接器同步回來的交易明細。 | 19 | 3 | 7 |
 | [`classification_categories`](#classification_categories) | 消費分類字典（兩層）與收入子類；id 為穩定契約，須與 packages/core 的 categories.ts 一致。 | 7 | 1 | 1 |
-| [`classification_migration_notes`](#classification_migration_notes) | 0055 遷移舊分類時，id 有變動的個別覆寫與使用者規則紀錄，保留原分類名稱供人工處理。 | 11 | 0 | 0 |
+| [`classification_migration_notes`](#classification_migration_notes) | 分類遷移（0055、0067、0069）紀錄：id 有變動的個別覆寫與使用者規則、因撞名改名的自訂分類，以及保留下來的使用者系統規則 pattern，保留原分類名稱與原 pattern 供人工處理。 | 14 | 0 | 0 |
 | [`classification_overrides`](#classification_overrides) | 使用者對單筆目標資料指定的分類覆寫。 | 6 | 1 | 1 |
 | [`classification_rules`](#classification_rules) | 以文字條件自動判斷交易或發票分類、或指定經濟角色的規則。 | 16 | 1 | 2 |
 | [`connector_settings`](#connector_settings) | 每個外部金融資料連接器的認證設定、公開設定與同步游標。 | 7 | 0 | 0 |
@@ -425,16 +425,16 @@ CREATE TABLE "classification_categories" (
 
 ### `classification_migration_notes`
 
-> 用途：0055 遷移舊分類時，id 有變動的個別覆寫與使用者規則紀錄，保留原分類名稱供人工處理。
-> 注意：只在 migration 寫入；needs_attention = 1 表示使用者自訂分類對應不到新分類而歸入「其他」(misc)。舊分類 transfer、investment 的覆寫改寫成 activity_role_overrides，new_category_id 為 NULL、new_economic_role 為對應角色。
+> 用途：分類遷移（0055、0067、0069）紀錄：id 有變動的個別覆寫與使用者規則、因撞名改名的自訂分類，以及保留下來的使用者系統規則 pattern，保留原分類名稱與原 pattern 供人工處理。
+> 注意：只在 migration 寫入，由 GET /api/classification/migration-notes 讀取；needs_attention = 1 表示未知的舊系統分類對應不到新分類而歸入「其他」(misc)。舊分類 transfer、investment 的覆寫改寫成 activity_role_overrides，new_category_id 為 NULL、new_economic_role 為對應角色。自訂分類一律保留，撞名改名時 subject_type = category、new_label 為新名稱。使用者改過 pattern 的系統規則保留原 pattern，legacy_pattern 為保留的 pattern、new_pattern 為未套用的新版預設（被移除的系統規則轉為 user:legacy-* 使用者規則時為 NULL）。
 
 #### Columns
 
 | 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
 | ---: | --- | --- | --- | :---: | --- | ---: | --- |
-| 1 | `id` | 紀錄識別碼：override:<覆寫 id> 或 rule:<規則 id>。 | TEXT | NO | — | 1 | — |
-| 2 | `subject_type` | 被遷移的對象種類：override 或 rule。 | TEXT | NO | — | — | — |
-| 3 | `subject_id` | 被遷移的覆寫或規則 id。 | TEXT | NO | — | — | — |
+| 1 | `id` | 紀錄識別碼：override:<覆寫 id>、rule:<規則 id>、rule-pattern:<舊系統規則 id> 或 category:<migration 編號>:<分類 id>。 | TEXT | NO | — | 1 | — |
+| 2 | `subject_type` | 被遷移的對象種類：override、rule 或 category。 | TEXT | NO | — | — | — |
+| 3 | `subject_id` | 被遷移的覆寫、規則或分類 id。 | TEXT | NO | — | — | — |
 | 4 | `target_type` | 覆寫的目標種類或規則的 target_type。 | TEXT | YES | — | — | — |
 | 5 | `target_id` | 覆寫的目標活動 id；規則為 NULL。 | TEXT | YES | — | — | — |
 | 6 | `legacy_category_id` | 遷移前的分類 id。 | TEXT | NO | — | — | — |
@@ -443,6 +443,9 @@ CREATE TABLE "classification_categories" (
 | 9 | `new_economic_role` | 遷移後指定的經濟角色；沒有時為 NULL。 | TEXT | YES | — | — | — |
 | 10 | `needs_attention` | 1 表示對應不到新分類、已歸入「其他」，建議人工確認。 | INTEGER | NO | 0 | — | — |
 | 11 | `created_at` | 遷移紀錄建立的時間。 | TEXT | NO | — | — | — |
+| 12 | `new_label` | 自訂分類因撞名改名後的名稱；其他紀錄為 NULL。 | TEXT | YES | — | — | — |
+| 13 | `legacy_pattern` | 保留下來的使用者系統規則 pattern；其他紀錄為 NULL。 | TEXT | YES | — | — | — |
+| 14 | `new_pattern` | 未套用的新版預設 pattern；其他紀錄或已轉為使用者規則時為 NULL。 | TEXT | YES | — | — | — |
 
 #### Foreign keys
 
@@ -457,7 +460,7 @@ CREATE TABLE "classification_categories" (
 ```sql
 CREATE TABLE classification_migration_notes (
   id TEXT NOT NULL PRIMARY KEY,
-  subject_type TEXT NOT NULL CHECK (subject_type IN ('override', 'rule')),
+  subject_type TEXT NOT NULL CHECK (subject_type IN ('override', 'rule', 'category')),
   subject_id TEXT NOT NULL,
   target_type TEXT,
   target_id TEXT,
@@ -469,7 +472,12 @@ CREATE TABLE classification_migration_notes (
     OR new_economic_role IN ('spending', 'income', 'own_transfer', 'investment', 'card_payment')
   ),
   needs_attention INTEGER NOT NULL DEFAULT 0 CHECK (needs_attention IN (0, 1)),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- subject_type = 'category'：自訂分類因撞名改名後的名稱（legacy_label 為原名）。
+  new_label TEXT,
+  -- subject_type = 'rule'：保留下來的使用者 pattern 與（未套用的）新版預設 pattern。
+  legacy_pattern TEXT,
+  new_pattern TEXT
 )
 ```
 
@@ -1984,6 +1992,8 @@ Migration 是 schema 演進的 source of truth；若要了解某欄位的變更�
 - [`0064_ctbc_bill_paid_amount.sql`](../packages/db/migrations/0064_ctbc_bill_paid_amount.sql)
 - [`0066_invoice_currency.sql`](../packages/db/migrations/0066_invoice_currency.sql)
 - [`0067_simplify_spending_categories.sql`](../packages/db/migrations/0067_simplify_spending_categories.sql)
+- [`0068_investment_keywords_exclude_foundation.sql`](../packages/db/migrations/0068_investment_keywords_exclude_foundation.sql)
+- [`0069_donation_category.sql`](../packages/db/migrations/0069_donation_category.sql)
 
 ## 程式碼導覽
 
