@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import ActivityAmount from "./ActivityAmount.svelte";
 import { moneyState } from "@/shared/state/money-visibility.svelte";
 import type { ActivityItem } from "../model/types";
-import { activityCashAmountTwd } from "../model/chart";
+import { activityAmountTwd } from "../model/chart";
 
 const item: ActivityItem = {
   id: "foreign",
@@ -32,7 +32,7 @@ describe("activity amounts in TWD", () => {
     expect(screen.getByText("約 −NT$1,100")).toBeInTheDocument();
     expect(screen.getByText("原幣 −JP¥5,500")).toBeInTheDocument();
     expect(screen.getByText(/1 JPY = 0.2 TWD/)).toBeInTheDocument();
-    expect(activityCashAmountTwd(item, { JPY: 0.2 })).toBe(-1100);
+    expect(activityAmountTwd(item, { JPY: 0.2 })).toBe(-1100);
   });
   it("shows a missing rate instead of zero", () => {
     render(ActivityAmount, { item, rates: {} });

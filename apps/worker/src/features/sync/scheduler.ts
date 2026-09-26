@@ -19,6 +19,7 @@ import {
   SYNC_LOCK_LEASE_MS,
   type SyncScope,
 } from "./service";
+import { syncOutcomeWarning } from "./sync-warning";
 import { runConnectorSync } from "./registry";
 import {
   safelySendScheduledSyncSummary,
@@ -236,7 +237,8 @@ async function runScheduledJob(
     try {
       const outcome = await runDueSyncJob(env, due);
       onSuccess?.(outcome);
-      await completeSyncJob(env.DB, due);
+      const warning = syncOutcomeWarning(outcome);
+      await completeSyncJob(env.DB, due, warning);
       console.log(
         JSON.stringify({
           event: "sync_run_finished",
@@ -247,6 +249,7 @@ async function runScheduledJob(
           trigger: "scheduled",
           status: "success",
           records: outcome.records,
+          partial: warning !== null,
           durationMs: Date.now() - startedAt,
         }),
       );

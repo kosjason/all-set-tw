@@ -6,6 +6,10 @@ export const queryKeys = {
   bills: ["creditCardBills"] as const,
   billsRange: (from: string, to: string) =>
     ["creditCardBills", "range", from, to] as const,
+  // 卡片與收件匣由交易推導，key 以 "bank" 開頭，交易、分類或同步變動時一起失效。
+  cardsSummary: ["bank", "cards", "summary"] as const,
+  cardBills: (issuer: string) => ["bank", "cards", "bills", issuer] as const,
+  inbox: ["bank", "inbox"] as const,
   investments: ["investments"] as const,
   investmentTransactions: ["investment-transactions"] as const,
   investmentTransactionsRange: (from: string, to: string) =>
@@ -27,6 +31,7 @@ export const queryKeys = {
   notifications: ["notifications"] as const,
   classificationCategories: ["classification-categories"] as const,
   classificationRules: ["classification-rules"] as const,
+  ownAccounts: ["own-accounts"] as const,
   connectorSettings: (id: string) => ["connector-settings", id] as const,
   manualAssetHistory: (id: string) => ["manualAssetHistory", id] as const,
 };

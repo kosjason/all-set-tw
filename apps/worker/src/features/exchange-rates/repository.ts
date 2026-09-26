@@ -9,7 +9,12 @@ export type ExchangeRateRow = Pick<
   rateTwd: number;
 };
 
-export const SUPPORTED_EXCHANGE_CURRENCIES = ["USD", "JPY", "EUR"] as const;
+export const SUPPORTED_EXCHANGE_CURRENCIES = [
+  "USD",
+  "JPY",
+  "EUR",
+  "CNY",
+] as const;
 
 export async function listExchangeRates(db: D1Database) {
   return createDrizzle(db)
@@ -25,7 +30,8 @@ export async function listExchangeRates(db: D1Database) {
        WHEN 'USD' THEN 1
        WHEN 'JPY' THEN 2
        WHEN 'EUR' THEN 3
-       ELSE 4
+       WHEN 'CNY' THEN 4
+       ELSE 5
      END`,
     )
     .all();

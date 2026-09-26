@@ -10,6 +10,7 @@ import {
 } from "@taiwan-fin-hub/connectors";
 import { zValidator } from "@hono/zod-validator";
 import { type Context, type Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import {
   FirstbankBrowserCapacityError,
@@ -33,6 +34,7 @@ import {
   CathayOtpSessionExpiredError,
   CathayVerificationRequiredError,
 } from "../../connectors/cathaybk";
+import { BrowserCapacityError } from "../../connectors/browser";
 import { SinopacBrowserCapacityError } from "../../connectors/sinopac";
 import {
   TaishinBrowserCapacityError,
@@ -54,6 +56,7 @@ import {
   type SyncOutcome,
 } from "./service";
 import { prepareConnectorChallenge, runConnectorSync } from "./registry";
+import { CtbcImportPayloadError, importCtbcPayloads } from "./ctbc-import";
 import { cancelQueuedTdccSyncRun, startTdccSyncRun } from "./tdcc-sync-service";
 import { enqueueTdccSyncChunk } from "./scheduler-queue";
 import type { TdccRunScope } from "./tdcc-run-repository";
@@ -104,6 +107,26 @@ const firstbankSyncBodySchema = z.object({
     .regex(/^[A-Za-z0-9]{4,8}$/)
     .optional(),
 });
+
+/** 中信網銀匯入 body 上限；實測完整半年資料約數百 KB。 */
+export const CTBC_IMPORT_MAX_BYTES = 5 * 1024 * 1024;
+
+const ctbcResponseSchema = z.record(z.unknown());
+
+const ctbcImportBodySchema = z
+  .object({
+    payloads: z
+      .object({
+        depositOverview: ctbcResponseSchema,
+        depositTransactions: ctbcResponseSchema,
+        creditCards: ctbcResponseSchema,
+        unbilled: ctbcResponseSchema.optional(),
+        realtime: ctbcResponseSchema.optional(),
+      })
+      .strict(),
+    depositTransactionsUnavailable: z.boolean().optional(),
+  })
+  .strict();
 
 const cathaySyncBodySchema = z.object({
   otp: z.string().min(1).optional(),
@@ -244,6 +267,34 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       ),
     );
   });
+
+  api.post(
+    "/connectors/ctbc/import",
+    bodyLimit({
+      maxSize: CTBC_IMPORT_MAX_BYTES,
+      onError: () =>
+        jsonError("PAYLOAD_TOO_LARGE", "中國信託匯入資料超過大小上限。", 413),
+    }),
+    zValidator(
+      "json",
+      ctbcImportBodySchema,
+      validationHook(
+        "INVALID_REQUEST",
+        "中國信託匯入資料格式不符，未寫入任何資料。",
+      ),
+    ),
+    async (c) => {
+      const { payloads, depositTransactionsUnavailable } = c.req.valid("json");
+      return syncRouteResponse(
+        c,
+        withManualSyncLock(c.env, "ctbc", SYNC_SCOPE_ALL, () =>
+          importCtbcPayloads(c.env, payloads, {
+            depositTransactionsUnavailable,
+          }),
+        ),
+      );
+    },
+  );
 
   api.post("/connectors/skbank/sync", async (c) => {
     return syncRouteResponse(
@@ -666,6 +717,9 @@ async function syncRouteResponse(
       response.headers.set("Retry-After", String(error.retryAfterSeconds));
       return response;
     }
+    if (error instanceof CtbcImportPayloadError) {
+      return jsonError("CTBC_IMPORT_INVALID", error.message, 400);
+    }
     if (error instanceof CtbcConnectionError) {
       return jsonError("CTBC_CONNECTION_FAILED", safeErrorMessage(error), 502);
     }
@@ -727,6 +781,11 @@ async function syncRouteResponse(
         safeErrorMessage(error),
         502,
       );
+    }
+    if (error instanceof BrowserCapacityError) {
+      const response = jsonError("BROWSER_BUSY", safeErrorMessage(error), 429);
+      response.headers.set("Retry-After", String(error.retryAfterSeconds));
+      return response;
     }
     return jsonError("SYNC_FAILED", safeErrorMessage(error), 500);
   }

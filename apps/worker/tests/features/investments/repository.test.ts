@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createTestD1 } from "../../../../../packages/db/testing/d1";
 import * as repository from "../../../src/features/investments/repository";
+import { persistStagedSyncWrite } from "../../../src/features/sync/persistence";
+import { investmentPositionRecord } from "../../../src/features/sync/record-mapper";
 
 const now = "2026-09-12T00:00:00.000Z";
 
@@ -115,6 +117,59 @@ describe("investment repository", () => {
     });
     expect(next.map((row) => row.id)).toEqual(["fund"]);
     expect(next.some((row) => row.id === "old-stock")).toBe(false);
+  });
+
+  it("keeps the same security at different brokers as labelled positions", async () => {
+    const db = harness.binding;
+    const base = {
+      assetType: "etf" as const,
+      symbol: "0050",
+      name: "測試台灣50",
+      currency: "TWD",
+      asOfDate: "2026-09-24T00:00:00.000Z",
+    };
+    await persistStagedSyncWrite(db, {
+      records: [
+        investmentPositionRecord(
+          "tdcc",
+          {
+            ...base,
+            sourceId: "9A92:1111111:0050:2026-09-24",
+            quantity: 1000,
+            marketValue: 100_000,
+            brokerNo: "9A92",
+            brokerName: "測試證券甲",
+          },
+          now,
+        ),
+        investmentPositionRecord(
+          "tdcc",
+          {
+            ...base,
+            sourceId: "9B01:2222222:0050:2026-09-24",
+            quantity: 1,
+            marketValue: 100,
+            brokerNo: "9B01",
+            brokerName: "測試證券乙",
+          },
+          now,
+        ),
+      ],
+    });
+
+    const rows = await repository.listLatestInvestmentPositions(db, 10);
+    expect(
+      rows
+        .map(({ brokerNo, brokerName, quantity }) => ({
+          brokerNo,
+          brokerName,
+          quantity,
+        }))
+        .sort((a, b) => String(a.brokerNo).localeCompare(String(b.brokerNo))),
+    ).toEqual([
+      { brokerNo: "9A92", brokerName: "測試證券甲", quantity: 1000 },
+      { brokerNo: "9B01", brokerName: "測試證券乙", quantity: 1 },
+    ]);
   });
 
   it("pages transactions by effective_date and filters TEXT date ranges", async () => {

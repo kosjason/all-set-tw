@@ -923,6 +923,58 @@ describe("durable e-invoice sync runs", () => {
     ]);
   });
 
+  it("stores the invoice carrier and keeps a known carrier when a header omits it", async () => {
+    const { database, db } = createDb();
+    insertEinvoiceSettings(database);
+    database.exec(`INSERT INTO invoices
+      (id, connector_id, source_id, invoice_date, amount, carrier_type, carrier_suffix, created_at, updated_at)
+      VALUES ('einvoice:known', 'einvoice', 'known', '2026-08-01', 50, 'EK0002', '1111', 'old', 'old')`);
+    const run = await createProcessingEinvoiceRun(database, db, {
+      runId: "run-carrier",
+      settingsVersion: "version-1",
+      items: [
+        {
+          invoiceSourceId: "known",
+          header: header("known"),
+          normalizedInvoice: {
+            sourceId: "known",
+            invoiceDate: "2026-08-01",
+            amount: 50,
+          },
+          detailItems: [],
+        },
+        {
+          invoiceSourceId: "card",
+          header: header("card"),
+          normalizedInvoice: {
+            sourceId: "card",
+            invoiceDate: "2026-08-02",
+            amount: 70,
+            carrierType: "EK0002",
+            carrierSuffix: "2222",
+          },
+          detailItems: [],
+        },
+      ],
+    });
+    await promoteEinvoiceRunRecords(db, {
+      runId: run.id,
+      expectedSettingsUpdatedAt: "version-1",
+      cursor: "cursor-carrier",
+      now: "2026-08-12T01:00:00.000Z",
+    });
+    expect(
+      database
+        .prepare(
+          "SELECT source_id, carrier_type, carrier_suffix FROM invoices ORDER BY source_id",
+        )
+        .all(),
+    ).toEqual([
+      { source_id: "card", carrier_type: "EK0002", carrier_suffix: "2222" },
+      { source_id: "known", carrier_type: "EK0002", carrier_suffix: "1111" },
+    ]);
+  });
+
   it("promotes completed invoices and lines with stable records and makes replay a no-op", async () => {
     const { database, db } = createDb();
     insertEinvoiceSettings(database);

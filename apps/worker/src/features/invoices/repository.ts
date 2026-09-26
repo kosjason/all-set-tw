@@ -15,7 +15,35 @@ const invoiceSummaryColumns = {
   invoiceNumber: invoices.invoiceNumber,
   invoiceDate: invoices.invoiceDate,
   sellerName: invoices.sellerName,
+  sellerBan: invoices.sellerBan,
   amount: invoices.amount,
+  carrierType: invoices.carrierType,
+  carrierSuffix: invoices.carrierSuffix,
+  // 外幣發票（跨境電商）：幣別與明細原幣總額由 raw payload 推導（0066）；
+  // 品項金額加總供明細總額也被截斷時使用（見 core preciseInvoiceAmount）。
+  currency: invoices.currency,
+  originalAmount: invoices.originalAmount,
+  itemsAmount: sql<number | null>`CASE WHEN json_valid(${invoices.rawPayload})
+    THEN (SELECT sum(CAST(json_extract(detail.value, '$.amount') AS REAL))
+      FROM json_each(${invoices.rawPayload}, '$.detail.details') AS detail
+      WHERE trim(CAST(json_extract(detail.value, '$.amount') AS TEXT)) GLOB '*[0-9]*'
+        AND trim(CAST(json_extract(detail.value, '$.amount') AS TEXT)) NOT GLOB '*[^0-9.-]*') END`,
+  // 品項描述（明細順序），判斷同一筆消費重複開立的發票；取自 raw payload，
+  // 摘要查詢不讀 invoice_line_items。
+  itemDescriptions: sql<
+    string | null
+  >`CASE WHEN json_valid(${invoices.rawPayload})
+    THEN (SELECT group_concat(item.description, char(31))
+      FROM (SELECT trim(CAST(json_extract(detail.value, '$.description') AS TEXT)) AS description
+        FROM json_each(${invoices.rawPayload}, '$.detail.details') AS detail
+        ORDER BY detail.key) AS item) END`,
+  // 財政部發票狀態（開立、作廢、註銷…），來自明細 raw；作廢的發票不計入。
+  invoiceStatus: sql<string | null>`CASE WHEN json_valid(${invoices.rawPayload})
+    THEN NULLIF(trim(CAST(COALESCE(
+      json_extract(${invoices.rawPayload}, '$.detail.invStatus'),
+      json_extract(${invoices.rawPayload}, '$.invStatus'),
+      json_extract(${invoices.rawPayload}, '$.invoice.invStatus')
+    ) AS TEXT)), '') END`,
 };
 
 export type InvoicePageCursor = {
@@ -31,7 +59,15 @@ export type InvoiceRow = {
   invoiceNumber: string | null;
   invoiceDate: string;
   sellerName: string | null;
+  sellerBan: string | null;
   amount: number;
+  carrierType: string | null;
+  carrierSuffix: string | null;
+  currency: string | null;
+  originalAmount: number | null;
+  itemsAmount: number | null;
+  itemDescriptions: string | null;
+  invoiceStatus: string | null;
   updatedAt: string;
 };
 

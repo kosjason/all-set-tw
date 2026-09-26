@@ -1,45 +1,66 @@
 <script lang="ts">
-  import { buildActivityItems } from "@taiwan-fin-hub/core";
+  import {
+    CATEGORY_DEFINITIONS,
+    type EconomicRole,
+  } from "@taiwan-fin-hub/core";
   import { onMount, tick } from "svelte";
   import { toStore } from "svelte/store";
   import {
     createMutation,
     createInfiniteQuery,
     createQuery,
+    keepPreviousData,
     useQueryClient,
   } from "@tanstack/svelte-query";
-  import {
-    Search,
-    ArrowDown,
-    Check,
-    Link2,
-    Unlink2,
-    ArrowLeft,
-    ChevronRight,
-    X,
-  } from "@lucide/svelte";
+  import { Check } from "@lucide/svelte";
   import Button from "@/shared/ui/Button.svelte";
-  import Checkbox from "@/shared/ui/Checkbox.svelte";
   import EmptyState from "@/shared/ui/EmptyState.svelte";
-  import Badge from "@/shared/ui/Badge.svelte";
-  import Input from "@/shared/ui/Input.svelte";
-  import Select from "@/shared/ui/Select.svelte";
-  import TabsList from "@/shared/ui/TabsList.svelte";
-  import TabsTrigger from "@/shared/ui/TabsTrigger.svelte";
-  import { activitySearchQuery } from "@/data/activity/queries";
-  import ActivitySearchFilters from "./components/ActivitySearchFilters.svelte";
-  import SearchHighlight from "./components/SearchHighlight.svelte";
-  import ActivityAmount from "./components/ActivityAmount.svelte";
-  import ActivityCategoryChart from "./components/ActivityCategoryChart.svelte";
+  import {
+    activityMonthQuery,
+    activitySearchQuery,
+    activitySummaryQuery,
+  } from "@/data/activity/queries";
+  import {
+    activitySummaryEquation,
+    activitySummaryExcludedParts,
+    activitySummaryIncompleteLabels,
+  } from "@/data/activity/summary";
+  import type { Navigate } from "@/app/types";
+  import CashFlowSummary from "@/shared/ui/cash-flow-summary/CashFlowSummary.svelte";
+  import ActivitySearchHeader from "./components/ActivitySearchHeader.svelte";
+  import ActivityDataAlerts from "./components/ActivityDataAlerts.svelte";
+  import ActivityToolbar from "./components/ActivityToolbar.svelte";
+  import SpendingCategoryPie from "./components/SpendingCategoryPie.svelte";
+  import ActivityList from "./components/ActivityList.svelte";
+  import TransactionSourceList from "./components/TransactionSourceList.svelte";
+  import TransactionTabs from "./components/TransactionTabs.svelte";
+  import ActivityDetailPanel from "./components/ActivityDetailPanel.svelte";
+  import ActivityInvoiceMappingDialog from "./components/ActivityInvoiceMappingDialog.svelte";
   import CalculationUpdateDialog from "./components/CalculationUpdateDialog.svelte";
-  import CategoryUpdateDialog from "./components/CategoryUpdateDialog.svelte";
+  import MerchantCategoryPrompt from "./components/MerchantCategoryPrompt.svelte";
+  import RoleReasonDialog from "./components/RoleReasonDialog.svelte";
+  import {
+    categorizeActivitiesMutation,
+    deleteActivityNoteMutation,
+    saveActivityNoteMutation,
+  } from "@/data/activity/mutations";
+  import {
+    categorizeRequest,
+    merchantPromptText,
+    merchantSiblingCount,
+  } from "./model/categorize";
+  import { ApiRequestError } from "@/shared/api/client";
   import type { ApiClient } from "@/shared/api/client";
   import { queryKeys } from "@/shared/api/query-keys";
   import { exchangeRatesQuery } from "@/data/assets/queries";
   import { bankRangeQuery } from "@/data/bank/queries";
   import type { BankData, BankTransactionRow } from "@/data/bank/types";
   import { classificationCategoriesQuery } from "@/data/classification/queries";
-  import { investmentTransactionsRangeQuery } from "@/data/investments/queries";
+  import { buildSpendingCategoryRanking } from "@/data/activity/categories";
+  import {
+    categoryOptionText,
+    spendingCategoryOptions,
+  } from "@/data/activity/categories";
   import {
     invoiceDetailQuery,
     invoiceTransactionMappingsQuery,
@@ -53,81 +74,114 @@
     ActivityItem,
     CalculationUpdateInput,
     PendingCalculationUpdate,
-    PendingCategoryUpdate,
   } from "./model/types";
-  import {
-    activityDateKey,
-    activityStatusLabel,
-    currentActivityMonthKey,
-    formatActivityDate,
-    formatActivityDateGroup,
-    formatActivityTime,
-    groupActivitiesByDate,
-  } from "./model/list";
-  import {
-    filterActivities,
-    type ActivityCategoryFilter,
-    type ActivityFlowFilter,
-    type ActivitySourceFilter,
-  } from "./model/filter";
-  import {
-    buildActivityCategorySlices,
-    activityCashAmountTwd,
-    activityDisplayAmount,
-    activityAmountTwd,
-  } from "./model/chart";
+  import { activityDateKey, currentActivityMonthKey } from "./model/list";
+  import { filterActivities } from "./model/filter";
   import {
     deduplicateBankTransactions,
     invoiceTransactionCandidates,
     matchInvoicesToTransactions,
   } from "@/data/activity/matching";
   import { getActivityDataStatus } from "./model/load-status";
+  import { activityInvoiceTwd, foreignFeeLabel } from "./model/labels";
+  import { buildActivityListView } from "./model/sort";
   import {
-    formatCompactTwd,
-    formatCurrency,
-    formatDate,
-    formatNumber,
-    rateMap,
-  } from "@/shared/format/financial";
+    ECONOMIC_ROLE_CHOICE_LABELS,
+    ECONOMIC_ROLE_LABELS,
+    ECONOMIC_ROLES_ASKING_REASON,
+    activityNoteTarget,
+    activityRoleTarget,
+    duplicateTargetLabel,
+    findDuplicateTarget,
+    roleOverridePath,
+  } from "./model/roles";
+  import {
+    activityHash,
+    defaultActivityViewState,
+    parseActivityHash,
+    type ActivityTarget,
+    type ActivityViewState,
+  } from "./model/url-state";
+  import { cardIdentity, transactionCardLast4 } from "./model/source-tabs";
+  import {
+    ACTIVITY_EXTRA_CATEGORY_OPTIONS,
+    UNCATEGORIZED_CATEGORY_ID,
+    activityFilterChips,
+    clearActivityFilter,
+    clearActivityFilters,
+    filterCard,
+    filterCategorySlice,
+    filterNeedsReview,
+    filterRole,
+    filterTab,
+    filterUncategorized,
+    TRANSACTION_TAB_LABELS,
+    type ActivityFilterChipKey,
+  } from "./model/view-filters";
+  import { rateMap } from "@/shared/format/financial";
   import { recentMonthRange, recentMonthKeys } from "@/shared/date-range";
-  import { swipeBack } from "@/shared/actions/swipe-back";
-  let { api }: { api: ApiClient } = $props();
+  let { api, navigate }: { api: ApiClient; navigate?: Navigate } = $props();
   const initialSelectedMonth = currentActivityMonthKey();
   // Keep API ranges and month options anchored to the same Taipei month key.
   const activityMonthAnchor = new Date(
     `${initialSelectedMonth}-15T12:00:00+08:00`,
   );
-  let selectedMonth = $state(initialSelectedMonth);
   const activityRange = recentMonthRange(6, activityMonthAnchor);
-  const bank = createQuery(bankRangeQuery(() => api, activityRange));
-  const invoices = createQuery(invoicesRangeQuery(() => api, activityRange));
-  const invoiceMappings = createQuery(
-    invoiceTransactionMappingsQuery(() => api),
-  );
-  const trades = createQuery(
-    investmentTransactionsRangeQuery(() => api, activityRange),
+  const cashFlowMonths = recentMonthKeys(6, activityMonthAnchor);
+  const months = [...cashFlowMonths].reverse();
+  // 這三個 query 的 data 只在開明細、配對時才讀（$derived 是惰性的）。TanStack Query 預設只在
+  // 「讀過的欄位」變動時通知，若載入完成前沒有人讀過 data，之後讀到的會一直是 undefined
+  // （明細看不到發票與交易）。改為任何欄位變動都通知。
+  const bank = createQuery({
+    ...bankRangeQuery(() => api, activityRange),
+    notifyOnChangeProps: "all",
+  });
+  const invoices = createQuery({
+    ...invoicesRangeQuery(() => api, activityRange),
+    notifyOnChangeProps: "all",
+  });
+  const invoiceMappings = createQuery({
+    ...invoiceTransactionMappingsQuery(() => api),
+    notifyOnChangeProps: "all",
+  });
+  // 月收支數字（總帳摘要）一律來自 summary API；前端不自行加總。
+  const summaries = createQuery(
+    activitySummaryQuery(() => api, {
+      from: cashFlowMonths[0]!,
+      to: cashFlowMonths.at(-1)!,
+    }),
   );
   const rates = createQuery(exchangeRatesQuery(() => api));
   const categoryRows = createQuery(classificationCategoriesQuery(() => api));
   const qc = useQueryClient();
-  let flow = $state<ActivityFlowFilter>("all");
-  let source = $state<ActivitySourceFilter>("all");
-  let search = $state("");
-  let monthlySearch = $state("");
-  let submittedSearch = $state("");
-  let searchTime = $state("all");
-  let searchFrom = $state("");
-  let searchTo = $state("");
-  let searchCategory = $state("");
-  const searching = $derived(Boolean(submittedSearch));
+
+  // 分頁、篩選、排序、月份與搜尋狀態：與 `#/transactions?…` 雙向同步。
+  const initialView =
+    parseActivityHash(window.location.hash) ?? defaultActivityViewState();
+  let view = $state<ActivityViewState>(initialView);
+  // 搜尋框文字：月報模式輸入即篩選本月；送出後才成為全歷史搜尋（view.query）。
+  let search = $state(initialView.query);
+  const selectedMonth = $derived(
+    months.includes(view.month) ? view.month : initialSelectedMonth,
+  );
+  // 月報列表：含推導角色，已配對的發票以 duplicateOf 列為獨立的重複項目。
+  const monthItems = createQuery(
+    toStore(() => ({
+      ...activityMonthQuery(() => api, selectedMonth),
+      placeholderData: keepPreviousData,
+    })),
+  );
+  const searching = $derived(Boolean(view.query));
+  const submittedSearch = $derived(view.query);
+  const monthlySearch = $derived(searching ? "" : search);
   const searchDates = $derived.by(() => {
-    if (searchTime === "custom") return { from: searchFrom, to: searchTo };
-    if (searchTime === "year")
+    if (view.time === "custom") return { from: view.from, to: view.to };
+    if (view.time === "year")
       return {
         from: `${initialSelectedMonth.slice(0, 4)}-01-01`,
         to: `${initialSelectedMonth.slice(0, 4)}-12-31`,
       };
-    if (searchTime === "12months") {
+    if (view.time === "12months") {
       const date = new Date(activityMonthAnchor);
       date.setMonth(date.getMonth() - 11);
       return {
@@ -153,9 +207,10 @@
         submittedSearch,
         searchDates.from,
         searchDates.to,
-        source,
-        flow,
-        searchCategory,
+        view.tab === "ledger" ? "all" : view.tab,
+        // 角色在前端篩選（伺服器的 flow 只依正負，會漏掉退款等消費）。
+        "all",
+        view.categoryId,
       ),
     ),
   );
@@ -182,54 +237,67 @@
         )
       : $invoices.data,
   );
-  const tradeData = $derived(
-    searching
-      ? uniqueRows(
-          $searchResults.data?.pages.flatMap((page) => page.trades) ?? [],
-        )
-      : $trades.data,
-  );
-  let savedMonthly: {
-    flow: ActivityFlowFilter;
-    source: ActivitySourceFilter;
-    category: ActivityCategoryFilter | null;
-    scroll: number;
-    rootScroll: number;
-  } | null = null;
-  function saveMonthly() {
-    savedMonthly = {
-      flow,
-      source,
-      category: selectedCategory,
+
+  /** 更新檢視狀態；改角色時一併清除舊版圖表網址帶入的分類切片。 */
+  function setView(patch: Partial<ActivityViewState>) {
+    const next = { ...view, ...patch };
+    if (patch.role !== undefined && patch.slice === undefined)
+      next.slice = null;
+    view = next;
+  }
+
+  // 月報與搜尋間切換時保留月報的捲動位置。
+  let savedMonthlyScroll: { scroll: number; rootScroll: number } | null = null;
+  function saveMonthlyScroll() {
+    savedMonthlyScroll = {
       scroll: window.scrollY,
       rootScroll: document.getElementById("root")?.scrollTop ?? 0,
     };
-    flow = "all";
-    source = "all";
-    selectedCategory = null;
-    searchTime = "all";
-    searchFrom = "";
-    searchTo = "";
-    searchCategory = "";
   }
-  function restoreMonthly() {
-    search = "";
-    submittedSearch = "";
-    detailKey = null;
-    if (savedMonthly) {
-      const saved = savedMonthly;
-      savedMonthly = null;
-      flow = saved.flow;
-      source = saved.source;
-      selectedCategory = saved.category;
-      void tick().then(() => {
-        window.scrollTo({ top: saved.scroll, behavior: "instant" });
-        document
-          .getElementById("root")
-          ?.scrollTo({ top: saved.rootScroll, behavior: "instant" });
-      });
-    }
+  function restoreMonthlyScroll() {
+    const saved = savedMonthlyScroll;
+    savedMonthlyScroll = null;
+    if (!saved) return;
+    void tick().then(() => {
+      window.scrollTo({ top: saved.scroll, behavior: "instant" });
+      document
+        .getElementById("root")
+        ?.scrollTo({ top: saved.rootScroll, behavior: "instant" });
+    });
   }
+
+  // history.go 返回期間暫停寫入網址，避免覆寫即將離開的搜尋紀錄。
+  let urlSyncPaused = false;
+  $effect(() => {
+    const hash = activityHash(
+      { ...view, month: selectedMonth },
+      initialSelectedMonth,
+    );
+    if (urlSyncPaused || !parseActivityHash(window.location.hash)) return;
+    if (window.location.hash === hash) return;
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}${hash}`,
+    );
+  });
+
+  /** 由網址與 history.state 還原（首次載入、上一頁／下一頁、導覽回活動頁）。 */
+  function restoreHistory() {
+    const parsed = parseActivityHash(window.location.hash);
+    if (!parsed) return;
+    urlSyncPaused = false;
+    const state = window.history.state;
+    const query = parsed.query || state?.activitySearch?.query || "";
+    const wasSearching = searching;
+    if (query && !wasSearching) saveMonthlyScroll();
+    view = { ...parsed, query };
+    if (query) search = query;
+    else if (wasSearching) search = "";
+    detailKey = state?.activityDetail ?? null;
+    if (!query && wasSearching) restoreMonthlyScroll();
+  }
+
   function submitSearch() {
     const query = search.trim();
     if (!query) {
@@ -237,115 +305,78 @@
       return;
     }
     if (!searching) {
-      saveMonthly();
+      saveMonthlyScroll();
       window.history.pushState(
         { ...window.history.state, activitySearch: { query } },
         "",
       );
-    } else
+      // 全歷史搜尋從不篩選開始；月報的篩選保留在上一筆歷史紀錄的網址。
+      view = { ...clearActivityFilters(view), query };
+    } else {
       window.history.replaceState(
         { ...window.history.state, activitySearch: { query } },
         "",
       );
-    submittedSearch = query;
+      view = { ...view, query };
+    }
   }
   function clearSearch() {
     if (!searching) {
       search = "";
       return;
     }
-    if (searching && window.history.state?.activitySearch)
+    if (window.history.state?.activitySearch) {
+      urlSyncPaused = true;
       window.history.go(detailKey ? -2 : -1);
-    restoreMonthly();
-  }
-  function changeSearch(event: Event) {
-    search = (event.currentTarget as HTMLInputElement).value;
-    if (!search.trim()) {
-      clearSearch();
+      // popstate 會還原月報；保險起見，逾時仍未收到就依目前網址還原。
+      window.setTimeout(() => {
+        if (urlSyncPaused) restoreHistory();
+      }, 1000);
       return;
     }
+    // 由分享連結直接開啟的搜尋沒有可返回的紀錄，改在原地回到月報。
+    search = "";
+    detailKey = null;
+    view = { ...clearActivityFilters(view), query: "" };
+    restoreMonthlyScroll();
+  }
+  function changeSearch(value: string) {
+    search = value;
+    if (!value.trim()) clearSearch();
   }
   function closeDetail() {
     if (window.history.state?.activityDetail) window.history.back();
     else detailKey = null;
   }
-  $effect(() => {
-    if (searching && window.history.state?.activitySearch) {
-      window.history.replaceState(
-        {
-          ...window.history.state,
-          activitySearch: {
-            query: submittedSearch,
-            flow,
-            source,
-            category: searchCategory,
-            time: searchTime,
-            from: searchFrom,
-            to: searchTo,
-          },
-        },
-        "",
-      );
-    }
-  });
   onMount(() => {
-    const restoreHistory = () => {
-      if (window.location.hash !== "#/activity") return;
-      const state = window.history.state;
-      if (state?.activitySearch?.query) {
-        if (!searching && !savedMonthly) saveMonthly();
-        flow = state.activitySearch.flow ?? "all";
-        source = state.activitySearch.source ?? "all";
-        searchCategory = state.activitySearch.category ?? "";
-        searchTime = state.activitySearch.time ?? "all";
-        searchFrom = state.activitySearch.from ?? "";
-        searchTo = state.activitySearch.to ?? "";
-        search = state.activitySearch.query;
-        submittedSearch = search;
-        detailKey = state.activityDetail ?? null;
-      } else {
-        restoreMonthly();
-        detailKey = state?.activityDetail ?? null;
-      }
-    };
     restoreHistory();
     window.addEventListener("popstate", restoreHistory);
     return () => {
       window.removeEventListener("popstate", restoreHistory);
     };
   });
-  let selectedCategory = $state<ActivityCategoryFilter | null>(null);
-  let pending = $state<PendingCategoryUpdate | null>(null);
   let pendingCalculation = $state<PendingCalculationUpdate | null>(null);
   let mappingDialog = $state<{
     invoice: InvoiceSummaryRow;
     step: "candidates" | "confirm" | "actions";
     transactionId?: string;
+    amountTwd?: number | null;
   } | null>(null);
   let mappingNotice = $state("");
   let detailKey = $state<string | null>(null);
-  const fallbackCategories = [
-    { id: "salary", label: "薪資" },
-    { id: "transfer", label: "轉帳" },
-    { id: "food", label: "餐飲" },
-    { id: "transport", label: "交通" },
-    { id: "shopping", label: "購物" },
-    { id: "housing", label: "居住" },
-    { id: "health", label: "醫療" },
-    { id: "education", label: "教育" },
-    { id: "entertainment", label: "娛樂" },
-    { id: "investment", label: "投資" },
-    { id: "insurance", label: "保險" },
-    { id: "fee", label: "手續費" },
-    { id: "tax", label: "稅務" },
-    { id: "software", label: "軟體服務" },
-    { id: "utilities", label: "生活繳費" },
-    { id: "other-income", label: "其他收入" },
-    { id: "other", label: "未分類" },
-  ];
+  // 分類選單：單層的 8 個消費分類（emoji＋名稱）與自訂分類；分類 API 還沒回來或
+  // 失敗時直接用 packages/core 的分類。
   const categoryOptions = $derived(
-    $categoryRows.data?.length ? $categoryRows.data : fallbackCategories,
+    spendingCategoryOptions($categoryRows.data ?? []),
   );
+  // 排除計算對話框需要能保留「未分類」。
+  const calculationCategoryOptions = $derived([
+    ...categoryOptions.map((option) => ({
+      id: option.id,
+      label: categoryOptionText(option),
+    })),
+    { id: UNCATEGORIZED_CATEGORY_ID, label: "未分類" },
+  ]);
   const activityDataStatus = $derived(
     getActivityDataStatus(
       searching
@@ -354,38 +385,30 @@
             { label: "發票配對", isError: $invoiceMappings.isError },
           ]
         : [
-            {
-              label: "銀行與信用卡",
-              isError: $bank.isError,
-            },
-            {
-              label: "發票",
-              isError: $invoices.isError,
-            },
-            {
-              label: "發票配對",
-              isError: $invoiceMappings.isError,
-            },
-            {
-              label: "投資活動",
-              isError: $trades.isError,
-            },
+            { label: "活動", isError: $monthItems.isError },
+            { label: "月收支摘要", isError: $summaries.isError },
+            { label: "銀行與信用卡明細", isError: $bank.isError },
+            { label: "發票", isError: $invoices.isError },
+            { label: "發票配對", isError: $invoiceMappings.isError },
           ],
     ),
   );
-  const activitySummaryIncomplete = $derived(activityDataStatus.hasFailure);
   const activityRetryPending = $derived(
     $searchResults.isFetching ||
+      $monthItems.isFetching ||
+      $summaries.isFetching ||
       $bank.isFetching ||
       $invoices.isFetching ||
-      $invoiceMappings.isFetching ||
-      $trades.isFetching,
+      $invoiceMappings.isFetching,
   );
-  const categories = $derived(
-    Object.fromEntries(
+  const categories = $derived({
+    ...Object.fromEntries(
+      CATEGORY_DEFINITIONS.map((category) => [category.id, category.label]),
+    ),
+    ...Object.fromEntries(
       categoryOptions.map((category) => [category.id, category.label]),
     ),
-  );
+  } as Record<string, string>);
   const rateValues = $derived(rateMap($rates.data));
   const bankAccounts = $derived(
     new Map((bankData?.accounts ?? []).map((account) => [account.id, account])),
@@ -405,104 +428,107 @@
       activityBankTransactions,
       invoiceData ?? [],
       $invoiceMappings.data ?? [],
+      // Search pages hold only matching days, like the server search matching.
+      searching ? { dayWindow: 0 } : undefined,
     ),
   );
   const rawItems = $derived(
     searching
       ? ($searchResults.data?.pages.flatMap((page) => page.items) ?? [])
-      : buildActivityItems(
-          activityBankTransactions,
-          invoiceData ?? [],
-          tradeData ?? [],
-          bankAccounts,
-          invoiceMatches,
-        ),
+      : ($monthItems.data?.items ?? []),
   );
   const detailItem = $derived(
     rawItems.find((item) => activityKey(item) === detailKey),
   );
   const detailInvoiceId = $derived(detailItem?.invoiceId ?? null);
+  // 明細的發票：先找已載入的發票清單，找不到時用明細自己依 id 查詢的發票
+  // （`GET /api/invoices/:id`，InvoiceRow 含清單欄位）。深連結直接開啟明細、網路較慢，
+  // 或發票清單的 query 還沒通知更新時，明細仍能顯示發票與配對入口。
+  function loadedInvoice(invoiceId: string | null | undefined) {
+    if (!invoiceId) return undefined;
+    return (
+      (invoiceData ?? []).find((invoice) => invoice.id === invoiceId) ??
+      ($detailInvoice.data?.id === invoiceId ? $detailInvoice.data : undefined)
+    );
+  }
+  const detailInvoiceRow = $derived(loadedInvoice(detailInvoiceId));
   const detailInvoice = createQuery(
     toStore(() => invoiceDetailQuery(() => api, detailInvoiceId)),
   );
-  const cashFlowMonths = recentMonthKeys(6, activityMonthAnchor);
-  const months = [...cashFlowMonths].reverse();
-  const monthlyCalculatedItems = $derived(
-    rawItems.filter(
-      (item) =>
-        activityDateKey(item).startsWith(selectedMonth) &&
-        (item.source === "bank" ||
-          item.source === "card" ||
-          item.source === "invoice"),
+  const selectedSummary = $derived(
+    $summaries.data?.months.find((month) => month.month === selectedMonth) ??
+      ($monthItems.data?.month === selectedMonth
+        ? $monthItems.data.summary
+        : undefined),
+  );
+  const spendingSlices = $derived(
+    buildSpendingCategoryRanking(
+      selectedSummary?.spendingByCategory ?? {},
+      $categoryRows.data ?? [],
     ),
   );
-  const missingMonthlyRates = $derived([
-    ...new Set(
-      monthlyCalculatedItems
-        .filter(
-          (item) =>
-            !item.excludedFromCalculation &&
-            item.amount != null &&
-            ["bank", "card", "invoice"].includes(item.source) &&
-            activityAmountTwd(item, rateValues) == null,
-        )
-        .map((item) => item.currency),
-    ),
-  ]);
-  const incomeSlices = $derived(
-    buildActivityCategorySlices(monthlyCalculatedItems, "income", rateValues),
-  );
-  const expenseSlices = $derived(
-    buildActivityCategorySlices(monthlyCalculatedItems, "expense", rateValues),
-  );
-  const incomeTotal = $derived(
-    incomeSlices.reduce((sum, slice) => sum + slice.amount, 0),
-  );
-  const expenseTotal = $derived(
-    expenseSlices.reduce((sum, slice) => sum + slice.amount, 0),
-  );
-  const currentMonth = currentActivityMonthKey();
+  function selectPieCategory(categoryId: string) {
+    setView(
+      view.categoryId === categoryId
+        ? { categoryId: "" }
+        : { categoryId, role: "spending" },
+    );
+  }
+  const summaryUnavailable = $derived(!selectedSummary);
   const selectedMonthLabel = $derived(`${Number(selectedMonth.slice(5))} 月`);
-  const cashFlow = $derived(
-    cashFlowMonths.map((month) => {
-      const items = rawItems.filter(
-        (item) =>
-          activityDateKey(item).startsWith(month) &&
-          (item.source === "bank" ||
-            item.source === "card" ||
-            item.source === "invoice"),
-      );
-      return {
-        month,
-        income: items.reduce(
-          (sum, item) =>
-            sum + Math.max(activityCashAmountTwd(item, rateValues), 0),
-          0,
-        ),
-        expense: Math.abs(
-          items.reduce(
-            (sum, item) =>
-              sum + Math.min(activityCashAmountTwd(item, rateValues), 0),
-            0,
-          ),
-        ),
-      };
-    }),
+  const transactionsById = $derived(
+    new Map(
+      activityBankTransactions.map((transaction) => [
+        transaction.id,
+        transaction,
+      ]),
+    ),
   );
-  const maxCashFlow = $derived(
-    Math.max(...cashFlow.flatMap((point) => [point.income, point.expense]), 1),
-  );
+  function transactionOf(item: ActivityItem) {
+    return item.transactionId
+      ? transactionsById.get(item.transactionId)
+      : undefined;
+  }
   const filtered = $derived(
-    filterActivities(rawItems, {
-      month: searching ? "" : selectedMonth,
-      from: searching ? searchDates.from : undefined,
-      to: searching ? searchDates.to : undefined,
-      categoryId: searching ? searchCategory : undefined,
-      flow,
-      source,
-      search: searching ? submittedSearch : monthlySearch,
-      category: selectedCategory,
-    }),
+    filterNeedsReview(
+      filterUncategorized(
+        filterCard(
+          filterRole(
+            filterCategorySlice(
+              filterTab(
+                filterActivities(rawItems, {
+                  month: searching ? "" : selectedMonth,
+                  from: searching ? searchDates.from : undefined,
+                  to: searching ? searchDates.to : undefined,
+                  categoryId: view.categoryId || undefined,
+                  flow: "all",
+                  source: "all",
+                  search: searching ? submittedSearch : monthlySearch,
+                  category: null,
+                }),
+                view.tab,
+              ),
+              searching ? null : view.slice,
+            ),
+            view.slice ? "all" : view.role,
+          ),
+          view.card,
+          (item) => transactionCardLast4(transactionOf(item)),
+        ),
+        view.uncategorized,
+      ),
+      view.review,
+    ),
+  );
+  /** 總帳隱藏的重複項目數（已併入另一筆紀錄，例如已對應刷卡的發票）。 */
+  const hiddenDuplicates = $derived(
+    view.tab === "ledger"
+      ? rawItems.filter(
+          (item) =>
+            item.duplicateOf &&
+            (searching || activityDateKey(item).startsWith(selectedMonth)),
+        ).length
+      : 0,
   );
   const fillingSearchBatch = $derived(
     searching && !invalidSearchDates && $searchResults.isFetching,
@@ -529,7 +555,74 @@
     observer.observe(searchSentinel);
     return () => observer.disconnect();
   });
-  const filteredGroups = $derived(groupActivitiesByDate(filtered));
+  const listView = $derived(
+    buildActivityListView(filtered, view.sort, rateValues),
+  );
+  const listEmptyMessage = $derived(
+    searching && invalidSearchDates
+      ? "請調整搜尋日期。"
+      : fillingSearchBatch
+        ? "搜尋活動中…"
+        : !searching && $monthItems.isPlaceholderData
+          ? "載入活動中…"
+          : activityDataStatus.hasFailure
+            ? "部分資料目前無法顯示，請重試後再查看。"
+            : "沒有符合條件的活動。",
+  );
+  const listTitle = $derived(
+    searching
+      ? `已載入 ${filtered.length} 筆`
+      : view.slice
+        ? `${selectedMonthLabel} · ${view.slice.flow === "expense" ? "消費" : "收入"} · ${view.slice.category}`
+        : view.review
+          ? `${selectedMonthLabel} · 待確認`
+          : view.role !== "all"
+            ? `${selectedMonthLabel} · ${ECONOMIC_ROLE_LABELS[view.role]}`
+            : `${selectedMonthLabel} · ${TRANSACTION_TAB_LABELS[view.tab]}`,
+  );
+  const reviewCount = $derived(
+    searching
+      ? rawItems.filter((item) => item.reviewStatus === "needs_review").length
+      : (selectedSummary?.needsReview.count ?? 0),
+  );
+  const duplicateLabels = $derived(
+    new Map(
+      rawItems
+        .filter((item) => item.duplicateOf)
+        .map((item) => [
+          activityKey(item),
+          duplicateTargetLabel(item, findDuplicateTarget(item, rawItems)),
+        ]),
+    ),
+  );
+  function duplicateLabel(item: ActivityItem) {
+    return duplicateLabels.get(activityKey(item));
+  }
+  const filterCategoryOptions = $derived([
+    ...categoryOptions.map((option) => ({
+      id: option.id,
+      label: categoryOptionText(option),
+    })),
+    { id: UNCATEGORIZED_CATEGORY_ID, label: "未分類" },
+    ...ACTIVITY_EXTRA_CATEGORY_OPTIONS,
+  ]);
+  const filterChips = $derived(
+    activityFilterChips(view, {
+      searching,
+      text: monthlySearch,
+      categoryLabel: (id) =>
+        filterCategoryOptions.find((option) => option.id === id)?.label,
+    }),
+  );
+  function clearChip(key: ActivityFilterChipKey) {
+    if (key === "text") search = "";
+    else view = clearActivityFilter(view, key);
+  }
+  function clearAllFilters() {
+    if (!searching) search = "";
+    view = clearActivityFilters(view);
+  }
+  let toolbarHeight = $state(0);
   const mappingCandidates = $derived.by(() => {
     if (!mappingDialog) return [];
     const unavailableTransactionIds = new Set(
@@ -543,35 +636,50 @@
       unavailableTransactionIds,
     );
   });
+  // 改分類：先改這一筆（個別覆寫），有商家時再詢問是否套用到同商家並記住。
+  const categorizeOptions = categorizeActivitiesMutation(() => api);
+  let merchantPrompt = $state<{
+    item: ActivityItem;
+    categoryId: string;
+    message: string;
+  } | null>(null);
   const categoryMutation = createMutation({
-    mutationFn: async (payload: {
-      transactionId: string;
-      categoryId: string;
-      addRule: boolean;
-      pattern: string;
-      operator: "contains" | "equals";
-    }) => {
-      await api.put(
-        `/api/classification/overrides/bank_transaction/${payload.transactionId}`,
-        { categoryId: payload.categoryId },
-      );
-      if (payload.addRule)
-        await api.post("/api/classification/rules", {
-          categoryId: payload.categoryId,
-          targetType: "bank_transaction",
-          field: "any_text",
-          operator: payload.operator,
-          pattern: payload.pattern.trim(),
-          priority: 200,
-          description: "由活動頁建立",
-        });
-    },
-    onSuccess: () => {
+    mutationFn: (payload: { item: ActivityItem; categoryId: string }) =>
+      categorizeOptions.mutationFn(
+        categorizeRequest(payload.item, payload.categoryId),
+      ),
+    onSuccess: (_result, { item, categoryId }) => {
       qc.invalidateQueries({ queryKey: queryKeys.bank });
-      qc.invalidateQueries({ queryKey: queryKeys.classificationRules });
-      pending = null;
+      if (!item.merchantKey) return;
+      const label = categories[categoryId] ?? categoryId;
+      merchantPrompt = {
+        item,
+        categoryId,
+        message: merchantPromptText(
+          item,
+          label,
+          merchantSiblingCount(rawItems, item),
+        ),
+      };
     },
   });
+  const merchantMutation = createMutation({
+    mutationFn: (payload: { item: ActivityItem; categoryId: string }) =>
+      categorizeOptions.mutationFn(
+        categorizeRequest(payload.item, payload.categoryId, true),
+      ),
+    onSuccess: (_result, { item }) => {
+      qc.invalidateQueries({ queryKey: queryKeys.bank });
+      merchantPrompt = null;
+      showMappingNotice(
+        `已記住「${item.displayName?.trim() || item.title}」的分類`,
+      );
+    },
+  });
+  function dismissMerchantPrompt() {
+    merchantPrompt = null;
+    $merchantMutation.reset();
+  }
   const calculationMutation = createMutation({
     mutationFn: (payload: {
       transactionId: string;
@@ -649,7 +757,7 @@
       updateMappingPreference(preference);
       mappingDialog = null;
       closeDetail();
-      showMappingNotice("已完成配對，活動只顯示一筆");
+      showMappingNotice("已完成配對，發票不再重複計算");
     },
   });
   const separationMutation = createMutation({
@@ -664,58 +772,106 @@
       showMappingNotice("已解除配對，兩筆活動將保持分開");
     },
   });
-  function openCategory(item: ActivityItem, categoryId: string) {
-    if (item.transactionId && categoryId !== item.categoryId)
-      pending = {
-        item,
-        categoryId,
-        addRule: false,
-        pattern: item.classificationPattern ?? item.title,
-        operator: "contains",
-      };
+  // 角色 override 成功後重新載入月收支 summary、月份活動、搜尋結果與交易：
+  // 這些 query key 都以 "bank" 開頭（見 data/activity/queries.ts），一次失效即可。
+  function invalidateRoleQueries() {
+    qc.invalidateQueries({ queryKey: queryKeys.bank });
   }
-  function chooseCategory(flow: "income" | "expense", category: string) {
-    if (
-      selectedCategory?.flow === flow &&
-      selectedCategory.category === category
-    ) {
-      clearCategoryFilter();
+  const roleMutation = createMutation({
+    mutationFn: (payload: {
+      item: ActivityItem;
+      role: EconomicRole;
+      note?: string;
+    }) => {
+      const target = activityRoleTarget(payload.item);
+      if (!target) throw new Error("此活動不支援調整角色。");
+      return api.put(roleOverridePath(target), {
+        economicRole: payload.role,
+        ...(payload.note !== undefined ? { note: payload.note } : {}),
+      });
+    },
+    onSuccess: () => {
+      invalidateRoleQueries();
+      pendingRole = null;
+    },
+  });
+  // 選擇轉到自己帳戶、不計入或收入時先問原因（選填，存成備註）。
+  let pendingRole = $state<{ item: ActivityItem; role: EconomicRole } | null>(
+    null,
+  );
+  function submitRoleReason(reason: string) {
+    if (!pendingRole) return;
+    const { item, role } = pendingRole;
+    // 沒有改動原因時不送 note，保留既有備註（也不會在配對的另一筆多寫一份）。
+    const note = reason === (item.note ?? "").trim() ? undefined : reason;
+    $roleMutation.mutate({ item, role, note });
+  }
+  // 備註：寫到 noteTarget（已配對的交易與發票共用），清空即刪除。
+  const saveNoteOptions = saveActivityNoteMutation(() => api);
+  const deleteNoteOptions = deleteActivityNoteMutation(() => api);
+  const noteMutation = createMutation({
+    mutationFn: async (payload: { item: ActivityItem; note: string }) => {
+      const target = activityNoteTarget(payload.item);
+      if (!target) throw new Error("此活動不支援備註。");
+      if (payload.note) {
+        await saveNoteOptions.mutationFn({ ...target, note: payload.note });
+        return;
+      }
+      try {
+        await deleteNoteOptions.mutationFn(target);
+      } catch (error) {
+        // 已經沒有備註（例如剛建立又清空、另一個分頁已刪除）視為成功。
+        if (!(error instanceof ApiRequestError && error.status === 404))
+          throw error;
+      }
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.bank }),
+  });
+  function saveNote(item: ActivityItem, note: string) {
+    return $noteMutation.mutateAsync({ item, note });
+  }
+  const roleResetMutation = createMutation({
+    mutationFn: (item: ActivityItem) => {
+      const target = activityRoleTarget(item);
+      if (!target) throw new Error("此活動不支援調整角色。");
+      return api.delete(roleOverridePath(target));
+    },
+    onSuccess: invalidateRoleQueries,
+  });
+  function changeRole(item: ActivityItem, role: EconomicRole) {
+    $roleResetMutation.reset();
+    $roleMutation.reset();
+    if (ECONOMIC_ROLES_ASKING_REASON.has(role)) {
+      pendingRole = { item, role };
       return;
     }
-    selectedCategory = { flow, category };
-    chooseFlow(flow, false);
+    $roleMutation.mutate({ item, role });
   }
-  function clearCategoryFilter() {
-    chooseFlow("all");
+  function resetRole(item: ActivityItem) {
+    $roleMutation.reset();
+    $roleResetMutation.mutate(item);
   }
-  function chooseFlow(nextFlow: ActivityFlowFilter, clearCategory = true) {
-    flow = nextFlow;
-    if (clearCategory) selectedCategory = null;
+  const roleUpdating = $derived(
+    $roleMutation.isPending || $roleResetMutation.isPending,
+  );
+  function changeCategory(item: ActivityItem, categoryId: string) {
+    if (!categoryId || categoryId === item.categoryId) return;
+    dismissMerchantPrompt();
+    $categoryMutation.mutate({ item, categoryId });
   }
-  function chooseChartFlow(nextFlow: Exclude<ActivityFlowFilter, "all">) {
-    chooseFlow(flow === nextFlow && !selectedCategory ? "all" : nextFlow);
+  function showNeedsReview() {
+    setView({ review: true });
   }
   function chooseMonth(month: string) {
-    selectedMonth = month;
-    selectedCategory = null;
+    setView({ month, slice: null });
   }
   function retryActivityData() {
     if (searching && $searchResults.isError) void $searchResults.refetch();
+    if ($monthItems.isError) void $monthItems.refetch();
+    if ($summaries.isError) void $summaries.refetch();
     if ($bank.isError) void $bank.refetch();
     if ($invoices.isError) void $invoices.refetch();
     if ($invoiceMappings.isError) void $invoiceMappings.refetch();
-    if ($trades.isError) void $trades.refetch();
-  }
-  function sourceLabel(item: ActivityItem) {
-    const label = {
-      bank: "銀行",
-      card: "信用卡",
-      investment: "投資",
-      invoice: "發票",
-    }[item.source];
-    return item.source !== "invoice" && item.invoiceId
-      ? `${label}＋發票`
-      : label;
   }
   function activityKey(item: ActivityItem) {
     return `${item.source}-${item.id}`;
@@ -727,6 +883,31 @@
       "",
     );
   }
+  /** 網址 `activity=<source>:<id>` 指到的活動（收件匣、信用卡頁的連結）。 */
+  function matchesTarget(item: ActivityItem, target: ActivityTarget) {
+    if (target.source === "invoice")
+      return (
+        item.source === "invoice" &&
+        (item.id === target.id || item.invoiceId === target.id)
+      );
+    if (target.source === "investment")
+      return item.source === "investment" && item.id === target.id;
+    // bank:<id> 也涵蓋信用卡交易（同為 bank_transactions）。
+    return (
+      (item.source === "bank" || item.source === "card") &&
+      (item.id === target.id || item.transactionId === target.id)
+    );
+  }
+  $effect(() => {
+    const target = view.activity;
+    if (!target) return;
+    if (searching || $monthItems.isPlaceholderData) return;
+    if (!$monthItems.isSuccess && !$monthItems.isError) return;
+    const item = rawItems.find((candidate) => matchesTarget(candidate, target));
+    if (item) detailKey = activityKey(item);
+    // 開啟後清除參數，關閉明細不會再被網址打開。
+    view = { ...view, activity: null };
+  });
   function transactionForItem(item: ActivityItem) {
     return activityBankTransactions.find(
       (transaction) => transaction.id === item.transactionId,
@@ -790,13 +971,14 @@
     }, 3500);
   }
   function invoiceForItem(item: ActivityItem) {
-    return (invoiceData ?? []).find((invoice) => invoice.id === item.invoiceId);
+    return loadedInvoice(item.invoiceId);
   }
   function openMapping(item: ActivityItem) {
     const invoice = invoiceForItem(item);
     if (!invoice) return;
     mappingDialog = {
       invoice,
+      amountTwd: activityInvoiceTwd(item),
       step: item.transactionId ? "actions" : "candidates",
       transactionId: item.transactionId,
     };
@@ -811,9 +993,6 @@
       (transaction) => transaction.id === mappingDialog?.transactionId,
     );
   }
-  function mappingMerchant(transaction: BankTransactionRow) {
-    return transaction.counterparty ?? transaction.description ?? "銀行交易";
-  }
   function mappingAccount(transaction: BankTransactionRow) {
     return (
       transaction.institutionName ??
@@ -821,16 +1000,6 @@
       bankAccounts.get(transaction.accountId)?.institutionName ??
       "銀行／信用卡"
     );
-  }
-  function mappingDifference(
-    invoice: InvoiceSummaryRow,
-    transaction: BankTransactionRow,
-  ) {
-    return Math.abs(invoice.amount - Math.abs(transaction.amount));
-  }
-  function itemMappingDifference(item: ActivityItem) {
-    if (item.invoiceAmount == null || item.amount == null) return 0;
-    return Math.abs(item.invoiceAmount - Math.abs(item.amount));
   }
   function countMatches(update: {
     pattern: string;
@@ -850,813 +1019,229 @@
   }
 </script>
 
-{#if !searching && ($bank.isPending || $invoices.isPending || $invoiceMappings.isPending || $trades.isPending)}
+{#if !searching && $monthItems.isPending}
   <EmptyState title="載入活動中" body="正在整理銀行、投資與發票資料。" />
 {:else}
-  <div class="grid min-w-0 max-w-full gap-6 overflow-x-clip pt-3 md:pt-2">
-    <form
-      class="flex min-w-0 gap-2"
-      role="search"
-      onsubmit={(event) => {
-        event.preventDefault();
-        submitSearch();
-      }}
-    >
-      <div class="relative min-w-0 flex-1">
-        <Search
-          class="pointer-events-none absolute left-3 top-1/2 z-10 size-4 -translate-y-1/2 text-subtle"
-        />
-        <Input
-          type="search"
-          aria-label="搜尋所有活動"
-          placeholder="搜尋所有活動"
-          class="h-12 pl-10 pr-12 [&::-webkit-search-cancel-button]:appearance-none"
-          value={search}
-          oninput={changeSearch}
-          oncompositionend={changeSearch}
-          maxlength={200}
-        />
-        {#if search}<button
-            type="button"
-            aria-label="清空搜尋，返回月報"
-            class="absolute right-0 top-0 flex size-12 items-center justify-center text-subtle"
-            onclick={clearSearch}><X class="size-5" /></button
-          >{/if}
-      </div>
-      <Button type="submit" class="h-12">搜尋</Button>
-    </form>
+  <div
+    class="grid min-w-0 max-w-full gap-3 overflow-x-clip pt-3 md:pt-0"
+    style={`--activity-toolbar-height:${toolbarHeight}px`}
+  >
+    <div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
+      <TransactionTabs value={view.tab} onChange={(tab) => setView({ tab })} />
+      {#if navigate}<button
+          type="button"
+          class="text-sm font-semibold text-steel hover:text-steel/80"
+          onclick={() => navigate?.("transaction-rules")}>自動整理 →</button
+        >{/if}
+    </div>
     {#if searching}
-      <section class="grid min-w-0 gap-3" aria-label="全歷史搜尋">
-        <h2 class="break-words text-xl font-semibold">
-          搜尋「{submittedSearch}」
-        </h2>
-        <p class="text-caption text-subtle">所有已同步紀錄 · 日期由新到舊</p>
-        <ActivitySearchFilters
-          bind:time={searchTime}
-          bind:from={searchFrom}
-          bind:to={searchTo}
-          bind:source
-          bind:flow
-          bind:category={searchCategory}
-          categories={categoryOptions}
+      <ActivitySearchHeader
+        query={submittedSearch}
+        sortMode={view.sort}
+        filling={fillingSearchBatch}
+      />
+    {:else if view.tab === "ledger"}
+      <div class="border-b border-ink/10 pb-4">
+        <SpendingCategoryPie
+          slices={spendingSlices}
+          total={selectedSummary?.spending ?? 0}
+          selectedCategoryId={view.categoryId}
+          unavailable={summaryUnavailable}
+          onSelect={selectPieCategory}
         />
-        {#if invalidSearchDates}<p role="alert" class="text-sm text-coral">
-            開始日期不得晚於結束日期。
-          </p>{/if}
-        {#if fillingSearchBatch}<p role="status" class="text-sm text-subtle">
-            搜尋活動中…
-          </p>{/if}
-      </section>
-    {/if}
-    {#if missingMonthlyRates.length > 0}
-      <p role="status" class="text-sm text-coral">
-        缺少 {missingMonthlyRates.join("、")} 匯率，月份總額與分類圖表尚未包含這些外幣交易。
-        <button type="button" class="underline" onclick={() => $rates.refetch()}
-          >重試匯率</button
-        >
-      </p>
-    {/if}
-    {#if activityDataStatus.hasFailure}
-      <div
-        class="flex flex-col gap-3 rounded-xl border border-coral/25 bg-coral/5 px-4 py-3 text-sm text-ink sm:flex-row sm:items-center sm:justify-between"
-        role="alert"
-      >
-        <div class="min-w-0">
-          <p class="font-semibold text-coral">部分資料載入失敗</p>
-          <p class="mt-1 text-caption text-subtle">
-            {activityDataStatus.failedLabels.join(
-              "、",
-            )}目前無法取得；以下仍顯示已成功載入的資料。
-          </p>
-        </div>
-        <Button
-          class="h-11 shrink-0"
-          variant="outline"
-          disabled={activityRetryPending}
-          onclick={retryActivityData}
-          >{activityRetryPending ? "重試中…" : "重試活動資料"}</Button
-        >
+      </div>
+      <div class="border-b border-ink/10 pb-3">
+        <CashFlowSummary
+          title={`${selectedMonthLabel}收支`}
+          note={summaryUnavailable
+            ? $summaries.isError
+              ? "月收支摘要無法載入"
+              : "正在計算本月收支"
+            : undefined}
+          equation={activitySummaryEquation(selectedSummary)}
+          unavailable={summaryUnavailable}
+          excluded={activitySummaryExcludedParts(selectedSummary)}
+          review={selectedSummary?.needsReview}
+          reviewActive={view.review}
+          onShowReview={showNeedsReview}
+          incompleteReasons={activitySummaryIncompleteLabels(selectedSummary)}
+        />
       </div>
     {/if}
-    {#if !searching}
-      <section class="min-w-0" aria-label={`${selectedMonthLabel}收支`}>
-        <div
-          class="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
-        >
-          <div class="min-w-0">
-            <h2 class="text-base font-semibold">{selectedMonthLabel}收支</h2>
-            <p class="mt-1 text-caption leading-6 text-ink/70">
-              {activitySummaryIncomplete
-                ? "資料尚未完整載入"
-                : "銀行與信用卡活動，含未配對發票，不計入已排除活動"}
-            </p>
-          </div>
-          <Select
-            aria-label="選擇活動月份"
-            class="h-11 w-full min-w-0 font-semibold sm:w-auto sm:shrink-0"
-            value={selectedMonth}
-            onchange={(event: Event) =>
-              chooseMonth((event.currentTarget as HTMLSelectElement).value)}
-            >{#each months as month (month)}<option value={month}
-                >{month.slice(0, 4)} 年 {Number(month.slice(5))} 月</option
-              >{/each}</Select
-          >
-        </div>
-        <div class="mt-5 grid grid-cols-2 gap-5 md:grid-cols-3 md:gap-6">
-          <div class="min-w-0">
-            <p class="text-sm font-medium text-ink">收入</p>
-            <p
-              class="mt-2 whitespace-nowrap text-lg font-semibold tracking-tight text-moss tabular-nums md:text-2xl"
-            >
-              {activitySummaryIncomplete
-                ? "—"
-                : `+${formatCurrency(incomeTotal)}`}
-            </p>
-          </div>
-          <div class="min-w-0">
-            <p class="text-sm font-medium text-ink">支出</p>
-            <p
-              class="mt-2 whitespace-nowrap text-lg font-semibold tracking-tight text-coral tabular-nums md:text-2xl"
-            >
-              {activitySummaryIncomplete
-                ? "—"
-                : `−${formatCurrency(expenseTotal)}`}
-            </p>
-          </div>
-          <div class="col-span-2 min-w-0 md:col-span-1">
-            <p class="text-sm font-medium text-ink">淨流入</p>
-            <p
-              class={`mt-2 whitespace-nowrap text-lg font-semibold tracking-tight tabular-nums md:text-2xl ${incomeTotal >= expenseTotal ? "text-moss" : "text-coral"}`}
-            >
-              {activitySummaryIncomplete
-                ? "—"
-                : formatCurrency(incomeTotal - expenseTotal)}
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <section class="min-w-0 border-t border-ink/10 pt-5">
-        <div class="min-w-0">
-          <h2 class="text-base font-semibold">每月分類比例</h2>
-          <p class="mt-1 text-caption text-subtle">
-            未配對發票列為支出，已配對發票不重複計算
-          </p>
-        </div>
-        <div class="mt-5 grid min-w-0 gap-8 lg:grid-cols-2 lg:gap-10">
-          <ActivityCategoryChart
-            flow="income"
-            slices={incomeSlices}
-            selectedCategory={selectedCategory?.flow === "income"
-              ? selectedCategory.category
-              : undefined}
-            flowSelected={flow === "income" && !selectedCategory}
-            dataIncomplete={activitySummaryIncomplete}
-            onSelect={(category) => chooseCategory("income", category)}
-            onSelectFlow={() => chooseChartFlow("income")}
-          />
-          <ActivityCategoryChart
-            flow="expense"
-            slices={expenseSlices}
-            selectedCategory={selectedCategory?.flow === "expense"
-              ? selectedCategory.category
-              : undefined}
-            flowSelected={flow === "expense" && !selectedCategory}
-            dataIncomplete={activitySummaryIncomplete}
-            onSelect={(category) => chooseCategory("expense", category)}
-            onSelectFlow={() => chooseChartFlow("expense")}
-          />
-        </div>
-      </section>
-
-      <section class="hidden min-w-0 border-t border-ink/10 pt-5 md:block">
-        <div class="flex items-center justify-between gap-3">
-          <h2 class="text-base font-semibold">現金流趨勢</h2>
-          <span class="text-caption text-subtle">6 個月　收入／支出</span>
-        </div>
-        <div class="pt-5">
-          {#if activitySummaryIncomplete}
-            <div
-              class="rounded-xl border border-amber-200/80 bg-amber-50 p-6 text-center text-sm text-amber-900"
-            >
-              活動資料尚未完整載入，現金流趨勢暫不計算。
-            </div>
-          {:else}
-            <div class="grid grid-cols-6 gap-3">
-              {#each cashFlow as point (point.month)}
-                <button
-                  aria-pressed={selectedMonth === point.month}
-                  class={`grid min-w-0 justify-items-center px-1 pb-2 pt-3 text-center transition ${selectedMonth === point.month ? "bg-ink/4 shadow-[inset_0_-2px_0_var(--color-steel)]" : "hover:bg-ink/3"}`}
-                  onclick={() => chooseMonth(point.month)}
-                >
-                  <div class="flex h-28 w-full items-end justify-center gap-2">
-                    <span
-                      class="w-1/3 rounded-t-sm bg-emerald-700"
-                      style={`height:${Math.max(8, (point.income / maxCashFlow) * 100)}%`}
-                    ></span><span
-                      class="w-1/3 rounded-t-sm bg-coral"
-                      style={`height:${Math.max(8, (point.expense / maxCashFlow) * 100)}%`}
-                    ></span>
-                  </div>
-                  <span class="mt-2 w-full text-caption font-semibold"
-                    >{Number(point.month.slice(5))} 月</span
-                  ><span
-                    class="mt-1 w-full truncate text-caption font-medium tabular-nums text-moss"
-                    >+{formatCompactTwd(point.income)}</span
-                  ><span
-                    class="w-full truncate text-caption font-medium tabular-nums text-coral"
-                    >−{formatCompactTwd(point.expense)}</span
-                  >
-                </button>
-              {/each}
-            </div>
-            <div
-              class="mt-3 flex items-center justify-between text-caption text-subtle"
-            >
-              <span
-                ><span class="text-emerald-700">■</span> 收入　<span
-                  class="text-coral">■</span
-                > 支出</span
-              ><button
-                class="font-semibold text-steel"
-                onclick={() => chooseMonth(currentMonth)}>回到本月</button
-              >
-            </div>
-          {/if}
-        </div>
-      </section>
-    {/if}
-    <section
-      class="min-w-0 max-w-full overflow-hidden border-t border-ink/10 pt-5"
-      aria-label="活動列表"
+    <ActivityDataAlerts
+      failedLabels={activityDataStatus.failedLabels}
+      retryPending={activityRetryPending}
+      onRetry={retryActivityData}
+    />
+    <div
+      bind:offsetHeight={toolbarHeight}
+      class="sticky top-[var(--app-sticky-top,0px)] z-30 border-b border-ink/10 bg-paper/95 backdrop-blur-sm xl:top-0"
     >
-      <header class="grid min-w-0 gap-3 pb-4">
-        <div
-          class="flex min-w-0 flex-col gap-3 md:flex-row md:items-center md:justify-between"
-        >
-          <div class="min-w-0">
-            <h2 class="truncate text-base font-semibold">
-              {searching
-                ? `已載入 ${filtered.length} 筆`
-                : selectedCategory
-                  ? `${selectedMonthLabel} · ${selectedCategory.flow === "income" ? "收入" : "支出"} · ${selectedCategory.category}`
-                  : flow === "income"
-                    ? `${selectedMonthLabel} · 收入`
-                    : flow === "expense"
-                      ? `${selectedMonthLabel} · 支出`
-                      : "所有活動"}
-            </h2>
-            <p class="text-caption text-subtle">
-              {searching
-                ? "符合目前搜尋條件的活動"
-                : "銀行與帳戶資訊直接顯示於每筆活動"}
-            </p>
-          </div>
+      <ActivityToolbar
+        {searching}
+        searchValue={search}
+        onSearchInput={changeSearch}
+        onSearchSubmit={submitSearch}
+        onSearchClear={clearSearch}
+        {months}
+        {selectedMonth}
+        onSelectMonth={chooseMonth}
+        {view}
+        onChange={setView}
+        categories={filterCategoryOptions}
+        invalidDates={searching && invalidSearchDates}
+        {reviewCount}
+        chips={filterChips}
+        onClearChip={clearChip}
+        onClearAll={clearAllFilters}
+      />
+    </div>
+    <div class="grid min-w-0 gap-4">
+      <section class="min-w-0" aria-label="活動列表">
+        <div class="flex min-w-0 items-baseline justify-between gap-3 py-2">
+          <h2 class="truncate text-sm font-semibold">{listTitle}</h2>
+          {#if !searching}<span class="shrink-0 text-caption text-subtle"
+              >{filtered.length} 筆{hiddenDuplicates
+                ? `・另 ${hiddenDuplicates} 筆重複已併入（見發票分頁）`
+                : ""}</span
+            >{/if}
         </div>
-        {#if selectedCategory}<div
-            class="flex items-center justify-between border-y border-ink/8 py-2 text-sm"
+        {#if $categoryMutation.isError}<p
+            role="alert"
+            class="pb-2 text-sm font-medium text-coral"
           >
-            <span
-              ><strong>{selectedCategory.category}</strong> · {selectedCategory.flow ===
-              "income"
-                ? "收入"
-                : "支出"}</span
-            ><button
-              class="min-h-8 px-2 text-caption font-semibold text-steel"
-              onclick={clearCategoryFilter}>清除分類</button
-            >
-          </div>{/if}
-        {#if !searching}
-          <Input
-            type="search"
-            aria-label="搜尋該月活動"
-            placeholder="搜尋該月活動"
-            class="h-11"
-            bind:value={monthlySearch}
-          />
-          <div class="grid min-w-0 gap-1.5">
-            <span class="text-caption font-semibold text-subtle">來源</span>
-            <TabsList
-              aria-label="活動來源"
-              class="grid h-auto w-full grid-cols-4"
-              >{#each [{ key: "all", label: "全部" }, { key: "bank", label: "銀行" }, { key: "card", label: "信用卡" }, { key: "invoice", label: "發票" }] as filter (filter.key)}<TabsTrigger
-                  class="min-h-9 min-w-0 px-1 text-caption md:text-sm"
-                  active={source === filter.key}
-                  onclick={() => (source = filter.key as ActivitySourceFilter)}
-                  >{filter.label}</TabsTrigger
-                >{/each}</TabsList
-            >
-          </div>
-        {/if}
+            無法更新分類，請稍後再試。
+          </p>{/if}
         {#if $calculationMutation.isError}<p
-            class="text-sm font-medium text-coral"
+            class="pb-2 text-sm font-medium text-coral"
           >
             無法更新計算設定，請稍後再試。
           </p>{/if}
-      </header>
-      <div class="min-w-0">
-        <div class="min-w-0 md:hidden">
-          {#if filteredGroups.length === 0}<p
-              class="p-8 text-center text-sm text-subtle"
-            >
-              {searching && invalidSearchDates
-                ? "請調整搜尋日期。"
-                : fillingSearchBatch
-                  ? "搜尋活動中…"
-                  : activityDataStatus.hasFailure
-                    ? "部分資料目前無法顯示，請重試後再查看。"
-                    : "沒有符合條件的活動。"}
-            </p>{:else}
-            {#each filteredGroups as group (group.dateKey)}<div
-                class="flex items-center justify-between border-t border-ink/8 py-2.5 text-caption"
-              >
-                <span class="font-medium text-subtle"
-                  >{searching
-                    ? `${group.dateKey.slice(0, 4)} 年 `
-                    : ""}{formatActivityDateGroup(group.dateKey)}</span
-                ><span class="text-subtle">{group.items.length} 筆</span>
-              </div>
-              <div class="divide-y divide-ink/8">
-                {#each group.items as item (item.source + "-" + item.id)}{@const amount =
-                    activityDisplayAmount(item)}{@const time =
-                    formatActivityTime(item)}
-                  <button
-                    aria-label={`查看 ${item.title} 活動詳情`}
-                    class={`flex w-full min-w-0 items-center gap-3 py-3.5 text-left transition hover:bg-ink/3 ${item.excludedFromCalculation ? "bg-ink/[0.025]" : ""}`}
-                    onclick={() => openDetail(item)}
-                  >
-                    <div class="min-w-0 flex-1">
-                      <p class="truncate text-sm font-semibold">
-                        <SearchHighlight
-                          text={item.title}
-                          query={submittedSearch}
-                        />
-                      </p>
-                      {#if searching && item.searchText
-                          ?.toLowerCase()
-                          .includes(submittedSearch.toLowerCase()) && !item.title
-                          .toLowerCase()
-                          .includes(submittedSearch.toLowerCase())}
-                        <p class="mt-1 truncate text-caption text-subtle">
-                          <SearchHighlight
-                            text={item.searchText}
-                            query={submittedSearch}
-                          />
-                        </p>
-                      {/if}
-                      {#if time}<p
-                          class="mt-0.5 text-xs font-medium tabular-nums text-subtle"
-                        >
-                          {time}
-                        </p>{/if}
-                      <p
-                        class="mt-0.5 truncate text-caption font-medium text-subtle"
-                      >
-                        {item.institutionName ?? sourceLabel(item)}
-                      </p>
-                      <p class="mt-0.5 truncate text-xs text-subtle">
-                        {[item.accountName, item.category]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </p>
-                    </div>
-                    <div class="flex shrink-0 items-center gap-1.5">
-                      <div class="max-w-[40vw] text-right">
-                        <p
-                          class={`truncate text-sm font-semibold tabular-nums ${item.excludedFromCalculation ? "text-subtle line-through" : (amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}
-                        >
-                          <ActivityAmount
-                            {item}
-                            rates={rateValues}
-                            exchangeRates={$rates.data}
-                          />
-                        </p>
-                        <p class="mt-1 text-xs text-subtle">
-                          {activityStatusLabel(item)}
-                        </p>
-                      </div>
-                      <ChevronRight class="size-4 text-subtle" />
-                    </div>
-                  </button>{/each}
-              </div>{/each}{/if}
-        </div>
-        <div class="hidden overflow-x-auto md:block">
-          {#if filteredGroups.length === 0}<p
-              class="p-8 text-center text-sm text-subtle"
-            >
-              {searching && invalidSearchDates
-                ? "請調整搜尋日期。"
-                : fillingSearchBatch
-                  ? "搜尋活動中…"
-                  : activityDataStatus.hasFailure
-                    ? "部分資料目前無法顯示，請重試後再查看。"
-                    : "沒有符合條件的活動。"}
-            </p>{:else}<table
-              class="w-full min-w-[760px] table-fixed text-left text-sm"
-            >
-              <colgroup
-                ><col /><col class="w-56" /><col class="w-36" /><col
-                  class="w-44"
-                /></colgroup
-              >
-              <thead
-                class="border-b border-ink/8 text-caption font-semibold text-subtle"
-                ><tr
-                  ><th class="py-2.5 pr-4">商家／說明</th><th
-                    class="px-4 py-2.5">銀行／帳戶</th
-                  ><th class="px-4 py-2.5">分類</th><th
-                    class="py-2.5 pl-4 text-right">金額</th
-                  ></tr
-                ></thead
-              >
-            </table>
-            {#each filteredGroups as group (group.dateKey)}<div
-                class="flex min-w-[760px] items-center justify-between border-t border-ink/8 py-2.5 text-caption"
-              >
-                <span class="font-medium text-subtle"
-                  >{searching
-                    ? `${group.dateKey.slice(0, 4)} 年 `
-                    : ""}{formatActivityDateGroup(group.dateKey)}</span
-                ><span class="text-subtle">{group.items.length} 筆</span>
-              </div>
-              <table class="w-full min-w-[760px] table-fixed text-left text-sm">
-                <colgroup
-                  ><col /><col class="w-56" /><col class="w-36" /><col
-                    class="w-44"
-                  /></colgroup
-                >
-                <tbody class="divide-y divide-ink/8"
-                  >{#each group.items as item (item.source + "-" + item.id)}{@const amount =
-                      activityDisplayAmount(item)}{@const time =
-                      formatActivityTime(item)}<tr
-                      aria-label={`查看 ${item.title} 活動詳情`}
-                      class={`cursor-pointer transition hover:bg-ink/3 focus-visible:outline-2 focus-visible:outline-steel ${item.excludedFromCalculation ? "bg-ink/[0.025]" : ""}`}
-                      onclick={() => openDetail(item)}
-                      onkeydown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          openDetail(item);
-                        }
-                      }}
-                      role="button"
-                      tabindex="0"
-                      ><td class="min-w-0 py-3.5 pr-4"
-                        ><p class="truncate font-semibold">
-                          <SearchHighlight
-                            text={item.title}
-                            query={submittedSearch}
-                          />
-                        </p>
-                        {#if searching && item.searchText
-                            ?.toLowerCase()
-                            .includes(submittedSearch.toLowerCase()) && !item.title
-                            .toLowerCase()
-                            .includes(submittedSearch.toLowerCase())}
-                          <p class="mt-1 truncate text-caption text-subtle">
-                            <SearchHighlight
-                              text={item.searchText}
-                              query={submittedSearch}
-                            />
-                          </p>
-                        {/if}
-                        {#if time}<p
-                            class="mt-1 text-caption font-medium tabular-nums text-subtle"
-                          >
-                            {time}
-                          </p>{/if}
-                        {#if item.transactionId && item.invoiceId && itemMappingDifference(item) > 0}<Badge
-                            variant="secondary"
-                            class="mt-1 bg-amber-50 text-amber-800"
-                            >點數折抵 {formatCurrency(
-                              itemMappingDifference(item),
-                            )}</Badge
-                          >{/if}</td
-                      ><td class="px-4 py-3.5"
-                        ><p class="truncate font-medium text-subtle">
-                          {item.institutionName ?? sourceLabel(item)}
-                        </p>
-                        {#if item.accountName}<p
-                            class="mt-1 truncate text-caption text-subtle"
-                          >
-                            {item.accountName}
-                          </p>{/if}</td
-                      ><td class="px-4 py-3.5"
-                        ><Badge variant="secondary">{item.category}</Badge></td
-                      ><td class="py-3.5 pl-4"
-                        ><div class="flex items-center justify-end gap-2">
-                          <div class="min-w-0 text-right">
-                            <p
-                              class={`truncate whitespace-nowrap font-semibold tabular-nums ${item.excludedFromCalculation ? "text-subtle line-through" : (amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}
-                            >
-                              <ActivityAmount
-                                {item}
-                                rates={rateValues}
-                                exchangeRates={$rates.data}
-                              />
-                            </p>
-                            <p class="mt-1 text-caption text-subtle">
-                              {activityStatusLabel(item)}
-                            </p>
-                          </div>
-                          <ChevronRight class="size-4 shrink-0 text-subtle" />
-                        </div></td
-                      ></tr
-                    >{/each}</tbody
-                >
-              </table>{/each}{/if}
-        </div>
-      </div>
-    </section>
-    {#if searching && $searchResults.hasNextPage && !invalidSearchDates}
-      <div
-        bind:this={searchSentinel}
-        data-testid="search-load-more"
-        class="flex min-h-11 justify-center items-center"
-      >
-        {#if $searchResults.isError}
-          <Button
-            variant="outline"
-            class="h-11"
-            disabled={$searchResults.isFetching}
-            onclick={() => $searchResults.fetchNextPage()}>重試載入更多</Button
+        {#if ($roleMutation.isError || $roleResetMutation.isError) && !detailItem && !pendingRole}<p
+            role="alert"
+            class="pb-2 text-sm font-medium text-coral"
           >
+            無法更新活動角色，請稍後再試。
+          </p>{/if}
+        {#if view.tab !== "ledger"}
+          <TransactionSourceList
+            {api}
+            tab={view.tab}
+            items={listView.sections.flatMap((section) => section.items)}
+            allItems={rawItems}
+            cardOf={(item) => cardIdentity(item, transactionOf(item))}
+            emptyMessage={listEmptyMessage}
+            onOpen={openDetail}
+          />
         {:else}
-          <p role="status" class="text-sm text-subtle">
-            {$searchResults.isFetching ? "載入中…" : "往下捲動載入更多"}
-          </p>
+          <ActivityList
+            sections={listView.sections}
+            grouped={listView.grouped}
+            emptyMessage={listEmptyMessage}
+            {searching}
+            query={submittedSearch}
+            rates={rateValues}
+            exchangeRates={$rates.data}
+            sortMode={view.sort}
+            onSortChange={(sort) => setView({ sort })}
+            {categoryOptions}
+            onCategoryChange={changeCategory}
+            categoryDisabled={$categoryMutation.isPending}
+            {duplicateLabel}
+            feeLabel={(item) => foreignFeeLabel(item, rawItems)}
+            onRoleChange={changeRole}
+            roleDisabled={roleUpdating}
+            onOpen={openDetail}
+          />
         {/if}
-      </div>
-    {/if}
-    {#if detailItem}
-      {@const amount = activityDisplayAmount(detailItem)}
-      {@const transaction = transactionForItem(detailItem)}
-      {@const invoice = invoiceForItem(detailItem)}
-      <div class="fixed inset-0 z-[60] bg-ink/40 md:flex md:justify-end">
-        <button
-          aria-label="關閉活動明細"
-          class="absolute inset-0 hidden md:block"
-          onclick={closeDetail}
-        ></button>
-        <div
-          aria-labelledby="activity-detail-title"
-          aria-modal="true"
-          class="relative flex h-full w-full flex-col overflow-hidden bg-white shadow-2xl md:max-w-[32rem]"
-          role="dialog"
-          use:swipeBack={{
-            enabled:
-              document.documentElement.classList.contains("is-standalone"),
-            onBack: closeDetail,
-          }}
-        >
-          <header
-            class="flex shrink-0 items-center justify-between border-b border-ink/10 px-4 py-3 md:px-6"
+        {#if searching && $searchResults.hasNextPage && !invalidSearchDates}
+          <div
+            bind:this={searchSentinel}
+            data-testid="search-load-more"
+            class="flex min-h-11 items-center justify-center"
           >
-            <div class="flex min-w-0 items-center gap-2">
-              <button
-                aria-label="返回活動列表"
-                class="flex size-11 shrink-0 items-center justify-center rounded-full text-subtle hover:bg-paper"
-                onclick={closeDetail}
-                ><ArrowLeft class="size-5 md:hidden" /><X
-                  class="hidden size-5 md:block"
-                /></button
+            {#if $searchResults.isError}
+              <Button
+                variant="outline"
+                class="h-11"
+                disabled={$searchResults.isFetching}
+                onclick={() => $searchResults.fetchNextPage()}
+                >重試載入更多</Button
               >
-              <h2
-                class="truncate text-lg font-semibold"
-                id="activity-detail-title"
-              >
-                活動明細
-              </h2>
-            </div>
-            <span class="text-caption font-medium text-subtle"
-              >{sourceLabel(detailItem)}</span
-            >
-          </header>
-
-          <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5 md:px-7 md:py-6">
-            <section class="border-b border-ink/10 pb-5">
-              <div
-                class="flex flex-col items-start justify-between gap-4 sm:flex-row"
-              >
-                <div class="min-w-0">
-                  <h3 class="break-words text-xl font-semibold leading-snug">
-                    {detailItem.title}
-                  </h3>
-                  <p class="mt-1 text-sm text-subtle">
-                    {formatActivityDate(detailItem)}{#if transaction}
-                      · {mappingAccount(transaction)}
-                    {/if}
-                  </p>
-                </div>
-                <p
-                  class={`shrink-0 pt-1 text-lg font-bold tabular-nums ${detailItem.excludedFromCalculation ? "text-subtle line-through" : (amount ?? 0) < 0 ? "text-coral" : detailItem.source !== "invoice" ? "text-moss" : ""}`}
-                >
-                  <ActivityAmount
-                    item={detailItem}
-                    rates={rateValues}
-                    exchangeRates={$rates.data}
-                    detail
-                  />
-                </p>
-              </div>
-              <Badge variant="secondary" class="mt-3"
-                >{detailItem.category}</Badge
-              >
-              {#if detailItem.excludedFromCalculation}<Badge
-                  variant="secondary"
-                  class="ml-2 mt-3">已排除計算</Badge
-                >{/if}
-              {#if transaction && invoice && itemMappingDifference(detailItem) > 0}<Badge
-                  variant="secondary"
-                  class="ml-2 mt-3 bg-amber-50 text-amber-800"
-                  >點數折抵 {formatCurrency(
-                    itemMappingDifference(detailItem),
-                  )}</Badge
-                >{/if}
-            </section>
-
-            <section class="border-b border-ink/10 py-5">
-              <h3 class="text-base font-semibold">來源名稱</h3>
-              <div class="mt-3 grid gap-3">
-                {#if transaction}<div class="rounded-xl bg-steel/10 p-4">
-                    <p class="text-caption font-semibold text-steel">
-                      銀行／信用卡原始名稱
-                    </p>
-                    <p class="mt-1 break-words font-semibold">
-                      {mappingMerchant(transaction)}
-                    </p>
-                    {#if transaction.description && transaction.description !== mappingMerchant(transaction)}<p
-                        class="mt-1 break-words text-caption text-subtle"
-                      >
-                        {transaction.description}
-                      </p>{/if}
-                    <p class="mt-1 text-caption text-subtle">
-                      {mappingAccount(transaction)} · 實付 {formatCurrency(
-                        Math.abs(transaction.amount),
-                        transaction.currency,
-                      )}
-                    </p>
-                  </div>{/if}
-                {#if invoice}<div class="rounded-xl bg-coral/10 p-4">
-                    <p class="text-caption font-semibold text-coral">
-                      發票商家名稱
-                    </p>
-                    <p class="mt-1 break-words font-semibold">
-                      {invoice.sellerName ?? "電子發票"}
-                    </p>
-                    <p class="mt-1 text-caption text-subtle">
-                      發票 {invoice.invoiceNumber ?? "無發票號碼"} · 總額
-                      {formatCurrency(invoice.amount)}
-                    </p>
-                  </div>{/if}
-                {#if !transaction && invoice}<div
-                    class="rounded-xl bg-amber-50 p-4 text-amber-900"
-                  >
-                    <p class="font-semibold">尚未找到銀行／信用卡交易</p>
-                    <p class="mt-1 text-caption text-subtle">
-                      仍會列入當月支出；你可以在下方手動配對。
-                    </p>
-                  </div>{/if}
-                {#if !transaction && !invoice}<div
-                    class="rounded-xl bg-paper p-4"
-                  >
-                    <p class="text-caption font-semibold text-subtle">
-                      來源說明
-                    </p>
-                    <p class="mt-1 break-words font-semibold">
-                      {detailItem.subtitle || detailItem.title}
-                    </p>
-                  </div>{/if}
-              </div>
-            </section>
-
-            {#if invoice}<section class="border-b border-ink/10 py-5">
-                <h3 class="text-base font-semibold">發票細項</h3>
-                {#if $detailInvoice.isPending}<p
-                    class="mt-3 rounded-xl bg-paper p-4 text-sm text-subtle"
-                  >
-                    載入發票細項中。
-                  </p>{:else if $detailInvoice.isError}<p
-                    class="mt-3 rounded-xl bg-coral/10 p-4 text-sm text-coral"
-                  >
-                    無法載入發票細項，請稍後再試。
-                  </p>{:else if !$detailInvoice.data || $detailInvoice.data.items.length === 0}<p
-                    class="mt-3 rounded-xl bg-paper p-4 text-sm text-subtle"
-                  >
-                    此發票沒有品項明細。
-                  </p>{:else}<div class="mt-2 divide-y divide-ink/10">
-                    {#each $detailInvoice.data.items as line (line.id)}<div
-                        class="flex items-start justify-between gap-4 py-3"
-                      >
-                        <div class="min-w-0">
-                          <p class="break-words font-medium">
-                            {line.description}
-                          </p>
-                          <p class="mt-1 text-caption text-subtle">
-                            {line.quantity != null
-                              ? `${formatNumber(line.quantity)} 件`
-                              : "數量未提供"}{line.unitPrice != null
-                              ? ` × ${formatCurrency(line.unitPrice)}`
-                              : ""}
-                          </p>
-                        </div>
-                        <p class="shrink-0 font-semibold tabular-nums">
-                          {formatCurrency(line.amount)}
-                        </p>
-                      </div>{/each}
-                  </div>{/if}
-              </section>{/if}
-
-            <section class="py-5">
-              <h3 class="text-base font-semibold">活動設定</h3>
-              <div class="mt-2 divide-y divide-ink/10">
-                <div class="flex items-center justify-between gap-4 py-4">
-                  <div>
-                    <p class="font-semibold">分類</p>
-                    {#if !detailItem.transactionId}<p
-                        class="mt-1 text-caption text-subtle"
-                      >
-                        {invoice
-                          ? "配對銀行／信用卡交易後即可調整"
-                          : "此來源目前不支援調整"}
-                      </p>{/if}
-                  </div>
-                  {#if detailItem.transactionId}<Select
-                      aria-label={`更新 ${detailItem.title} 分類`}
-                      class="h-11 w-40 shrink-0 font-medium text-steel"
-                      value={detailItem.categoryId}
-                      onchange={(event: Event) =>
-                        openCategory(
-                          detailItem,
-                          (event.currentTarget as HTMLSelectElement).value,
-                        )}
-                      >{#each categoryOptions as category (category.id)}<option
-                          value={category.id}>{category.label}</option
-                        >{/each}</Select
-                    >{:else}<Badge variant="secondary"
-                      >{detailItem.category}</Badge
-                    >{/if}
-                </div>
-
-                {#if detailItem.transactionId}<label
-                    class="flex cursor-pointer items-center justify-between gap-4 py-4"
-                  >
-                    <span>
-                      <span class="block font-semibold">排除統計計算</span>
-                      <span class="mt-1 block text-caption text-subtle"
-                        >保留活動，但不計入收支</span
-                      >
-                    </span>
-                    <Checkbox
-                      aria-label={`${detailItem.excludedFromCalculation ? "恢復" : "排除"} ${detailItem.title} 的統計計算`}
-                      checked={detailItem.excludedFromCalculation}
-                      disabled={($calculationMutation.isPending &&
-                        $calculationMutation.variables?.transactionId ===
-                          detailItem.transactionId) ||
-                        $calculationUpdateMutation.isPending}
-                      onchange={(event: Event) =>
-                        handleCalculationChange(detailItem, event)}
-                    />
-                  </label>{/if}
-
-                {#if invoice}<div
-                    class="flex items-center justify-between gap-4 py-4"
-                  >
-                    <div class="min-w-0">
-                      <p class="font-semibold">發票配對</p>
-                      <p
-                        class={`mt-1 text-caption ${transaction ? "text-moss" : "text-coral"}`}
-                      >
-                        {transaction ? "已配對，可變更或解除" : "尚未配對"}
-                      </p>
-                    </div>
-                    <Button
-                      class="h-11 shrink-0 whitespace-nowrap"
-                      variant={transaction ? "outline" : "default"}
-                      onclick={() => openMapping(detailItem)}
-                      >{transaction ? "管理配對" : "配對交易"}</Button
-                    >
-                  </div>{/if}
-              </div>
-            </section>
+            {:else}
+              <p role="status" class="text-sm text-subtle">
+                {$searchResults.isFetching ? "載入中…" : "往下捲動載入更多"}
+              </p>
+            {/if}
           </div>
-        </div>
-      </div>
+        {/if}
+      </section>
+    </div>
+    {#if detailItem}
+      {@const transaction = transactionForItem(detailItem)}
+      <ActivityDetailPanel
+        item={detailItem}
+        {transaction}
+        invoice={detailInvoiceRow}
+        accountLabel={transaction ? mappingAccount(transaction) : undefined}
+        rates={rateValues}
+        exchangeRates={$rates.data}
+        invoiceDetail={$detailInvoice.data}
+        invoiceDetailPending={$detailInvoice.isPending}
+        invoiceDetailFailed={$detailInvoice.isError}
+        {categoryOptions}
+        calculationDisabled={($calculationMutation.isPending &&
+          $calculationMutation.variables?.transactionId ===
+            detailItem.transactionId) ||
+          $calculationUpdateMutation.isPending}
+        onClose={closeDetail}
+        onCategoryChange={changeCategory}
+        onCalculationChange={handleCalculationChange}
+        onOpenMapping={openMapping}
+        duplicateTarget={detailItem.duplicateOf
+          ? {
+              label: duplicateLabel(detailItem) ?? "已併入另一筆活動",
+              title: findDuplicateTarget(detailItem, rawItems)?.title,
+            }
+          : undefined}
+        onRoleChange={changeRole}
+        onRoleReset={resetRole}
+        {roleUpdating}
+        roleFailed={!pendingRole &&
+          ($roleMutation.isError || $roleResetMutation.isError)}
+        onNoteSave={saveNote}
+        foreignFee={foreignFeeLabel(detailItem, rawItems)}
+      />
     {/if}
-    {#if pending}
-      <CategoryUpdateDialog
-        update={pending}
-        {categories}
-        matchCount={countMatches(pending)}
-        submitting={$categoryMutation.isPending}
-        failed={$categoryMutation.isError}
-        onCancel={() => (pending = null)}
-        onSubmit={(input) => $categoryMutation.mutate(input)}
+    {#if pendingRole}
+      <RoleReasonDialog
+        title={pendingRole.item.title}
+        roleLabel={ECONOMIC_ROLE_CHOICE_LABELS[pendingRole.role]}
+        note={pendingRole.item.note}
+        submitting={$roleMutation.isPending}
+        failed={$roleMutation.isError}
+        onCancel={() => (pendingRole = null)}
+        onSubmit={submitRoleReason}
+      />
+    {/if}
+    {#if merchantPrompt}
+      <MerchantCategoryPrompt
+        message={merchantPrompt.message}
+        submitting={$merchantMutation.isPending}
+        failed={$merchantMutation.isError}
+        onApply={() =>
+          merchantPrompt &&
+          $merchantMutation.mutate({
+            item: merchantPrompt.item,
+            categoryId: merchantPrompt.categoryId,
+          })}
+        onDismiss={dismissMerchantPrompt}
       />
     {/if}
     {#if pendingCalculation}
       <CalculationUpdateDialog
         bind:update={pendingCalculation}
-        {categoryOptions}
+        categoryOptions={calculationCategoryOptions}
         matchCount={countMatches(pendingCalculation)}
         submitting={$calculationUpdateMutation.isPending}
         failed={$calculationUpdateMutation.isError}
@@ -1664,230 +1249,29 @@
         onSubmit={(input) => $calculationUpdateMutation.mutate(input)}
       />
     {/if}
-    {#if mappingDialog}<div
-        aria-modal="true"
-        class="fixed inset-0 z-[75] flex items-end bg-ink/45 md:items-center md:justify-center md:p-6"
-        role="dialog"
-      >
-        <div
-          class="max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 shadow-2xl md:max-w-xl md:rounded-2xl md:p-6"
-        >
-          <div
-            class="mx-auto mb-4 h-1.5 w-14 rounded-full bg-ink/20 md:hidden"
-          ></div>
-          <div class="flex items-start justify-between gap-4">
-            <div class="min-w-0">
-              <h2 class="text-xl font-semibold">
-                {mappingDialog.step === "actions"
-                  ? "管理配對"
-                  : mappingDialog.step === "confirm"
-                    ? "確認合併這兩筆？"
-                    : "選擇同日候選交易"}
-              </h2>
-              {#if mappingDialog.step === "candidates"}<p
-                  class="mt-1 truncate text-sm text-subtle"
-                >
-                  發票：{mappingDialog.invoice.sellerName ?? "電子發票"} ·
-                  {formatCurrency(mappingDialog.invoice.amount)}
-                </p>{:else if mappingDialog.step === "confirm"}<p
-                  class="mt-1 text-sm text-subtle"
-                >
-                  合併後活動只顯示一筆，支出採銀行／信用卡實付金額。
-                </p>{/if}
-            </div>
-            <button
-              aria-label="關閉配對視窗"
-              class="flex size-11 shrink-0 items-center justify-center rounded-full text-subtle hover:bg-paper"
-              onclick={() => (mappingDialog = null)}
-              ><X class="size-5" /></button
-            >
-          </div>
-
-          {#if mappingDialog.step === "actions"}
-            {@const transaction = selectedMappingTransaction()}
-            {#if transaction}<div
-                class="mt-5 rounded-xl border border-steel/30 bg-steel/5 p-4"
-              >
-                <div class="flex items-start justify-between gap-4">
-                  <div class="min-w-0">
-                    <p class="truncate font-semibold">
-                      {mappingDialog.invoice.sellerName ?? "電子發票"}
-                    </p>
-                    <p class="mt-1 truncate text-caption text-subtle">
-                      信用卡＋發票 · {mappingDialog.invoice.invoiceNumber ??
-                        "無發票號碼"}
-                    </p>
-                  </div>
-                  <p class="shrink-0 font-semibold text-coral">
-                    {formatCurrency(-Math.abs(transaction.amount))}
-                  </p>
-                </div>
-                {#if mappingDifference(mappingDialog.invoice, transaction) > 0}<Badge
-                    variant="secondary"
-                    class="mt-3 bg-amber-50 text-amber-800"
-                    >點數折抵 {formatCurrency(
-                      mappingDifference(mappingDialog.invoice, transaction),
-                    )}</Badge
-                  >{/if}
-              </div>{/if}
-            <div class="mt-5 grid gap-3">
-              <Button
-                class="h-12 justify-start gap-3"
-                variant="outline"
-                onclick={() => (mappingDialog!.step = "candidates")}
-                ><Link2 class="size-4 text-steel" />變更配對</Button
-              >
-              <Button
-                class="h-12 justify-start gap-3 text-coral"
-                disabled={$separationMutation.isPending}
-                variant="outline"
-                onclick={() =>
-                  $separationMutation.mutate(mappingDialog!.invoice.id)}
-                ><Unlink2 class="size-4" />{$separationMutation.isPending
-                  ? "解除中…"
-                  : "解除並保持分開"}</Button
-              >
-            </div>
-          {:else if mappingDialog.step === "candidates"}
-            <div class="mt-5 grid max-h-[52vh] gap-3 overflow-y-auto pr-1">
-              {#if mappingCandidates.length === 0}<div
-                  class="rounded-xl border border-dashed border-ink/15 bg-paper p-6 text-center"
-                >
-                  <p class="font-semibold">同一天沒有可配對的支出</p>
-                  <p class="mt-1 text-caption text-subtle">
-                    只有同一天的 TWD 銀行或信用卡支出會列在這裡。
-                  </p>
-                </div>{:else}{#each mappingCandidates as transaction (transaction.id)}{@const difference =
-                    mappingDifference(
-                      mappingDialog.invoice,
-                      transaction,
-                    )}<button
-                    aria-pressed={mappingDialog.transactionId ===
-                      transaction.id}
-                    class={`min-h-24 rounded-xl border p-4 text-left transition ${mappingDialog.transactionId === transaction.id ? "border-steel bg-steel/10 ring-2 ring-steel/15" : "border-ink/10 hover:border-steel/40 hover:bg-paper"}`}
-                    onclick={() => chooseMappingTransaction(transaction.id)}
-                  >
-                    <span class="flex items-start justify-between gap-3">
-                      <span class="min-w-0">
-                        <span class="block truncate font-semibold"
-                          >{mappingMerchant(transaction)}</span
-                        >
-                        <span
-                          class="mt-1 block truncate text-caption text-subtle"
-                          >{mappingAccount(transaction)} · {formatDate(
-                            transaction.authorizedAt ??
-                              transaction.postedDate ??
-                              "",
-                          )}</span
-                        >
-                      </span>
-                      <span class="shrink-0 font-semibold text-coral"
-                        >{formatCurrency(-Math.abs(transaction.amount))}</span
-                      >
-                    </span>
-                    <span class="mt-3 flex flex-wrap items-center gap-2">
-                      <Badge variant="secondary" class="bg-moss/10 text-moss"
-                        >同一天</Badge
-                      >
-                      {#if difference > 0}<Badge
-                          variant="secondary"
-                          class="bg-amber-50 text-amber-800"
-                          >差額 {formatCurrency(difference)}</Badge
-                        >{/if}
-                    </span>
-                  </button>{/each}{/if}
-            </div>
-            <p class="mt-4 text-caption text-subtle">
-              依同一天與金額接近排序；商家名稱可能因支付工具而不同，最後由你決定。
-            </p>
-            <div class="mt-5 grid grid-cols-[7rem_1fr] gap-3">
-              <Button
-                class="h-12"
-                variant="secondary"
-                onclick={() => (mappingDialog = null)}>取消</Button
-              ><Button
-                class="h-12"
-                disabled={!mappingDialog.transactionId}
-                onclick={() => (mappingDialog!.step = "confirm")}>下一步</Button
-              >
-            </div>
-          {:else}
-            {@const transaction = selectedMappingTransaction()}
-            {#if transaction}{@const difference = mappingDifference(
-                mappingDialog.invoice,
-                transaction,
-              )}
-              <div class="mt-5 grid gap-3">
-                <div class="rounded-xl bg-coral/10 p-4">
-                  <p class="text-caption font-semibold text-coral">發票</p>
-                  <div class="mt-2 flex items-center justify-between gap-4">
-                    <p class="truncate font-semibold">
-                      {mappingDialog.invoice.sellerName ?? "電子發票"}
-                    </p>
-                    <p class="shrink-0 font-semibold">
-                      {formatCurrency(mappingDialog.invoice.amount)}
-                    </p>
-                  </div>
-                </div>
-                <ArrowDown class="mx-auto size-5 text-steel" />
-                <div class="rounded-xl bg-steel/10 p-4">
-                  <p class="text-caption font-semibold text-steel">
-                    銀行／信用卡
-                  </p>
-                  <div class="mt-2 flex items-center justify-between gap-4">
-                    <p class="truncate font-semibold">
-                      {mappingMerchant(transaction)}
-                    </p>
-                    <p class="shrink-0 font-semibold">
-                      {formatCurrency(Math.abs(transaction.amount))}
-                    </p>
-                  </div>
-                </div>
-                {#if difference > 0}<div
-                    class="rounded-xl bg-amber-50 p-4 text-amber-900"
-                  >
-                    <p class="font-semibold">
-                      差額 {formatCurrency(difference)}
-                    </p>
-                    <p class="mt-1 text-caption text-subtle">
-                      可能來自 LINE Pay 點數或其他折抵
-                    </p>
-                  </div>{/if}
-                <p class="text-caption text-subtle">
-                  當月支出將計入 {formatCurrency(
-                    Math.abs(transaction.amount),
-                  )}，發票資料保留在合併紀錄中。
-                </p>
-              </div>
-              <div class="mt-5 grid grid-cols-[7rem_1fr] gap-3">
-                <Button
-                  class="h-12"
-                  variant="secondary"
-                  onclick={() => (mappingDialog!.step = "candidates")}
-                  >返回</Button
-                ><Button
-                  class="h-12"
-                  disabled={$mappingMutation.isPending}
-                  onclick={() =>
-                    $mappingMutation.mutate({
-                      invoiceId: mappingDialog!.invoice.id,
-                      transactionId: transaction.id,
-                    })}
-                  >{$mappingMutation.isPending ? "配對中…" : "確認配對"}</Button
-                >
-              </div>
-            {:else}<p class="mt-5 text-sm text-coral">
-                找不到選取的交易，請返回重新選擇。
-              </p>{/if}
-          {/if}
-
-          {#if $mappingMutation.isError || $separationMutation.isError}<p
-              class="mt-4 text-sm font-medium text-coral"
-            >
-              無法更新配對，資料可能已變更，請重新整理後再試。
-            </p>{/if}
-        </div>
-      </div>{/if}
+    {#if mappingDialog}
+      <ActivityInvoiceMappingDialog
+        invoice={mappingDialog.invoice}
+        invoiceAmountTwd={mappingDialog.amountTwd}
+        step={mappingDialog.step}
+        selectedTransactionId={mappingDialog.transactionId}
+        selectedTransaction={selectedMappingTransaction()}
+        candidates={mappingCandidates}
+        accountLabel={mappingAccount}
+        linking={$mappingMutation.isPending}
+        separating={$separationMutation.isPending}
+        failed={$mappingMutation.isError || $separationMutation.isError}
+        onClose={() => (mappingDialog = null)}
+        onStepChange={(step) => (mappingDialog!.step = step)}
+        onChooseTransaction={chooseMappingTransaction}
+        onConfirm={(transactionId) =>
+          $mappingMutation.mutate({
+            invoiceId: mappingDialog!.invoice.id,
+            transactionId,
+          })}
+        onSeparate={() => $separationMutation.mutate(mappingDialog!.invoice.id)}
+      />
+    {/if}
     {#if mappingNotice}<div
         aria-live="polite"
         class="fixed left-1/2 top-20 z-[85] flex w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-3 rounded-xl bg-ink px-4 py-3 text-sm font-semibold text-white shadow-xl"

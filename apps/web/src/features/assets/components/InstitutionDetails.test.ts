@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/svelte";
 import { describe, expect, it } from "vitest";
 import InstitutionDetails from "./InstitutionDetails.svelte";
-import { calculateAssetSummary } from "../model/summary";
+import { calculateAssetSummary } from "@/data/assets/summary";
 
 describe("credit card balance availability", () => {
   it.each([null, undefined, 0, -1200])(

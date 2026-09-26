@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnySQLiteColumn,
   sqliteTable,
   text,
   integer,
@@ -26,6 +27,9 @@ export const classificationCategories = sqliteTable(
       .default(sql`1`),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
+    parentId: text("parent_id").references(
+      (): AnySQLiteColumn => classificationCategories.id,
+    ),
   },
   (table) => [
     primaryKey({ columns: [table.id] }),
@@ -60,7 +64,8 @@ export const classificationRules = sqliteTable(
   "classification_rules",
   {
     id: text("id").notNull(),
-    categoryId: text("category_id").notNull(),
+    categoryId: text("category_id"),
+    economicRole: text("economic_role"),
     targetType: text("target_type"),
     field: text("field").notNull(),
     operator: text("operator").notNull(),
@@ -83,6 +88,9 @@ export const classificationRules = sqliteTable(
     excludedFromCalculation: integer("excluded_from_calculation")
       .notNull()
       .default(sql`0`),
+    amountDirection: text("amount_direction")
+      .notNull()
+      .default(sql`'any'`),
   },
   (table) => [
     primaryKey({ columns: [table.id] }),
@@ -98,7 +106,56 @@ export const classificationRules = sqliteTable(
     }),
     check(
       "classification_rules_check_1",
+      sql`
+    economic_role IS NULL
+    OR economic_role IN ('spending', 'income', 'own_transfer', 'investment', 'card_payment')
+  `,
+    ),
+    check(
+      "classification_rules_check_2",
       sql`excluded_from_calculation IN (0, 1)`,
+    ),
+    check(
+      "classification_rules_check_3",
+      sql`amount_direction IN ('any', 'inflow', 'outflow')`,
+    ),
+  ],
+);
+
+/** 0055 遷移舊分類時，id 有變動的覆寫與使用者規則（保留原名稱供人工處理）。 */
+export const classificationMigrationNotes = sqliteTable(
+  "classification_migration_notes",
+  {
+    id: text("id").notNull(),
+    subjectType: text("subject_type").notNull(),
+    subjectId: text("subject_id").notNull(),
+    targetType: text("target_type"),
+    targetId: text("target_id"),
+    legacyCategoryId: text("legacy_category_id").notNull(),
+    legacyLabel: text("legacy_label").notNull(),
+    newCategoryId: text("new_category_id"),
+    newEconomicRole: text("new_economic_role"),
+    needsAttention: integer("needs_attention")
+      .notNull()
+      .default(sql`0`),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    check(
+      "classification_migration_notes_check_1",
+      sql`subject_type IN ('override', 'rule')`,
+    ),
+    check(
+      "classification_migration_notes_check_2",
+      sql`
+    new_economic_role IS NULL
+    OR new_economic_role IN ('spending', 'income', 'own_transfer', 'investment', 'card_payment')
+  `,
+    ),
+    check(
+      "classification_migration_notes_check_3",
+      sql`needs_attention IN (0, 1)`,
     ),
   ],
 );

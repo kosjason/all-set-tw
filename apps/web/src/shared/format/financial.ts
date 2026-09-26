@@ -8,19 +8,33 @@ type AccountBalance = {
   availableBalance?: number;
 };
 
-export function formatCurrency(value: number, currency = "TWD") {
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  TWD: "NT$",
+  USD: "US$",
+  JPY: "JP¥",
+  EUR: "€",
+  CNY: "CN¥",
+};
+
+function formatMoney(value: number, currency: string, fractionDigits: number) {
   if (moneyState.hidden) return "••••••";
   const sign = value < 0 ? "−" : "";
   const number = new Intl.NumberFormat("zh-TW", {
-    maximumFractionDigits: 0,
+    maximumFractionDigits: fractionDigits,
   }).format(Math.abs(value));
-  const symbols: Record<string, string> = {
-    TWD: "NT$",
-    USD: "US$",
-    JPY: "JP¥",
-    EUR: "€",
-  };
-  return `${sign}${symbols[currency] ?? `${currency} `}${number}`;
+  return `${sign}${CURRENCY_SYMBOLS[currency] ?? `${currency} `}${number}`;
+}
+
+export function formatCurrency(value: number, currency = "TWD") {
+  return formatMoney(value, currency, 0);
+}
+
+/**
+ * 原幣金額：台幣不顯示小數，外幣保留到 2 位小數（例如 US$10.98）。用於外幣發票與
+ * 發票品項；帳戶餘額等仍用 {@link formatCurrency}。
+ */
+export function formatCurrencyPrecise(value: number, currency = "TWD") {
+  return formatMoney(value, currency, currency === "TWD" ? 0 : 2);
 }
 
 export function formatNumber(value: number) {
@@ -29,11 +43,11 @@ export function formatNumber(value: number) {
   );
 }
 
-export function formatCompactTwd(value: number) {
+export function formatCompactTwd(value: number, wanDigits = 0) {
   if (moneyState.hidden) return "••••";
   const abs = Math.abs(value);
   if (abs >= 100_000_000) return `${(value / 100_000_000).toFixed(1)}億`;
-  if (abs >= 10_000) return `${(value / 10_000).toFixed(0)}萬`;
+  if (abs >= 10_000) return `${(value / 10_000).toFixed(wanDigits)}萬`;
   return formatNumber(Math.round(value));
 }
 

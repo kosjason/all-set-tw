@@ -94,10 +94,17 @@ function parseDepositOverview(html: string, asOfAt: string) {
 
   const rowRegex = /<tr[^>]*>([\s\S]*?<\/tr>)/gi;
   let match: RegExpExecArray | null;
+  const accountsWithoutBalance = new Set<string>();
+  const parsedAccountNos = new Set<string>();
 
   while ((match = rowRegex.exec(normalized)) !== null) {
     const parsed = parseDepositRow(extractCells(match[1] ?? ""));
     if (!parsed) continue;
+    if (parsed.balanceMissing) {
+      accountsWithoutBalance.add(parsed.accountNo);
+      continue;
+    }
+    parsedAccountNos.add(parsed.accountNo);
     const sourceId = `bank:hncb:${parsed.accountNo}:${parsed.currency}`;
     if (seen.has(sourceId)) continue;
     seen.add(sourceId);
@@ -129,17 +136,30 @@ function parseDepositOverview(html: string, asOfAt: string) {
     });
   }
 
+  if ([...accountsWithoutBalance].some((no) => !parsedAccountNos.has(no))) {
+    // An account row whose balance cell cannot be read must not become a
+    // silent NT$0 snapshot; fail the sync so the layout change is noticed.
+    throw new Error("華南存款帳戶餘額欄位格式無法辨識。");
+  }
+
   return { accounts, snapshots };
 }
+
+// Account cells hold only digits (optionally grouped by hyphens/spaces). A
+// timestamp such as「查詢時間 2026/09/25 23:15:35」also strips to 14 digits, so
+// cells containing date/time separators or other text are not account numbers.
+const HNCB_ACCOUNT_CELL = /^[0-9][0-9 -]*[0-9]$/;
 
 function parseDepositRow(cells: string[]) {
   if (cells.length < 3) return null;
   const accountCell = cells.find((cell) => {
-    const digits = cell.replace(/[^0-9]/g, "");
+    const normalized = toHalfWidth(cell).trim();
+    if (!HNCB_ACCOUNT_CELL.test(normalized)) return false;
+    const digits = normalized.replace(/[^0-9]/g, "");
     return digits.length >= 10 && digits.length <= 16;
   });
   if (!accountCell) return null;
-  const accountNo = accountCell.replace(/[^0-9]/g, "");
+  const accountNo = toHalfWidth(accountCell).replace(/[^0-9]/g, "");
   const accountTypeStr =
     cells.find((cell) => /活|支|定|儲|帳/.test(cell) && cell !== accountCell) ??
     "";
@@ -147,11 +167,13 @@ function parseDepositRow(cells: string[]) {
     cells.find((cell) =>
       /新台幣|臺幣|NTD|TWD|USD|JPY|EUR|美金|日[圓円]/.test(cell),
     ) ?? "";
-  const numericCells = cells.filter((cell) => {
-    if (cell === accountCell) return false;
-    const cleaned = cell.replace(/[$, ]/g, "");
-    return /^[-+]?[0-9]+(?:\.[0-9]+)?$/.test(cleaned);
-  });
+  const numericCells = cells
+    .filter((cell) => cell !== accountCell)
+    .map(depositAmountText)
+    .filter((cell) => /^[-+]?[0-9]+(?:\.[0-9]+)?$/.test(cell));
+  if (numericCells.length === 0) {
+    return { accountNo, balanceMissing: true as const };
+  }
   const balance = parseAmount(numericCells.at(-2) ?? numericCells.at(-1) ?? "");
   const availableBalance = parseAmount(
     numericCells.at(-1) ?? numericCells.at(-2) ?? "",
@@ -166,6 +188,7 @@ function parseDepositRow(cells: string[]) {
           : currencyStr.trim() || "TWD";
 
   return {
+    balanceMissing: false as const,
     accountNo,
     accountTypeStr,
     currencyStr,
@@ -565,6 +588,20 @@ function normalizeHncbHtml(html: string): string {
     .replace(/\u00a0/g, " ")
     .replace(/&nbsp;/gi, " ")
     .replace(/&#160;/g, " ");
+}
+
+function toHalfWidth(value: string): string {
+  return value.replace(/[！-～]/g, (char) =>
+    String.fromCharCode(char.charCodeAt(0) - 0xfee0),
+  );
+}
+
+/** Normalize a deposit amount cell such as「NT$ 1,234.00 元」or full-width digits. */
+function depositAmountText(cell: string): string {
+  return toHalfWidth(cell)
+    .replace(/^(?:NT|TWD|NTD)\s*\$?/i, "")
+    .replace(/元$/, "")
+    .replace(/[$,\s]/g, "");
 }
 
 function parseAmount(val: string): number {

@@ -469,6 +469,12 @@ class CtbcMobileSession {
         "中國信託登入需要重新驗證，請先至官方 App 完成驗證。",
       );
     }
+    if (isLogin && isAppUpdateRequired(response)) {
+      console.warn(JSON.stringify({ event: "ctbc_app_update_required" }));
+      throw new CtbcConnectionError(
+        "中國信託目前不接受連接器的登入方式，需等待連接器更新後才能同步；不需要更新 App 或重設密碼，也請先不要重試。",
+      );
+    }
     throw new CtbcConnectionError("中國信託資料同步暫時無法完成。");
   }
 }
@@ -573,6 +579,8 @@ async function fetchUnbilledTransactions(session: CtbcMobileSession) {
   const initial = await session.resource(UNBILLED_INIT_RESOURCE, {});
   const currencies = extractCurrencyCodes(responseData(initial));
   const allItems: unknown[] = [];
+  // Cards with unbilled activity decide which per-card accounts are created.
+  const cardInfos: unknown[] = [];
   for (const currency of currencies.length ? currencies : ["TWD"]) {
     const response = await fetchPagedCardItems(
       session,
@@ -580,13 +588,15 @@ async function fetchUnbilledTransactions(session: CtbcMobileSession) {
       UNBILLED_PAGE_RESOURCE,
       { curCode: currency },
     );
-    for (const item of arrayValue(responseData(response).allItems)) {
+    const data = responseData(response);
+    for (const item of arrayValue(data.allItems)) {
       allItems.push(
         isRecord(item) ? { ...item, sourceCurrency: currency } : item,
       );
     }
+    cardInfos.push(...arrayValue(data.cardInfos).filter(isRecord));
   }
-  return { rsData: { allItems } };
+  return { rsData: { allItems, cardInfos } };
 }
 
 async function fetchPagedCardItems(
@@ -756,6 +766,17 @@ function isVerificationFlagKey(key: string) {
     /(?:otp|verify|verification|binddevice|twostage).*(?:required|pending|challenge)$/i.test(
       key,
     )
+  );
+}
+
+/**
+ * CTBC answers an outdated App login with code 0131 and a forced-update page
+ * ("請更新至最新版本使用"), apparently after the credentials were accepted.
+ */
+function isAppUpdateRequired(response: JsonRecord) {
+  return (
+    stringValue(response.code) === "0131" &&
+    /更新至最新版本/.test(stringValue(response.desc))
   );
 }
 

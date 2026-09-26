@@ -133,7 +133,9 @@ describe("classification rule actions", () => {
       sql.includes("INSERT INTO CLASSIFICATION_RULES"),
     );
     expect(insert?.sql).toContain("EXCLUDED_FROM_CALCULATION");
-    expect(insert?.values.at(-1)).toBe(1);
+    // 欄位順序：…, excluded_from_calculation, amount_direction。
+    expect(insert?.values.at(-2)).toBe(1);
+    expect(insert?.values.at(-1)).toBe("any");
   });
 
   it("updates an editable rule's category, condition, keyword, and calculation action", async () => {

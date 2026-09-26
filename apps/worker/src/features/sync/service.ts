@@ -1,8 +1,10 @@
 import { beginActivityRun } from "./activity-detail-repository";
-import { prepareCtbcAuthorizationWrite } from "./ctbc-authorizations";
+import { writeCtbcSyncData } from "./ctbc-write";
 import { prepareEsunAuthorizationWrite } from "./esun-authorizations";
 import { prepareSinopacAuthorizationWrite } from "./sinopac-authorizations";
+import { prepareTaishinLifecycleWrite } from "./taishin-lifecycle";
 import { prepareObankTimeDepositWrite } from "./obank-time-deposits";
+import { syncOutcomeWarning } from "./sync-warning";
 import {
   EInvoiceProtocolUnavailableError,
   createCtbcConnector,
@@ -89,7 +91,7 @@ import {
 import { configEncryptionKey } from "../../platform/config";
 import { encryptJson, decryptJson } from "../../platform/crypto";
 import type { Env } from "../../platform/env";
-import { dateFromIso, rebuildBankDepositHistory } from "../net-worth/service";
+import { refreshBankDepositHistory } from "../net-worth/service";
 import {
   findLatestRecoverableScheduledBatchId,
   recoverLatestScheduledSyncSource,
@@ -104,6 +106,7 @@ import {
   connectorEncryptedConfigStatement,
   connectorStateStatement,
   linkCanonicalBankAccountsStatement,
+  reconcileCathayCardAccountStatements,
   reconcileEsunLifecycleShadowStatements,
   reconcileEsunSingleCardSummaryAccountStatements,
   reconcileHncbLegacyTransactionStatements,
@@ -143,8 +146,13 @@ export const SYNC_SCOPE_ALL = "all";
 export const TDCC_SCOPE_INVESTMENTS = "investments";
 export const TDCC_SCOPE_BANK = "bank";
 export const TDCC_SCOPE_TRADES = "trades";
-export const SYNC_LOCK_LEASE_MS = 30 * 60 * 1000;
-const SYNC_LOCK_HEARTBEAT_MS = 5 * 60 * 1000;
+// Single-invocation syncs renew their lease while running, so an interrupted
+// invocation that never reaches `finally` blocks retries for at most one lease.
+export const SYNC_LOCK_LEASE_MS = 10 * 60 * 1000;
+const SYNC_LOCK_HEARTBEAT_MS = 2 * 60 * 1000;
+// Durable runs hold the connector lock across Queue invocations without a
+// heartbeat, so they keep the longer lease between chunks.
+export const DURABLE_SYNC_LOCK_LEASE_MS = 30 * 60 * 1000;
 
 export type SyncOutcome = {
   success: true;
@@ -154,6 +162,8 @@ export type SyncOutcome = {
   newRecords: SyncNewRecordCounts;
   cursorUpdated: boolean;
   detailRecords?: number;
+  /** 成功但部分資料未取得的說明；會寫入同步工作的 last_error 提示使用者。 */
+  warnings?: string[];
 };
 
 export class SyncAlreadyRunningError extends Error {
@@ -571,7 +581,7 @@ export async function syncEsun(
   });
 
   if (bankBalanceSnapshots.length > 0) {
-    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+    await refreshBankDepositHistory(env.DB, new Date(now));
   }
 
   return {
@@ -741,15 +751,19 @@ export async function syncCathaybk(
 
   const newRecords = await persistStagedSyncWrite(env.DB, {
     records,
-    afterPromoteStatements:
-      bankAccounts.length > 0
+    afterPromoteStatements: [
+      ...(bankAccounts.some((account) => account.accountType === "credit")
+        ? reconcileCathayCardAccountStatements(env.DB)
+        : []),
+      ...(bankAccounts.length > 0
         ? [linkCanonicalBankAccountsStatement(env.DB)]
-        : [],
+        : []),
+    ],
     finalizeStatements,
   });
 
   if (bankBalanceSnapshots.length > 0) {
-    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+    await refreshBankDepositHistory(env.DB, new Date(now));
   }
 
   return {
@@ -803,30 +817,7 @@ export async function syncCtbc(
     throw error;
   }
 
-  const bankAccounts = result.bankAccounts ?? [];
-  const bankBalanceSnapshots = result.bankBalanceSnapshots ?? [];
-  const bankTransactions = result.bankTransactions ?? [];
-  const creditCardBills = result.creditCardBills ?? [];
-  console.log(
-    `[sync] ${connectorId}/${scope}: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} bills=${creditCardBills.length}`,
-  );
-
   const now = new Date().toISOString();
-  const records: SyncWriteRecord[] = [
-    ...bankAccounts.map((account) =>
-      bankAccountRecord(connectorId, account, now),
-    ),
-    ...bankBalanceSnapshots.map((snapshot) =>
-      bankBalanceSnapshotRecord(connectorId, snapshot, now),
-    ),
-    ...bankTransactions.map((transaction) =>
-      bankTransactionRecord(connectorId, transaction, now),
-    ),
-    ...creditCardBills.map((bill) =>
-      creditCardBillRecord(connectorId, bill, now),
-    ),
-  ];
-
   let persistedCursor: string | undefined;
   const finalizeStatements: D1PreparedStatement[] = [];
   if (result.cursor) {
@@ -844,35 +835,17 @@ export async function syncCtbc(
     );
   }
 
-  const authorizationWrite = await prepareCtbcAuthorizationWrite(
-    env.DB,
-    records,
-  );
-  const newRecords = await persistStagedSyncWrite(env.DB, {
-    records: authorizationWrite.records,
-    afterPromoteStatements: [
-      ...authorizationWrite.afterPromoteStatements,
-      ...(bankAccounts.length > 0
-        ? [linkCanonicalBankAccountsStatement(env.DB)]
-        : []),
-    ],
+  const written = await writeCtbcSyncData(env.DB, result, {
+    now,
     finalizeStatements,
   });
-
-  if (bankBalanceSnapshots.length > 0) {
-    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
-  }
 
   return {
     success: true,
     connectorId,
     scope,
-    records:
-      bankAccounts.length +
-      bankBalanceSnapshots.length +
-      bankTransactions.length +
-      creditCardBills.length,
-    newRecords,
+    records: written.records,
+    newRecords: written.newRecords,
     cursorUpdated: Boolean(
       persistedCursor && persistedCursor !== settings.sync_cursor,
     ),
@@ -966,7 +939,7 @@ export async function syncSkbank(
   });
 
   if (bankBalanceSnapshots.length > 0) {
-    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+    await refreshBankDepositHistory(env.DB, new Date(now));
   }
 
   return {
@@ -1141,7 +1114,7 @@ export async function syncSinopac(
     finalizeStatements,
   });
   if (bankBalanceSnapshots.length > 0)
-    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+    await refreshBankDepositHistory(env.DB, new Date(now));
   return {
     success: true,
     connectorId,
@@ -1281,7 +1254,7 @@ export async function syncObank(
     finalizeStatements,
   });
   if (bankBalanceSnapshots.length > 0) {
-    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+    await refreshBankDepositHistory(env.DB, new Date(now));
   }
   return {
     success: true,
@@ -1425,7 +1398,7 @@ export async function syncFirstbank(
     finalizeStatements,
   });
   if (bankBalanceSnapshots.length > 0) {
-    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+    await refreshBankDepositHistory(env.DB, new Date(now));
   }
   return {
     success: true,
@@ -1582,7 +1555,7 @@ export async function syncHncb(
   });
 
   if (bankBalanceSnapshots.length > 0) {
-    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+    await refreshBankDepositHistory(env.DB, new Date(now));
   }
 
   return {
@@ -1709,7 +1682,7 @@ export async function syncKgibank(
   });
 
   if (bankBalanceSnapshots.length > 0) {
-    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+    await refreshBankDepositHistory(env.DB, new Date(now));
   }
 
   return {
@@ -1837,16 +1810,19 @@ export async function syncTaishin(
     );
   }
 
+  const lifecycleWrite = await prepareTaishinLifecycleWrite(env.DB, records);
   const newRecords = await persistStagedSyncWrite(env.DB, {
-    records,
-    afterPromoteStatements:
-      bankAccounts.length > 0
+    records: lifecycleWrite.records,
+    afterPromoteStatements: [
+      ...lifecycleWrite.afterPromoteStatements,
+      ...(bankAccounts.length > 0
         ? [linkCanonicalBankAccountsStatement(env.DB)]
-        : [],
+        : []),
+    ],
     finalizeStatements,
   });
   if (bankBalanceSnapshots.length > 0) {
-    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+    await refreshBankDepositHistory(env.DB, new Date(now));
   }
   return {
     success: true,
@@ -1861,6 +1837,7 @@ export async function syncTaishin(
     cursorUpdated: Boolean(
       persistedCursor && persistedCursor !== settings.sync_cursor,
     ),
+    ...(result.warnings?.length ? { warnings: result.warnings } : {}),
   };
 }
 
@@ -2032,7 +2009,7 @@ async function syncTdccPositionsAndBank(
   });
 
   if (options.writeBank && bankBalanceSnapshots.length > 0) {
-    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+    await refreshBankDepositHistory(env.DB, new Date(now));
   }
 
   return {
@@ -2252,7 +2229,12 @@ export async function withManualSyncLock(
         : null;
     await beginActivityRun(env.DB, runId, recoveryBatchId, connectorId);
     const outcome = await task();
-    await markManualSyncSuccess(env.DB, connectorId, scope);
+    await markManualSyncSuccess(
+      env.DB,
+      connectorId,
+      scope,
+      syncOutcomeWarning(outcome),
+    );
     if (connectorId !== "tdcc" || scope === SYNC_SCOPE_ALL) {
       await recoverLatestScheduledSyncSource(env.DB, {
         connectorId,

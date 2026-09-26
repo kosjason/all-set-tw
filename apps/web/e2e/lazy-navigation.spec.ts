@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { routeActivityApi, routeNavigationApi } from "./activity-api";
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", async (route) => {
@@ -18,6 +19,7 @@ test.beforeEach(async ({ page }) => {
     else if (path === "/api/manual-assets") body = [];
     else if (path === "/api/exchange-rates") body = [];
     else if (path === "/api/classification/categories") body = [];
+    else if (path === "/api/history/net-worth/chart") body = [];
     else throw new Error(`Unexpected API request in lazy-page test: ${path}`);
     await route.fulfill({
       status: 200,
@@ -25,9 +27,11 @@ test.beforeEach(async ({ page }) => {
       body: JSON.stringify(body),
     });
   });
+  await routeActivityApi(page);
+  await routeNavigationApi(page);
 });
 
-test("loads a non-overview page on demand", async ({ page }) => {
+test("loads a non-home page on demand", async ({ page }) => {
   await page.goto("/#/assets");
 
   await expect(page.getByText("尚無資產資料", { exact: true })).toBeVisible();
@@ -47,7 +51,7 @@ test("shows a retry action when a lazy page fails to load", async ({
     await route.continue();
   });
 
-  await page.goto("/#/activity");
+  await page.goto("/#/transactions");
   await expect(
     page.getByRole("heading", { name: "頁面載入失敗", exact: true }),
   ).toBeVisible();
@@ -55,7 +59,7 @@ test("shows a retry action when a lazy page fails to load", async ({
 
   await page.unroute(activityPageRoute);
   await page.getByRole("button", { name: "重新載入", exact: true }).click();
-  await expect(
-    page.getByRole("searchbox", { name: "搜尋所有活動" }),
-  ).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("searchbox", { name: "搜尋活動" })).toBeVisible({
+    timeout: 15_000,
+  });
 });

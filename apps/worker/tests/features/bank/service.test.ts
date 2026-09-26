@@ -87,6 +87,7 @@ function createDb(
           if (sql.includes("classification_overrides"))
             return { results: classificationOverrides };
           if (sql.includes("classification_rules")) return { results: [] };
+          if (sql.includes("merchant_aliases")) return { results: [] };
           if (
             sql.includes("bank_accounts") &&
             !sql.includes("bank_transactions")
@@ -126,7 +127,7 @@ describe("bank transaction presentation", () => {
       id: "outgoing",
       excludedFromCalculation: true,
       classification: {
-        categoryId: "transfer",
+        categoryId: "other",
         label: "轉帳",
         source: "auto_transfer",
         excludedFromCalculation: true,
@@ -163,8 +164,8 @@ describe("bank transaction presentation", () => {
       expect(transaction).toMatchObject({
         excludedFromCalculation: true,
         classification: {
-          categoryId: "fee",
-          label: "手續費",
+          categoryId: "misc",
+          label: "其他",
           source: "auto_offset",
           excludedFromCalculation: true,
         },

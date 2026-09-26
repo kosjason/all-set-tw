@@ -44,6 +44,60 @@ describe("HNCB connector parser", () => {
     });
   });
 
+  it("ignores query timestamps that look like account numbers", () => {
+    const result = parseHncbData(
+      {
+        depositOverviewHtml: `
+          <table>
+            <tr><td>帳務總覽</td><td>查詢時間</td><td>2026/09/25 23:15:35</td></tr>
+            <tr><td>211201117010</td><td>活儲</td><td>新台幣</td><td>0.00</td><td>0.00</td></tr>
+          </table>
+        `,
+      },
+      new Date("2026-09-25T15:15:39.000Z"),
+    );
+
+    expect(result.bankAccounts.map((account) => account.sourceId)).toEqual([
+      "bank:hncb:211201117010:TWD",
+    ]);
+    // A genuine zero balance is still a real NT$0 snapshot.
+    expect(result.bankBalanceSnapshots).toMatchObject([
+      { balance: 0, availableBalance: 0, currency: "TWD" },
+    ]);
+  });
+
+  it("parses currency-marked and full-width deposit amounts", () => {
+    const result = parseHncbData(
+      {
+        depositOverviewHtml: `
+          <table>
+            <tr><td>211201117010</td><td>活儲</td><td>新台幣</td><td>NT$ 1,234.00 元</td><td>１，２００．５０</td></tr>
+          </table>
+        `,
+      },
+      new Date("2026-09-25T00:00:00.000Z"),
+    );
+
+    expect(result.bankBalanceSnapshots).toMatchObject([
+      { balance: 1234, availableBalance: 1200.5 },
+    ]);
+  });
+
+  it("fails instead of recording NT$0 when a balance cell is unreadable", () => {
+    expect(() =>
+      parseHncbData(
+        {
+          depositOverviewHtml: `
+            <table>
+              <tr><td>211201117010</td><td>活儲</td><td>新台幣</td><td>請洽分行</td><td>--</td></tr>
+            </table>
+          `,
+        },
+        new Date("2026-09-25T00:00:00.000Z"),
+      ),
+    ).toThrow("華南存款帳戶餘額欄位格式無法辨識");
+  });
+
   it("parses credit card bills, unbilled items, and posted transactions", () => {
     const billHtml = `
       <table>

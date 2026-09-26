@@ -1,4 +1,4 @@
-import { launchBrowserWithRetry } from "./browser.js";
+import { launchBrowserOrCapacityError } from "./browser.js";
 import {
   buildEsunCreditTimelinePages,
   collectEsunBrowserSnapshot,
@@ -74,7 +74,9 @@ export function createEsunConnector(browser?: Fetcher) {
       const depositWatermarks: Record<string, string> = {};
 
       console.log("[esun debug] scraping credit cards");
-      const creditCards = await scrapeCreditCards(client);
+      const creditCards = requiredSnapshot(client).hasCreditCard
+        ? await scrapeCreditCards(client)
+        : emptyScraped();
       console.log("[esun debug] scraping deposit accounts");
       const deposits = await scrapeDepositAccounts(client, depositWatermarks);
       const freshCookies = client.exportCookies();
@@ -110,7 +112,7 @@ async function loginWithBrowser(
   config: EsunConfig,
 ) {
   console.log("[esun debug] launching browser");
-  const browser = await launchBrowserWithRetry(browserBinding);
+  const browser = await launchBrowserOrCapacityError(browserBinding);
   const page = await browser.newPage();
   let txnDupToken: string | undefined;
 
@@ -211,6 +213,15 @@ type Scraped = {
   bankTransactions: Array<Omit<BankTransaction, "id" | "connectorId">>;
   creditCardBills: Array<Omit<CreditCardBill, "id" | "connectorId">>;
 };
+
+function emptyScraped(): Scraped {
+  return {
+    bankAccounts: [],
+    bankBalanceSnapshots: [],
+    bankTransactions: [],
+    creditCardBills: [],
+  };
+}
 
 interface EsunApiResponse<T> {
   rsStatus?: {

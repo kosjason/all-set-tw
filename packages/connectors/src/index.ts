@@ -84,14 +84,21 @@ export type { SinopacConfig } from "./sinopac";
 import { sinopacConfigSchema } from "./sinopac";
 
 export {
+  pairTaishinTransactions,
   parseTaishinConfig,
   parseTaishinCreditCardData,
+  TAISHIN_AUTHORIZATION_MATCH_DAYS,
+  TAISHIN_FALLBACK_MATCH_DAYS,
   taishinConfigSchema,
+  taishinPreferredAuthorizedAt,
+  taishinTransactionMatchKind,
 } from "./taishin";
 export type {
   TaishinConfig,
   TaishinCreditCardData,
   TaishinCreditCardPayloads,
+  TaishinMatchKind,
+  TaishinMatchTransaction,
 } from "./taishin";
 import { taishinConfigSchema } from "./taishin";
 
@@ -99,9 +106,11 @@ export {
   ctbcConfigSchema,
   parseCtbcData,
   parseCtbcConfig,
+  ctbcTransactionMatchKind,
   ctbcTransactionsMatch,
+  pairCtbcTransactions,
 } from "./ctbc";
-export type { CtbcConfig, CtbcData, CtbcPayloads } from "./ctbc";
+export type { CtbcConfig, CtbcData, CtbcMatchKind, CtbcPayloads } from "./ctbc";
 export {
   classifyCtbcError,
   createCtbcConnector,
@@ -200,6 +209,8 @@ const invoiceRecordSchema = z.object({
   invoiceDate: z.string().min(1),
   sellerName: z.string().optional(),
   amount: z.number().int().nonnegative(),
+  carrierType: z.string().min(1).max(16).optional(),
+  carrierSuffix: z.string().min(1).max(4).optional(),
   raw: z.unknown().optional(),
 });
 
@@ -307,6 +318,10 @@ export const einvoiceConnector: Connector<
         invoiceDate: normalizeInvoiceDate(record.invoiceDate),
         sellerName: record.sellerName,
         amount: record.amount,
+        ...(record.carrierType ? { carrierType: record.carrierType } : {}),
+        ...(record.carrierSuffix
+          ? { carrierSuffix: record.carrierSuffix }
+          : {}),
         raw: record.raw ?? record,
       })),
       cursor,
@@ -406,6 +421,10 @@ export async function initializeEInvoiceSync(
           invoiceDate: invoice.invoiceDate,
           sellerName: invoice.sellerName,
           amount: Math.max(0, Math.trunc(invoice.amount)),
+          ...(invoice.carrierType ? { carrierType: invoice.carrierType } : {}),
+          ...(invoice.carrierSuffix
+            ? { carrierSuffix: invoice.carrierSuffix }
+            : {}),
           raw: { invoice, period },
         },
         period,
@@ -587,8 +606,35 @@ function getV2Invoices(payload: unknown) {
         encrypt: firstStringValue(item.encrypt),
         isQrCode: item.isQrCode === true || item.isScanInv === true,
         isBuyerType: item.isBuyerType === true || item.isBuyerType === "Y",
+        ...invoiceCarrier(item),
       };
     });
+}
+
+/**
+ * 載具表頭查詢（carrierInvChk）每張發票帶有 cardType（載具類別，歸戶載具為
+ * 其實際類別）與 cardNo（載具隱碼）。隱碼可識別使用者載具，只保留末 4 碼。
+ */
+export function invoiceCarrier(item: Record<string, unknown>): {
+  carrierType?: string;
+  carrierSuffix?: string;
+} {
+  const carrierType = firstStringValue(
+    item.cardType,
+    item.carrierType,
+    item.cardCode,
+  )
+    .trim()
+    .toUpperCase();
+  const carrierNumber = firstStringValue(
+    item.cardNo,
+    item.carrierId2,
+    item.carrierNo,
+  ).replace(/\s+/g, "");
+  return {
+    ...(carrierType && carrierType.length <= 16 ? { carrierType } : {}),
+    ...(carrierNumber ? { carrierSuffix: carrierNumber.slice(-4) } : {}),
+  };
 }
 
 function parseV2InvoiceDate(value: unknown) {

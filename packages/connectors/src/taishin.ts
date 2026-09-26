@@ -320,120 +320,223 @@ function realtimeTransactions(
   return candidates;
 }
 
+/**
+ * 台新即時消費（未入帳）的描述只有 MCC 類別（例如「餐飲」「百貨公司」），
+ * 入帳後才出現商家名稱，所以不能用商家名稱配對。一筆入帳明細取代對應的
+ * 即時消費後，即時消費不再輸出；入帳明細保留自己的識別（跨同步穩定），
+ * 只在同一消費日時沿用即時消費的時間。已存過的即時消費由 Worker 在寫入時
+ * 以相同規則清除（見 apps/worker/src/features/sync/taishin-lifecycle.ts）。
+ */
 function mergeTransactionLifecycle(
   posted: TransactionCandidate[],
   pending: TransactionCandidate[],
 ) {
-  const pendingByMatchKey = groupByMatchKey(pending);
-  const postedByMatchKey = groupByMatchKey(posted);
-  const postedIdentityKeys = new Map<
-    TransactionCandidate,
-    { identityKey: string; authorizedAt?: string }
-  >();
-  const consumedPending = new Set<TransactionCandidate>();
-
-  for (const [matchKey, postedGroup] of postedByMatchKey) {
-    const pendingGroup = pendingByMatchKey.get(matchKey) ?? [];
-
-    for (const postedTransaction of postedGroup) {
-      const matchingPending = pendingGroup.filter((pendingTransaction) =>
-        merchantNamesMatch(
-          postedTransaction.description,
-          pendingTransaction.description,
-        ),
-      );
-      if (matchingPending.length !== 1) continue;
-
-      const pendingTransaction = matchingPending[0]!;
-      const matchingPosted = postedGroup.filter((candidate) =>
-        merchantNamesMatch(
-          candidate.description,
-          pendingTransaction.description,
-        ),
-      );
-      if (matchingPosted.length !== 1) continue;
-
-      postedIdentityKeys.set(postedTransaction, {
-        identityKey: pendingTransaction.identityKey,
-        authorizedAt: preferredAuthorizedAt(
-          postedTransaction.authorizedAt,
-          pendingTransaction.authorizedAt,
-        ),
-      });
-      consumedPending.add(pendingTransaction);
-    }
-  }
-
-  for (const postedTransaction of posted) {
-    if (postedIdentityKeys.has(postedTransaction)) continue;
-    const pendingTransaction = pending.find(
-      (candidate) =>
-        !consumedPending.has(candidate) &&
-        candidate.identityKey === postedTransaction.identityKey,
-    );
-    if (!pendingTransaction) continue;
-    postedIdentityKeys.set(postedTransaction, {
-      identityKey: pendingTransaction.identityKey,
-      authorizedAt: preferredAuthorizedAt(
-        postedTransaction.authorizedAt,
-        pendingTransaction.authorizedAt,
-      ),
-    });
-    consumedPending.add(pendingTransaction);
-  }
-
+  const pairs = new Map(
+    pairTaishinTransactions(pending, posted, taishinTransactionMatchKind).map(
+      ([pendingTransaction, postedTransaction]) => [
+        postedTransaction,
+        pendingTransaction,
+      ],
+    ),
+  );
+  const consumedPending = new Set(pairs.values());
   const candidates = [
-    ...posted.map((transaction) => ({
-      transaction,
-      identityKey:
-        postedIdentityKeys.get(transaction)?.identityKey ??
-        transaction.identityKey,
-      authorizedAt:
-        postedIdentityKeys.get(transaction)?.authorizedAt ??
-        transaction.authorizedAt,
-    })),
-    ...pending
-      .filter((transaction) => !consumedPending.has(transaction))
-      .map((transaction) => ({
-        transaction,
-        identityKey: transaction.identityKey,
-        authorizedAt: transaction.authorizedAt,
-      })),
+    ...posted.map((transaction) => {
+      const pendingTransaction = pairs.get(transaction);
+      return pendingTransaction
+        ? {
+            ...transaction,
+            authorizedAt: taishinPreferredAuthorizedAt(
+              transaction.authorizedAt,
+              pendingTransaction.authorizedAt,
+            ),
+          }
+        : transaction;
+    }),
+    ...pending.filter((transaction) => !consumedPending.has(transaction)),
   ];
   const occurrences = new Map<string, number>();
-  return candidates.map(({ transaction, identityKey, authorizedAt }) => {
-    const occurrence = (occurrences.get(identityKey) ?? 0) + 1;
-    occurrences.set(identityKey, occurrence);
-    return assignSourceId(
-      { ...transaction, authorizedAt },
-      identityKey,
-      occurrence,
-    );
+  return candidates.map((transaction) => {
+    const occurrence = (occurrences.get(transaction.identityKey) ?? 0) + 1;
+    occurrences.set(transaction.identityKey, occurrence);
+    return assignSourceId(transaction, occurrence);
   });
 }
 
-function preferredAuthorizedAt(
+/** 授權碼相同時容許較晚請款；沒有授權碼時只接受消費日相差 3 天內。 */
+export const TAISHIN_AUTHORIZATION_MATCH_DAYS = 31;
+export const TAISHIN_FALLBACK_MATCH_DAYS = 3;
+
+export type TaishinMatchKind =
+  "authorization" | "identical" | "merchant" | "fallback";
+
+export type TaishinMatchTransaction = {
+  authorizedAt?: string;
+  amount: number;
+  currency: string;
+  description?: string | null;
+  raw?: unknown;
+};
+
+/**
+ * 判斷一筆即時消費（pending）與一筆入帳明細（posted）是否可能是同一筆消費；
+ * 一對一唯一由 {@link pairTaishinTransactions} 負責。
+ *
+ * - 幣別與帶正負號的金額必須相同；國外交易服務費等費用列一律不配。
+ * - 兩邊都有授權碼時只看授權碼（相同且消費日差 ≤ 31 天）。
+ * - 否則必須同卡末四碼、消費日差 ≤ 3 天；兩邊都有交易國別時國別也要相同。
+ *   商家名稱相同或互相包含時視為較強的候選（`identical`／`merchant`）。
+ */
+export function taishinTransactionMatchKind(
+  pending: TaishinMatchTransaction,
+  posted: TaishinMatchTransaction,
+): TaishinMatchKind | undefined {
+  if (pending.currency !== posted.currency || pending.amount !== posted.amount)
+    return undefined;
+  if (
+    isTaishinFeeRow(pending.description) ||
+    isTaishinFeeRow(posted.description)
+  )
+    return undefined;
+  const pendingRaw = isRecord(pending.raw) ? pending.raw : {};
+  const postedRaw = isRecord(posted.raw) ? posted.raw : {};
+  const days = purchaseDayDistance(pending.authorizedAt, posted.authorizedAt);
+  if (days == null) return undefined;
+  const pendingCode = stringValue(pendingRaw.authorizationCode).trim();
+  const postedCode = stringValue(postedRaw.authorizationCode).trim();
+  if (pendingCode && postedCode) {
+    return pendingCode === postedCode &&
+      days <= TAISHIN_AUTHORIZATION_MATCH_DAYS
+      ? "authorization"
+      : undefined;
+  }
+  const pendingCard = stringValue(pendingRaw.cardLast4).trim();
+  if (
+    !/^\d{4}$/.test(pendingCard) ||
+    pendingCard !== stringValue(postedRaw.cardLast4).trim() ||
+    days > TAISHIN_FALLBACK_MATCH_DAYS
+  )
+    return undefined;
+  const pendingCountry = stringValue(pendingRaw.country).trim().toUpperCase();
+  const postedCountry = stringValue(postedRaw.country).trim().toUpperCase();
+  if (pendingCountry && postedCountry && pendingCountry !== postedCountry)
+    return undefined;
+  const pendingName = normalizeMerchantName(pending.description ?? undefined);
+  if (
+    days === 0 &&
+    pendingName &&
+    pendingName === normalizeMerchantName(posted.description ?? undefined)
+  )
+    return "identical";
+  if (
+    merchantNamesMatch(
+      pending.description ?? undefined,
+      posted.description ?? undefined,
+    )
+  )
+    return "merchant";
+  return "fallback";
+}
+
+/**
+ * 一對一配對：依序只接受授權碼、商家名稱、最後才用同卡同額同日期的後備
+ * 條件；任一方有兩個以上候選時不配對，避免把同額的兩筆消費誤合併。完全
+ * 相同（同卡、同日、同額、同名）的多筆彼此無從區分，依出現順序逐一配對。
+ */
+export function pairTaishinTransactions<P, T>(
+  pendings: readonly P[],
+  posteds: readonly T[],
+  kindOf: (pending: P, posted: T) => TaishinMatchKind | undefined,
+): Array<[P, T]> {
+  const pairs: Array<[P, T]> = [];
+  const usedPending = new Set<P>();
+  const usedPosted = new Set<T>();
+  const accept = (pending: P, posted: T) => {
+    pairs.push([pending, posted]);
+    usedPending.add(pending);
+    usedPosted.add(posted);
+  };
+  for (const pending of pendings) {
+    const posted = posteds.find(
+      (candidate) =>
+        !usedPosted.has(candidate) &&
+        kindOf(pending, candidate) === "identical",
+    );
+    if (posted) accept(pending, posted);
+  }
+  const passes: ReadonlyArray<ReadonlyArray<TaishinMatchKind>> = [
+    ["authorization"],
+    ["authorization", "identical", "merchant"],
+    ["authorization", "identical", "merchant", "fallback"],
+  ];
+  for (const accepted of passes) {
+    const openPending = pendings.filter((pending) => !usedPending.has(pending));
+    const openPosted = posteds.filter((posted) => !usedPosted.has(posted));
+    const candidates = openPending.map((pending) =>
+      openPosted.filter((posted) => {
+        const kind = kindOf(pending, posted);
+        return kind != null && accepted.includes(kind);
+      }),
+    );
+    openPending.forEach((pending, index) => {
+      const matches = candidates[index]!;
+      if (matches.length !== 1) return;
+      const posted = matches[0]!;
+      if (candidates.filter((group) => group.includes(posted)).length !== 1)
+        return;
+      accept(pending, posted);
+    });
+  }
+  return pairs;
+}
+
+/** 入帳明細只有日期；同一消費日時沿用即時消費的時分秒。 */
+export function taishinPreferredAuthorizedAt(
   postedAuthorizedAt: string | undefined,
   pendingAuthorizedAt: string | undefined,
 ) {
-  const postedHasTime = hasTimeComponent(postedAuthorizedAt);
-  const pendingHasTime = hasTimeComponent(pendingAuthorizedAt);
-  if (pendingHasTime && !postedHasTime) return pendingAuthorizedAt;
+  if (
+    hasTimeComponent(pendingAuthorizedAt) &&
+    !hasTimeComponent(postedAuthorizedAt) &&
+    postedAuthorizedAt &&
+    purchaseDay(pendingAuthorizedAt!) === postedAuthorizedAt.slice(0, 10)
+  )
+    return pendingAuthorizedAt;
   return postedAuthorizedAt;
+}
+
+function isTaishinFeeRow(description: string | null | undefined) {
+  return /國外交易服務費|國外交易手續費|海外交易服務費|手續費|服務費/.test(
+    description ?? "",
+  );
+}
+
+function purchaseDay(value: string) {
+  const timestamp = hasTimeComponent(value) ? Date.parse(value) : NaN;
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp + 8 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    : value.slice(0, 10);
+}
+
+function purchaseDayDistance(
+  left: string | undefined,
+  right: string | undefined,
+) {
+  if (!left || !right) return undefined;
+  const leftDay = Date.parse(`${purchaseDay(left)}T00:00:00Z`);
+  const rightDay = Date.parse(`${purchaseDay(right)}T00:00:00Z`);
+  if (!Number.isFinite(leftDay) || !Number.isFinite(rightDay)) return undefined;
+  return Math.abs(leftDay - rightDay) / 86_400_000;
 }
 
 function hasTimeComponent(value: string | undefined) {
   return Boolean(value && /T\d{2}:\d{2}(?::\d{2})?/.test(value));
 }
 
-function assignSourceId(
-  candidate: TransactionCandidate,
-  identityKey: string,
-  occurrence: number,
-) {
+function assignSourceId(candidate: TransactionCandidate, occurrence: number) {
   const {
     matchKey: _matchKey,
-    identityKey: _identityKey,
+    identityKey,
     cardLast4: _cardLast4,
     ...transaction
   } = candidate;
@@ -449,16 +552,6 @@ function assignSourceId(
 
 function taishinTransactionSourceId(identityKey: string, occurrence: number) {
   return `taishin:card:tx:v2:${identityKey}:${occurrence}`;
-}
-
-function groupByMatchKey<T extends TransactionCandidate>(candidates: T[]) {
-  const groups = new Map<string, T[]>();
-  for (const candidate of candidates) {
-    const group = groups.get(candidate.matchKey) ?? [];
-    group.push(candidate);
-    groups.set(candidate.matchKey, group);
-  }
-  return groups;
 }
 
 function merchantNamesMatch(

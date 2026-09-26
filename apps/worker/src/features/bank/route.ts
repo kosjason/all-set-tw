@@ -13,6 +13,7 @@ import {
   resolveMonthDateRange,
 } from "../../platform/month-range";
 import { validationHook } from "../../platform/validation";
+import { annotateBankTransactions } from "../merchants/annotate";
 import {
   getBankPage,
   getBankRange,
@@ -45,7 +46,16 @@ function registerBankRoutes(api: Hono<AppBindings>) {
     ),
     async (c) => {
       const range = resolveMonthDateRange(c.req.valid("query"));
-      if (range) return c.json(await getBankRange(c.env.DB, range));
+      if (range) {
+        const data = await getBankRange(c.env.DB, range);
+        return c.json({
+          ...data,
+          transactions: await annotateBankTransactions(
+            c.env.DB,
+            data.transactions,
+          ),
+        });
+      }
 
       const { limit, cursor } = parseKeysetPagination(
         c.req.query(),
@@ -66,7 +76,10 @@ function registerBankRoutes(api: Hono<AppBindings>) {
       });
       return c.json({
         accounts: page.accounts,
-        transactions: page.transactions,
+        transactions: await annotateBankTransactions(
+          c.env.DB,
+          page.transactions,
+        ),
       });
     },
   );

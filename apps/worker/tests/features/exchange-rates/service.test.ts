@@ -43,6 +43,7 @@ const providerPayload = {
     USD: 0.030952,
     JPY: 4.915215,
     EUR: 0.026897,
+    CNY: 0.2205,
   },
 };
 
@@ -82,7 +83,7 @@ describe("refreshExchangeRates", () => {
       }),
     );
     expect(batches).toHaveLength(1);
-    expect(batches[0]).toHaveLength(4);
+    expect(batches[0]).toHaveLength(5);
     const inserts = calls.filter(
       ({ values }) => values.length === 3 && typeof values[1] === "number",
     );
@@ -90,6 +91,7 @@ describe("refreshExchangeRates", () => {
       ["USD", 1 / providerPayload.rates.USD],
       ["JPY", 1 / providerPayload.rates.JPY],
       ["EUR", 1 / providerPayload.rates.EUR],
+      ["CNY", 1 / providerPayload.rates.CNY],
     ]);
     expect(inserts[0]?.values[2]).toBe("2026-08-02T00:02:31.000Z");
   });

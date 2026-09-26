@@ -1,3 +1,5 @@
+import type { CounterpartyAccount } from "./taiwan-banks";
+
 export interface NetWorthHistoryPoint {
   date: string; // YYYY-MM-DD
   netWorth: number;
@@ -34,6 +36,11 @@ export interface SyncResult<TResult> {
     Omit<InvestmentTransaction, "id" | "connectorId">
   >;
   netWorthHistory?: NetWorthHistoryPoint[];
+  /**
+   * 同步成功但部分資料未取得時的使用者可讀說明（正體中文），例如來源暫時忙碌
+   * 而略過的明細。有值時同步仍算成功，但會保留在同步工作狀態提示使用者。
+   */
+  warnings?: string[];
 }
 
 export interface Connector<TConfig, TResult> {
@@ -51,6 +58,10 @@ export interface Invoice {
   invoiceDate: string;
   sellerName?: string;
   amount: number;
+  /** 財政部載具類別（表頭 cardType），例如 3J0002；歸戶載具為其實際類別。 */
+  carrierType?: string;
+  /** 載具隱碼（表頭 cardNo）末 4 碼；不保存完整隱碼。 */
+  carrierSuffix?: string;
   raw?: unknown;
 }
 
@@ -82,6 +93,10 @@ export interface InvestmentPosition {
   cashBalance?: number;
   currency: string;
   asOfDate: string;
+  /** 券商或分公司代碼；同一標的分屬不同券商帳戶時用來區分持倉。 */
+  brokerNo?: string;
+  /** 券商或分公司名稱，例如「國泰敦南」。 */
+  brokerName?: string;
   raw?: unknown;
 }
 
@@ -163,6 +178,8 @@ export interface BankTransaction {
   currency: string;
   description?: string;
   counterparty?: string;
+  /** 可辨識時的對方金融機構代碼與帳號末五碼；不得包含完整帳號。 */
+  counterpartyAccount?: CounterpartyAccount;
   status?: BankTransactionStatus;
   raw?: unknown;
 }
@@ -627,17 +644,59 @@ export function isConnectorId(value: string): value is ConnectorId {
   return supportedConnectorIds.includes(value as ConnectorId);
 }
 
+export * from "./taiwan-banks";
 export * from "./activity-types";
 export * from "./activity-list";
 export * from "./activity-flow";
 export * from "./activity-filter";
 export * from "./activity-items";
+export * from "./economic-role";
+export * from "./categories";
+export * from "./merchant";
+export * from "./category-suggestions";
+export * from "./activity-search";
+export * from "./cards";
+export * from "./inbox";
 export {
   deduplicateBankTransactions,
+  expandInvoiceMatchingDays,
+  isStoredValueTopUp,
   matchInvoicesToTransactions,
   invoiceTransactionCandidates,
+  invoiceTransactionDayGap,
+  INVOICE_MATCH_CONTEXT_DAYS,
+  INVOICE_MATCH_DAY_WINDOW,
+  STORED_VALUE_TOP_UP_PATTERN,
+  INVOICE_CARRIER_DAY_WINDOW,
+  INVOICE_MATCH_SCORE,
+  INVOICE_MATCH_MAX_RAW_SCORE,
+  INVOICE_MATCH_MIN_MARGIN,
+  INVOICE_DISCOUNT_MIN_PAID_RATIO,
+  INVOICE_DISCOUNT_MAX_AMOUNT,
+  NON_CARD_CARRIER_TYPES,
+  invoiceCarrierCardSuffix,
+  isForeignTransactionFee,
+  isVoidedInvoiceStatus,
+  invoiceRepeatGroups,
+  FOREIGN_INVOICE_AMOUNT_RATIO,
+  FOREIGN_INVOICE_AMOUNT_FLOOR,
+  FOREIGN_INVOICE_DAYS_BEFORE,
+  FOREIGN_INVOICE_DAYS_AFTER,
+  SAME_CURRENCY_AMOUNT_RATIO,
+  INVOICE_REPEAT_WINDOW_HOURS,
+  type InvoiceMatchDetail,
+  type InvoiceMatchOutcome,
+  type InvoiceMatchingOptions,
   type InvoiceTransactionMatches,
+  type InvoiceTransactionPreference,
+  type MatchingInvoice,
+  type MatchingTransaction,
 } from "./activity-matching";
+export * from "./invoice-dedupe";
+export * from "./invoice-currency";
+export * from "./foreign-fee";
+export * from "./merchant-similarity";
+export * from "./activity-notes";
 
 export interface SyncActivityDetail {
   id: string;

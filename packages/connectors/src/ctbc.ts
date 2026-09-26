@@ -120,40 +120,49 @@ export function parseCtbcData(
   const selectedGroups = selectGroupsByCurrency(creditCardGroups);
   const unbilledTransactions = parseUnbilledTransactions(payloads.unbilled);
   const realtimeTransactions = parseRealtimeTransactions(payloads.realtime);
-  const cardMetadata = parseCardMetadata(payloads.creditCards);
-  const cardCurrencies = Array.from(
-    new Set([
-      ...selectedGroups.map((group) => group.currency),
-      ...unbilledTransactions.map((transaction) => transaction.currency),
-      ...realtimeTransactions.map((transaction) => transaction.currency),
-    ]),
+  const cardTransactions = reconcileCreditCardLifecycle(
+    [...parseCreditCardTransactions(selectedGroups), ...unbilledTransactions],
+    realtimeTransactions,
   );
-  const cardAccounts = buildCreditCardAccounts(cardCurrencies, cardMetadata);
-  bankAccounts.push(...cardAccounts);
+  const cardMetadata = parseCardMetadata(
+    payloads.creditCards,
+    payloads.unbilled,
+  );
+  bankAccounts.push(
+    ...buildCreditCardAccounts(selectedGroups, cardTransactions, cardMetadata),
+  );
   bankBalanceSnapshots.push(...buildCreditCardSnapshots(selectedGroups, now));
 
-  const creditCardBills = selectedGroups.map((group) => ({
-    accountId: creditCardSourceId(group.currency),
-    sourceId: `${creditCardSourceId(group.currency)}:bill:${group.billingPeriod}`,
-    billingPeriod: group.billingPeriod,
-    statementAmount: group.statementAmount,
-    minimumPayment: group.minimumPayment,
-    paidAmount: group.paidAmount,
-    isPaid:
-      group.statementAmount != null && group.paidAmount != null
-        ? group.paidAmount >= group.statementAmount
-        : undefined,
-    paymentDueDate: group.paymentDueDate,
-    statementClosingDate: group.statementClosingDate,
-    currency: group.currency,
-    raw: sanitizeCreditCardGroup(group),
-  }));
-  bankTransactions.push(
-    ...reconcileCreditCardLifecycle(
-      [...parseCreditCardTransactions(selectedGroups), ...unbilledTransactions],
-      realtimeTransactions,
-    ),
-  );
+  // 中信帳單、應繳與最低應繳是所有卡片合併計算，掛在摘要帳戶。
+  // 摘要的 billAmt 是本期新增消費，currPmtAmt 才是扣除調整後的本期應繳；
+  // pmtAmt 是「本期間繳掉的上期帳單」，所以某期的已繳金額取自下一期的 pmtAmt。
+  const creditCardBills = selectedGroups.map((group) => {
+    const statementAmount = group.currentPayment ?? group.statementAmount;
+    const paidAmount = creditCardGroups.find(
+      (candidate) =>
+        candidate.currency === group.currency &&
+        candidate.billingPeriod === nextBillingPeriod(group.billingPeriod),
+    )?.paidAmount;
+    return {
+      accountId: creditCardSummarySourceId(group.currency),
+      sourceId: `${creditCardSummarySourceId(group.currency)}:bill:${group.billingPeriod}`,
+      billingPeriod: group.billingPeriod,
+      statementAmount,
+      minimumPayment: group.minimumPayment,
+      paidAmount,
+      isPaid:
+        statementAmount != null && statementAmount <= 0
+          ? true
+          : statementAmount != null && paidAmount != null
+            ? paidAmount >= statementAmount
+            : undefined,
+      paymentDueDate: group.paymentDueDate,
+      statementClosingDate: group.statementClosingDate,
+      currency: group.currency,
+      raw: sanitizeCreditCardGroup(group),
+    };
+  });
+  bankTransactions.push(...cardTransactions);
 
   return {
     bankAccounts: dedupeBySourceId(bankAccounts),
@@ -307,30 +316,100 @@ function selectGroupsByCurrency(groups: CreditCardGroup[]) {
   return selected;
 }
 
+type CtbcCardMetadata = {
+  cardLast4: string;
+  cardName?: string;
+  positiveOrAttached?: string;
+  hasUnbilledAmount: boolean;
+};
+
+/**
+ * 每張有交易或有未出帳金額的實體卡各建一個帳戶；合併帳單、應繳與快照放在
+ * 摘要帳戶，沒有消費的卡只記在摘要帳戶 raw 的卡片清單，不另建帳戶。
+ */
 function buildCreditCardAccounts(
-  currencies: string[],
-  metadata: Array<{
-    cardLast4?: string;
-    cardName?: string;
-    positiveOrAttached?: string;
-  }>,
+  groups: CreditCardGroup[],
+  transactions: Array<Pick<BankTransaction, "accountId" | "currency" | "raw">>,
+  metadata: CtbcCardMetadata[],
 ) {
-  return currencies.map((currency) => ({
-    sourceId: creditCardSourceId(currency),
+  const cardAccounts = new Map<
+    string,
+    { cardLast4: string; currency: string }
+  >();
+  const summaryCurrencies = new Set(groups.map((group) => group.currency));
+  for (const transaction of transactions) {
+    const raw = isRecord(transaction.raw) ? transaction.raw : {};
+    const cardLast4 = physicalCardLast4(raw.cardLast4);
+    if (
+      cardLast4 &&
+      transaction.accountId ===
+        creditCardSourceId(cardLast4, transaction.currency)
+    )
+      cardAccounts.set(transaction.accountId, {
+        cardLast4,
+        currency: transaction.currency,
+      });
+    else summaryCurrencies.add(transaction.currency);
+  }
+  for (const card of metadata) {
+    if (!card.hasUnbilledAmount) continue;
+    const sourceId = creditCardSourceId(card.cardLast4, TWD);
+    if (!cardAccounts.has(sourceId))
+      cardAccounts.set(sourceId, { cardLast4: card.cardLast4, currency: TWD });
+  }
+  if (cardAccounts.size > 0 || metadata.length > 0) summaryCurrencies.add(TWD);
+
+  const activeLast4s = new Set(
+    Array.from(cardAccounts.values(), (card) => card.cardLast4),
+  );
+  const metadataByLast4 = new Map(
+    metadata.map((card) => [card.cardLast4, card]),
+  );
+  const cards = [
+    ...metadata.map((card) => card.cardLast4),
+    ...Array.from(activeLast4s).filter((last4) => !metadataByLast4.has(last4)),
+  ].map((cardLast4) => ({
+    cardLast4,
+    cardName: metadataByLast4.get(cardLast4)?.cardName,
+    positiveOrAttached: metadataByLast4.get(cardLast4)?.positiveOrAttached,
+    hasActivity: activeLast4s.has(cardLast4),
+  }));
+
+  const summaries = Array.from(summaryCurrencies, (currency) => ({
+    sourceId: creditCardSummarySourceId(currency),
     institutionName: "中國信託商業銀行",
     accountName:
-      metadata[0]?.cardName ||
-      `${metadata[0]?.positiveOrAttached || ""}中國信託信用卡`.trim(),
+      currency === TWD
+        ? "中國信託信用卡（合併帳單）"
+        : `中國信託信用卡（合併帳單，${currency}）`,
     accountType: "credit" as const,
     currency,
     raw: {
-      cards: metadata.map((card) => ({
-        cardLast4: card.cardLast4,
-        cardName: card.cardName,
-        positiveOrAttached: card.positiveOrAttached,
-      })),
+      summary: true,
+      cards,
+      inactiveCardCount: cards.filter((card) => !card.hasActivity).length,
     },
   }));
+  const physical = Array.from(
+    cardAccounts,
+    ([sourceId, { cardLast4, currency }]) => {
+      const card = metadataByLast4.get(cardLast4);
+      const name = card?.cardName || `中國信託信用卡 ${cardLast4}`;
+      return {
+        sourceId,
+        institutionName: "中國信託商業銀行",
+        accountName: currency === TWD ? name : `${name}（${currency}）`,
+        accountType: "credit" as const,
+        currency,
+        raw: {
+          cardLast4,
+          cardName: card?.cardName,
+          positiveOrAttached: card?.positiveOrAttached,
+        },
+      };
+    },
+  );
+  return [...summaries, ...physical];
 }
 
 function buildCreditCardSnapshots(groups: CreditCardGroup[], now: Date) {
@@ -341,7 +420,7 @@ function buildCreditCardSnapshots(groups: CreditCardGroup[], now: Date) {
   }
   return Array.from(newestByCurrency.values()).map((group) => {
     const remainingDue = remainingDueForGroup(group);
-    const sourceId = creditCardSourceId(group.currency);
+    const sourceId = creditCardSummarySourceId(group.currency);
     return {
       accountId: sourceId,
       sourceId: `${sourceId}:${now.toISOString()}`,
@@ -384,6 +463,8 @@ function parseCreditCardTransactions(groups: CreditCardGroup[]) {
           description,
         );
       const amount = refund ? Math.abs(rawAmount) : -Math.abs(rawAmount);
+      // Identity keys keep the historical last-4 extraction so existing rows
+      // keep their source IDs; account assignment uses the normalized card.
       const cardLast4 =
         last4(stringValue(bill.cardNoSuffixFour)) ??
         last4(stringValue(bill.cardNo)) ??
@@ -400,7 +481,14 @@ function parseCreditCardTransactions(groups: CreditCardGroup[]) {
         stringValue(bill.sorting),
       ].join(":");
       transactions.push({
-        accountId: creditCardSourceId(group.currency),
+        accountId: cardTransactionAccountId(
+          normalizedCardLast4(
+            bill.cardNoSuffixFour,
+            bill.cardNo,
+            bill.fullCardNo,
+          ),
+          group.currency,
+        ),
         postedDate,
         authorizedAt: purchaseDate,
         amount,
@@ -454,7 +542,10 @@ function parseRealtimeTransactions(payload: unknown) {
     const matchKey = [TWD, transactionDate, amount, cardLast4].join(":");
     return [
       {
-        accountId: creditCardSourceId(TWD),
+        accountId: cardTransactionAccountId(
+          normalizedCardLast4(value.cardNoSuffixFour, value.cardNo),
+          TWD,
+        ),
         authorizedAt,
         amount,
         currency: TWD,
@@ -511,7 +602,10 @@ function parseUnbilledTransactions(payload: unknown) {
     ].join(":");
     return [
       {
-        accountId: creditCardSourceId(currency),
+        accountId: cardTransactionAccountId(
+          normalizedCardLast4(value.cardNoSuffixFour, value.cardNo),
+          currency,
+        ),
         postedDate,
         authorizedAt: purchaseDate,
         amount,
@@ -536,21 +630,22 @@ function reconcileCreditCardLifecycle(
   posted: CtbcCardTransactionCandidate[],
   pending: CtbcCardTransactionCandidate[],
 ) {
-  const candidates = posted.map((transaction) =>
-    pending.filter((candidate) =>
-      ctbcTransactionsMatch(transaction, candidate),
-    ),
+  const pairs = new Map(
+    pairCtbcTransactions(posted, pending, ctbcTransactionMatchKind),
   );
-  const consumedPending = new Set<CtbcCardTransactionCandidate>();
-  const reconciledPosted = posted.map((transaction, index) => {
-    const matches = candidates[index]!;
-    if (matches.length !== 1) return transaction;
-    const candidate = matches[0]!;
-    if (candidates.filter((group) => group.includes(candidate)).length !== 1)
-      return transaction;
-    consumedPending.add(candidate);
+  const consumedPending = new Set(pairs.values());
+  // A posted row replaces its authorization: it inherits the authorization's
+  // identity (so a stored pending row is updated in place) and its time.
+  const reconciledPosted = posted.map((transaction) => {
+    const candidate = pairs.get(transaction);
+    if (!candidate) return transaction;
     return {
       ...transaction,
+      accountId:
+        transaction.accountId ===
+        creditCardSummarySourceId(transaction.currency)
+          ? candidate.accountId
+          : transaction.accountId,
       identityKey: candidate.identityKey,
       authorizedAt: preferredAuthorizedAt(
         transaction.authorizedAt,
@@ -614,26 +709,106 @@ type CtbcMatchTransaction = Pick<
   postedDate?: string;
 };
 
-/** Authorization, currency and signed amount must agree; callers enforce uniqueness. */
+/**
+ * 授權碼相同時，授權（即時消費）可能晚好幾天才請款入帳（例如 Apple 月費），
+ * 因此容許較長的消費日差距；沒有授權碼可比時只接受同卡、同金額且消費日
+ * 相差不超過 3 天，並一律由呼叫端確認一對一唯一。
+ */
+const CTBC_AUTHORIZATION_MATCH_DAYS = 31;
+const CTBC_FALLBACK_MATCH_DAYS = 3;
+/** raw 中 `authorizationHash` 以正規化授權碼計算的版本；舊資料沒有此欄位。 */
+const CTBC_AUTHORIZATION_HASH_VERSION = 2;
+
+export type CtbcMatchKind = "authorization" | "fallback";
+
+/**
+ * Currency and signed amount must always agree. Equal authorization codes
+ * match within {@link CTBC_AUTHORIZATION_MATCH_DAYS}; two normalized codes that
+ * differ never match. Otherwise the same physical card and a purchase day at
+ * most {@link CTBC_FALLBACK_MATCH_DAYS} apart is a weaker candidate. Callers
+ * must enforce one-to-one uniqueness (see {@link pairCtbcTransactions}).
+ */
+export function ctbcTransactionMatchKind(
+  left: CtbcMatchTransaction,
+  right: CtbcMatchTransaction,
+): CtbcMatchKind | undefined {
+  if (left.currency !== right.currency || left.amount !== right.amount)
+    return undefined;
+  const l = isRecord(left.raw) ? left.raw : {};
+  const r = isRecord(right.raw) ? right.raw : {};
+  const leftHash = stringValue(l.authorizationHash);
+  const rightHash = stringValue(r.authorizationHash);
+  // Posting dates describe a different lifecycle event, not the purchase day.
+  const days = purchaseDayDistance(left.authorizedAt, right.authorizedAt);
+  if (leftHash && leftHash === rightHash)
+    return days == null || days <= CTBC_AUTHORIZATION_MATCH_DAYS
+      ? "authorization"
+      : undefined;
+  // Rows written before normalization hashed suffixed codes such as
+  // `123456 Y`; only two normalized hashes prove different authorizations.
+  if (
+    leftHash &&
+    rightHash &&
+    l.authorizationHashVersion === CTBC_AUTHORIZATION_HASH_VERSION &&
+    r.authorizationHashVersion === CTBC_AUTHORIZATION_HASH_VERSION
+  )
+    return undefined;
+  const leftCard = physicalCardLast4(l.cardLast4);
+  if (
+    !leftCard ||
+    leftCard !== physicalCardLast4(r.cardLast4) ||
+    days == null ||
+    days > CTBC_FALLBACK_MATCH_DAYS
+  )
+    return undefined;
+  return "fallback";
+}
+
+/** Whether two CTBC card rows may describe the same purchase; callers enforce uniqueness. */
 export function ctbcTransactionsMatch(
   left: CtbcMatchTransaction,
   right: CtbcMatchTransaction,
 ) {
-  const l = isRecord(left.raw) ? left.raw : {};
-  const r = isRecord(right.raw) ? right.raw : {};
-  if (
-    !l.authorizationHash ||
-    l.authorizationHash !== r.authorizationHash ||
-    left.currency !== right.currency ||
-    left.amount !== right.amount
-  )
-    return false;
-  // Posting dates describe a different lifecycle event, not the purchase day.
-  return (
-    !left.authorizedAt ||
-    !right.authorizedAt ||
-    purchaseDay(left.authorizedAt) === purchaseDay(right.authorizedAt)
-  );
+  return ctbcTransactionMatchKind(left, right) != null;
+}
+
+/**
+ * 一對一配對：先只用授權碼配對，再以剩下的列做後備比對。任一方有多個候選
+ * 時不配對，避免把同金額的兩筆消費誤合併。
+ */
+export function pairCtbcTransactions<L, R>(
+  lefts: readonly L[],
+  rights: readonly R[],
+  kindOf: (left: L, right: R) => CtbcMatchKind | undefined,
+): Array<[L, R]> {
+  const pairs: Array<[L, R]> = [];
+  const usedLeft = new Set<L>();
+  const usedRight = new Set<R>();
+  const passes: ReadonlyArray<ReadonlyArray<CtbcMatchKind>> = [
+    ["authorization"],
+    ["authorization", "fallback"],
+  ];
+  for (const accepted of passes) {
+    const openLefts = lefts.filter((left) => !usedLeft.has(left));
+    const openRights = rights.filter((right) => !usedRight.has(right));
+    const candidates = openLefts.map((left) =>
+      openRights.filter((right) => {
+        const kind = kindOf(left, right);
+        return kind != null && accepted.includes(kind);
+      }),
+    );
+    openLefts.forEach((left, index) => {
+      const matches = candidates[index]!;
+      if (matches.length !== 1) return;
+      const right = matches[0]!;
+      if (candidates.filter((group) => group.includes(right)).length !== 1)
+        return;
+      pairs.push([left, right]);
+      usedLeft.add(left);
+      usedRight.add(right);
+    });
+  }
+  return pairs;
 }
 
 function purchaseDay(value: string) {
@@ -643,7 +818,43 @@ function purchaseDay(value: string) {
     : value.slice(0, 10);
 }
 
-function authorizationHash(value: unknown) {
+function purchaseDayDistance(
+  left: string | undefined,
+  right: string | undefined,
+) {
+  if (!left || !right) return undefined;
+  const leftDay = Date.parse(`${purchaseDay(left)}T00:00:00Z`);
+  const rightDay = Date.parse(`${purchaseDay(right)}T00:00:00Z`);
+  if (!Number.isFinite(leftDay) || !Number.isFinite(rightDay)) return undefined;
+  return Math.abs(leftDay - rightDay) / 86_400_000;
+}
+
+/**
+ * 即時消費的授權碼有時帶後綴（例如 `123456 Y`），未出帳與帳單明細只有前段；
+ * 取第一段作為比對用授權碼。
+ */
+function normalizeAuthCode(value: unknown) {
+  const code = (
+    stringValue(value).trim().split(/\s+/, 1)[0] ?? ""
+  ).toUpperCase();
+  return code && !/^0+$/.test(code) ? code : undefined;
+}
+
+function authorizationFields(value: unknown) {
+  const code = normalizeAuthCode(value);
+  return code
+    ? {
+        authorizationHash: forge.md.sha256
+          .create()
+          .update(code, "utf8")
+          .digest()
+          .toHex(),
+        authorizationHashVersion: CTBC_AUTHORIZATION_HASH_VERSION,
+      }
+    : { authorizationHash: undefined };
+}
+
+function referenceHash(value: unknown) {
   const code = stringValue(value).trim();
   return code && !/^0+$/.test(code)
     ? forge.md.sha256.create().update(code, "utf8").digest().toHex()
@@ -662,26 +873,50 @@ function normalizeCardDate(value: unknown) {
   return normalizeDate(value);
 }
 
-function parseCardMetadata(payload: unknown) {
-  return arrayAt(responseData(payload), "cardDataList").flatMap((value) => {
-    if (!isRecord(value)) return [];
-    return [
-      {
-        cardLast4: last4(stringValue(value.cardNoSuffixFour || value.cardNo)),
-        cardName: optionalString(value.cardName),
-        positiveOrAttached: optionalString(value.positiveOrAttached),
-      },
-    ];
-  });
+/**
+ * 帳單回應的 `cardDataList` 列出所有卡片；未出帳回應的 `cardInfos` 只列出有
+ * 未出帳消費的卡並帶未出帳合計。兩者以正規化末四碼合併。
+ */
+function parseCardMetadata(creditCards: unknown, unbilled: unknown) {
+  const cards = new Map<string, CtbcCardMetadata>();
+  for (const value of [
+    ...arrayAt(responseData(creditCards), "cardDataList"),
+    ...arrayAt(responseData(unbilled), "cardInfos"),
+  ]) {
+    if (!isRecord(value)) continue;
+    const cardLast4 = physicalCardLast4(
+      normalizedCardLast4(value.cardNoSuffixFour, value.cardNo),
+    );
+    if (!cardLast4) continue;
+    const previous = cards.get(cardLast4);
+    const unbilledAmount = numberValue(value.cardUnbillItemSumStr) ?? 0;
+    cards.set(cardLast4, {
+      cardLast4,
+      cardName: previous?.cardName ?? optionalString(value.cardName),
+      positiveOrAttached:
+        previous?.positiveOrAttached ??
+        optionalString(value.positiveOrAttached),
+      hasUnbilledAmount:
+        Boolean(previous?.hasUnbilledAmount) ||
+        unbilledAmount !== 0 ||
+        arrayAt(value, "unbillItems").length > 0,
+    });
+  }
+  return Array.from(cards.values());
+}
+
+function nextBillingPeriod(period: string) {
+  const [year, month] = period.split("-").map(Number);
+  if (!year || !month) return undefined;
+  return month === 12
+    ? `${year + 1}-01`
+    : `${year}-${String(month + 1).padStart(2, "0")}`;
 }
 
 function remainingDueForGroup(group: CreditCardGroup) {
   if (group.currentPayment != null) return Math.max(0, group.currentPayment);
   if (group.statementAmount == null) return undefined;
-  return Math.max(
-    0,
-    group.statementAmount - (group.paidAmount ?? 0) + (group.adjustment ?? 0),
-  );
+  return Math.max(0, group.statementAmount - (group.adjustment ?? 0));
 }
 
 function sanitizeDepositAccount(account: CtbcDepositAccount) {
@@ -732,29 +967,28 @@ function sanitizeCreditCardTransaction(value: JsonRecord) {
     merchantChiName:
       optionalString(value.description) ??
       optionalString(value.merchantChiName),
-    authorizationHash: authorizationHash(value.authCode),
-    referenceHash: authorizationHash(value.acwRefNbr),
+    ...authorizationFields(value.authCode),
+    referenceHash: referenceHash(value.acwRefNbr),
     occCurCode: normalizeCurrency(value.occCurCode),
     foreignAmt: numberValue(value.foreignAmt),
     ntAmt: numberValue(value.purchaseAmt) ?? numberValue(value.ntAmt),
-    cardLast4:
-      last4(stringValue(value.cardNoSuffixFour)) ??
-      last4(stringValue(value.cardNo)) ??
-      last4(stringValue(value.fullCardNo)),
+    cardLast4: normalizedCardLast4(
+      value.cardNoSuffixFour,
+      value.cardNo,
+      value.fullCardNo,
+    ),
     txCode: optionalString(value.txCode),
   };
 }
 
 function sanitizeRealtimeTransaction(value: JsonRecord) {
   return {
-    authorizationHash: authorizationHash(value.authCode),
+    ...authorizationFields(value.authCode),
     txnCountry: optionalString(value.txnCountry),
     origCurCode: normalizeCurrency(value.origCurCode ?? value.origCurCo),
     merchName: optionalString(value.merchName),
     txnType: optionalString(value.txnType),
-    cardLast4:
-      last4(stringValue(value.cardNoSuffixFour)) ??
-      last4(stringValue(value.cardNo)),
+    cardLast4: normalizedCardLast4(value.cardNoSuffixFour, value.cardNo),
     txnDateTime: optionalString(value.txnDateTime),
     isDoubleCoinCard: value.isDoubleCoinCard === true,
     mccCode: optionalString(value.mccCode),
@@ -768,8 +1002,44 @@ function depositSourceId(accountId: string) {
   return `bank:ctbc:${last4(accountId) || "unknown"}:${stableHash(accountId)}`;
 }
 
-function creditCardSourceId(currency: string) {
-  return `credit:ctbc:${currency}`;
+/** 實體卡帳戶；臺幣以外的幣別另建 `credit:ctbc:<末四碼>:<幣別>`。 */
+function creditCardSourceId(cardLast4: string, currency: string) {
+  return currency === TWD
+    ? `credit:ctbc:${cardLast4}`
+    : `credit:ctbc:${cardLast4}:${currency}`;
+}
+
+/** 合併帳單摘要帳戶；存放帳單、應繳快照、繳款與無法歸卡的明細。 */
+function creditCardSummarySourceId(currency: string) {
+  return currency === TWD ? "credit:ctbc:main" : `credit:ctbc:main:${currency}`;
+}
+
+function cardTransactionAccountId(
+  cardLast4: string | undefined,
+  currency: string,
+) {
+  const physical = physicalCardLast4(cardLast4);
+  return physical
+    ? creditCardSourceId(physical, currency)
+    : creditCardSummarySourceId(currency);
+}
+
+/**
+ * 中信卡號欄位可能是 `4444_0`（`_0` 為正附卡標記）、`4111-11**-****-4444`
+ * 或完整卡號；去掉底線後綴再取末四碼。
+ */
+function normalizedCardLast4(...values: unknown[]) {
+  for (const value of values) {
+    const found = last4(stringValue(value).trim().replace(/_\d*$/, ""));
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** 帳單的本行扣繳等列以 `0000` 表示不屬於任何實體卡。 */
+function physicalCardLast4(value: unknown) {
+  const text = stringValue(value);
+  return /^\d{4}$/.test(text) && text !== "0000" ? text : undefined;
 }
 
 function depositAccountType(

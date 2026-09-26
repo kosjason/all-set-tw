@@ -237,7 +237,15 @@ export async function releaseSyncJobLock(
     });
 }
 
-export async function completeSyncJob(db: D1Database, job: SyncJobRow) {
+/**
+ * 標記同步成功。`warning` 為成功但部分資料未取得的說明，保留在 last_error
+ * 讓使用者看見；沒有警告時清空。
+ */
+export async function completeSyncJob(
+  db: D1Database,
+  job: SyncJobRow,
+  warning: string | null = null,
+) {
   const now = new Date();
   const nextRunAt = nextSyncRunAt(
     job.interval_minutes,
@@ -250,7 +258,7 @@ export async function completeSyncJob(db: D1Database, job: SyncJobRow) {
     .update(syncJobs)
     .set({
       lastStatus: "success",
-      lastError: null,
+      lastError: warning,
       lastRunAt: now.toISOString(),
       lastSuccessAt: now.toISOString(),
       nextRunAt,
@@ -299,6 +307,7 @@ export async function markManualSyncSuccess(
   db: D1Database,
   connectorId: string,
   scope: string,
+  warning: string | null = null,
 ) {
   const jobId = `${connectorId}:${scope}`;
   const job = await createDrizzle(db)
@@ -312,7 +321,7 @@ export async function markManualSyncSuccess(
     });
   if (!job) return;
 
-  await completeSyncJob(db, job);
+  await completeSyncJob(db, job, warning);
 }
 
 export async function markManualSyncFailure(

@@ -1,7 +1,10 @@
 import { expect, test } from "@playwright/test";
+import { routeActivityApi } from "./activity-api";
 
 for (const state of ["unconfigured", "pending", "healthy", "failed"] as const) {
-  test(`settings reports ${state} sync health accurately`, async ({ page }) => {
+  test(`data sources report ${state} sync health accurately`, async ({
+    page,
+  }) => {
     await page.route("**/api/**", async (route) => {
       const path = new URL(route.request().url()).pathname;
       if (!path.startsWith("/api/")) return route.continue();
@@ -38,16 +41,19 @@ for (const state of ["unconfigured", "pending", "healthy", "failed"] as const) {
                 ? jobs
                 : path === "/api/notifications/config"
                   ? { enabled: false }
-                  : [],
+                  : path === "/api/sync-reports/latest" ||
+                      path === "/api/sync-schedule"
+                    ? null
+                    : [],
       });
     });
-    await page.goto("/#/settings");
+    await page.goto("/#/data-sources");
     const health = page.locator('[aria-label="資料健康度"]');
     await expect(health).toContainText(
       {
         unconfigured: "尚未設定",
         pending: "等待首次同步",
-        healthy: "大致正常",
+        healthy: "所有已設定連接器都能正常同步",
         failed: "需要處理",
       }[state],
     );
@@ -58,7 +64,8 @@ for (const state of ["unconfigured", "pending", "healthy", "failed"] as const) {
         state === "healthy" ? "1 / 1" : "0 / 1",
       );
     }
-    if (state !== "healthy") await expect(health).not.toContainText("大致正常");
+    if (state !== "healthy")
+      await expect(health).not.toContainText("都能正常同步");
   });
 }
 
@@ -90,7 +97,9 @@ for (const width of [1440, 390]) {
               : [],
       });
     });
-    await page.goto("/#/activity");
+    // 活動列表與月收支由 /api/bank 等原始資料組出；/api/bank 失敗時兩者也失敗。
+    await routeActivityApi(page);
+    await page.goto("/#/transactions");
     await expect(page.getByRole("alert")).toContainText("部分資料載入失敗", {
       timeout: 15000,
     });
@@ -132,7 +141,7 @@ test("classification rules retains its working form without the duplicate header
               : [],
     });
   });
-  await page.goto("/#/classification-rules");
+  await page.goto("/#/transactions/rules");
   await expect(page.getByText("＋ 新增規則", { exact: true })).toHaveCount(0);
   const add = page.getByRole("button", { name: "新增規則", exact: true });
   await expect(add).toBeVisible({ timeout: 15_000 });

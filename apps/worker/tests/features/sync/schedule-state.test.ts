@@ -2,6 +2,7 @@ import {
   failSyncJob,
   findNextDueSyncJob,
   markManualSyncFailure,
+  markManualSyncSuccess,
   type SyncJobRow,
 } from "@taiwan-fin-hub/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -106,6 +107,45 @@ describe("sync job user-action pause", () => {
       enabled: 1,
       last_status: "needs_user_action",
       last_error: "請重新驗證",
+    });
+  });
+
+  it("keeps a partial-data warning on a successful manual sync until the next clean run", async () => {
+    const db = harness.binding;
+    await db
+      .prepare(
+        `INSERT INTO sync_jobs (
+          id, connector_id, scope, enabled, interval_minutes, next_run_at,
+          last_status, last_error, created_at, updated_at
+        ) VALUES (
+          'taishin:all', 'taishin', 'all', 1, 1440, ?,
+          'failed', '連線失敗', ?, ?
+        )`,
+      )
+      .bind("2026-07-16T00:00:00.000Z", now, now)
+      .run();
+    const read = () =>
+      db
+        .prepare(
+          "SELECT last_status, last_error, last_success_at FROM sync_jobs WHERE id = 'taishin:all'",
+        )
+        .first<{
+          last_status: string;
+          last_error: string | null;
+          last_success_at: string | null;
+        }>();
+
+    await markManualSyncSuccess(db, "taishin", "all", "即時消費暫時無法取得");
+    expect(await read()).toMatchObject({
+      last_status: "success",
+      last_error: "即時消費暫時無法取得",
+      last_success_at: expect.any(String),
+    });
+
+    await markManualSyncSuccess(db, "taishin", "all");
+    expect(await read()).toMatchObject({
+      last_status: "success",
+      last_error: null,
     });
   });
 });

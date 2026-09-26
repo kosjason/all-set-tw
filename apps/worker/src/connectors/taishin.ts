@@ -20,6 +20,7 @@ const SUMMARY_PATH = `${API_ROOT}/web4/rb0708rwd/doXTPA`;
 const OVERVIEW_PATH = `${API_ROOT}/web4/rb0760/getCardOverviewData`;
 const BILL_PATH = `${API_ROOT}/web4/rb0708rwd/init`;
 const REALTIME_PATH = `${API_ROOT}/web4/rb0708rwd/qryRealTime`;
+const UNPOSTED_PATH = `${API_ROOT}/web4/rb0708rwd/qryUnposted`;
 export const TAISHIN_AUTO_LOGIN_ATTEMPTS = 3;
 const CAPTCHA_KEEP_ALIVE_MS = 150_000;
 const CAPTCHA_VALIDITY_MS = 120_000;
@@ -257,8 +258,9 @@ export function createTaishinConnector(
         }
         let data;
         stage = "parse_payload";
+        const { realtimeUnavailable, ...cardPayloads } = payloads;
         try {
-          data = parseTaishinCreditCardData(payloads);
+          data = parseTaishinCreditCardData(cardPayloads);
         } catch (error) {
           if (
             error instanceof Error &&
@@ -273,6 +275,9 @@ export function createTaishinConnector(
         return {
           records: [],
           ...data,
+          ...(realtimeUnavailable
+            ? { warnings: [TAISHIN_REALTIME_UNAVAILABLE_WARNING] }
+            : {}),
           cursor: JSON.stringify({
             sessionCookies: JSON.stringify(await page.cookies()),
             sessionCreatedAt: now.toISOString(),
@@ -385,73 +390,124 @@ async function fetchCreditCardPayloads(
   page: BrowserPage,
   setStage: (stage: TaishinSyncStage) => void,
 ) {
-  setStage("fetch_realtime");
-  const realtime = await fetchRealtimeTransactions(page);
   let summary: unknown = { value: {}, error: null };
+  let billContext:
+    | {
+        billingContext: ReturnType<typeof taishinBillingContext>;
+        months: ReturnType<typeof recentMonths>;
+        currentBill: unknown;
+      }
+    | undefined;
   try {
     setStage("fetch_summary");
     summary = await postJson(page, SUMMARY_PATH, {}, OPTIONAL_API_TIMEOUT_MS);
     const billingContext = taishinBillingContext(summary);
     const months = recentMonths(BANK_SYNC_MONTHS, billingContext.anchor);
-    const fetchBill = ({ year, month }: (typeof months)[number]) =>
-      postJson(
-        page,
-        BILL_PATH,
-        {
-          org: billingContext.org,
-          byear: String(year),
-          bmonth: String(month).padStart(2, "0"),
-          cardHolderFlagSelected: "1",
-          cardNo: "",
-        },
-        OPTIONAL_API_TIMEOUT_MS,
-      );
     setStage("fetch_current_bill");
-    const currentBill = await fetchBill(months[0]!);
-    const overview = await postJson(
-      page,
-      OVERVIEW_PATH,
-      {},
-      OPTIONAL_API_TIMEOUT_MS,
-    ).catch((error) => {
-      console.warn(
-        `[taishin] current payment overview skipped: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return undefined;
-    });
-    if (!hasBillPayload(currentBill)) {
-      return { summary, overview, bills: [], realtime };
-    }
-    setStage("fetch_historical_bills");
-    const historicalBills = (
-      await Promise.all(
-        months.slice(1).map((month) => fetchBill(month).catch(() => undefined)),
-      )
-    ).filter((bill) => bill !== undefined);
-    return {
-      summary,
-      overview,
-      bills: [currentBill, ...historicalBills],
-      realtime,
-    };
+    const currentBill = await fetchBill(page, billingContext.org, months[0]!);
+    billContext = { billingContext, months, currentBill };
   } catch (error) {
     if (error instanceof TaishinVerificationRequiredError) throw error;
     if (!(error instanceof TaishinConnectionError)) throw error;
     console.warn(`[taishin] optional bill sync skipped: ${error.message}`);
-    return { summary, bills: [], realtime };
   }
+
+  // The card page loads its summary (doXTPA) and bill init before it queries
+  // real-time spending, so the realtime query runs after the same calls.
+  setStage("fetch_realtime");
+  const realtime = await fetchRealtimeTransactions(
+    page,
+    billContext && {
+      org: billContext.billingContext.org,
+      ...billPeriodParams(billContext.months[0]!),
+      cardHolderFlagSelected: "1",
+      cardNo: "",
+    },
+  );
+  if (!billContext) return { summary, bills: [], ...realtime };
+
+  const { billingContext, months, currentBill } = billContext;
+  const overview = await postJson(
+    page,
+    OVERVIEW_PATH,
+    {},
+    OPTIONAL_API_TIMEOUT_MS,
+  ).catch((error) => {
+    console.warn(
+      `[taishin] current payment overview skipped: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return undefined;
+  });
+  if (!hasBillPayload(currentBill)) {
+    return { summary, overview, bills: [], ...realtime };
+  }
+  setStage("fetch_historical_bills");
+  const historicalBills = (
+    await Promise.all(
+      months
+        .slice(1)
+        .map((month) =>
+          fetchBill(page, billingContext.org, month).catch(() => undefined),
+        ),
+    )
+  ).filter((bill) => bill !== undefined);
+  return {
+    summary,
+    overview,
+    bills: [currentBill, ...historicalBills],
+    ...realtime,
+  };
 }
 
-async function fetchRealtimeTransactions(page: BrowserPage) {
+function billPeriodParams({ year, month }: { year: number; month: number }) {
+  return { byear: String(year), bmonth: String(month).padStart(2, "0") };
+}
+
+function fetchBill(
+  page: BrowserPage,
+  org: string,
+  period: { year: number; month: number },
+) {
+  return postJson(
+    page,
+    BILL_PATH,
+    {
+      org,
+      ...billPeriodParams(period),
+      cardHolderFlagSelected: "1",
+      cardNo: "",
+    },
+    OPTIONAL_API_TIMEOUT_MS,
+  );
+}
+
+export const TAISHIN_REALTIME_UNAVAILABLE_WARNING =
+  "台新即時消費（未入帳）明細暫時無法取得（銀行回應系統忙碌），本次只同步已入帳交易與帳單；最近的刷卡消費可能尚未顯示。";
+
+type RealtimeFetchResult = {
+  realtime: unknown;
+  /** Set when the bank kept answering busy and no unposted list was obtained. */
+  realtimeUnavailable?: true;
+};
+
+async function fetchRealtimeTransactions(
+  page: BrowserPage,
+  unpostedParams?: JsonRecord,
+): Promise<RealtimeFetchResult> {
   for (let attempt = 1; attempt <= REALTIME_RETRY_ATTEMPTS; attempt += 1) {
     try {
-      return await postJson(page, REALTIME_PATH, "", REQUIRED_API_TIMEOUT_MS);
+      return {
+        realtime: await postJson(
+          page,
+          REALTIME_PATH,
+          "",
+          REQUIRED_API_TIMEOUT_MS,
+        ),
+      };
     } catch (error) {
-      const isBusy =
-        error instanceof TaishinConnectionError &&
-        /系統忙碌|無法取得資料/.test(error.message);
+      const isBusy = isBusyError(error);
       const isTransient = error instanceof TaishinTransientConnectionError;
       if (!isBusy && !isTransient) throw error;
       if (attempt < REALTIME_RETRY_ATTEMPTS) {
@@ -470,7 +526,83 @@ async function fetchRealtimeTransactions(page: BrowserPage) {
       }
     }
   }
-  return { value: { fmtRealTxListMap: [] }, error: null };
+  const unposted = await probeUnpostedTransactions(page, unpostedParams);
+  if (unposted) return { realtime: unposted };
+  return {
+    realtime: { value: { fmtRealTxListMap: [] }, error: null },
+    realtimeUnavailable: true,
+  };
+}
+
+function isBusyError(error: unknown) {
+  return (
+    error instanceof TaishinConnectionError &&
+    /系統忙碌|無法取得資料/.test(error.message)
+  );
+}
+
+/**
+ * The card page also exposes qryUnposted for 未入帳 spending. Its request and
+ * response shape have not been captured yet, so this fallback only uses the
+ * response when it carries the known realtime list and otherwise logs the
+ * response structure (key names and array sizes, never values) for a live
+ * session to confirm.
+ */
+async function probeUnpostedTransactions(
+  page: BrowserPage,
+  params: JsonRecord | undefined,
+) {
+  try {
+    const payload = await postJson(
+      page,
+      UNPOSTED_PATH,
+      params ?? {},
+      OPTIONAL_API_TIMEOUT_MS,
+    );
+    const value = isRecord(payload) ? payload.value : undefined;
+    const usable = isRecord(value) && Array.isArray(value.fmtRealTxListMap);
+    console.warn(
+      JSON.stringify({
+        event: "taishin_unposted_probe",
+        usable,
+        shape: payloadShape(value),
+      }),
+    );
+    return usable ? payload : undefined;
+  } catch (error) {
+    if (error instanceof TaishinVerificationRequiredError) throw error;
+    console.warn(
+      JSON.stringify({
+        event: "taishin_unposted_probe",
+        usable: false,
+        busy: isBusyError(error),
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      }),
+    );
+    return undefined;
+  }
+}
+
+function payloadShape(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return { type: "array", length: value.length };
+  }
+  if (!isRecord(value)) return typeof value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .slice(0, 30)
+      .map((key) => {
+        const field = value[key];
+        return [
+          key.slice(0, 40),
+          Array.isArray(field)
+            ? `array(${field.length})`
+            : field === null
+              ? "null"
+              : typeof field,
+        ];
+      }),
+  );
 }
 
 function hasBillPayload(payload: unknown) {

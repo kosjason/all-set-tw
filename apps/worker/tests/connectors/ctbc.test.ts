@@ -235,7 +235,12 @@ describe("CTBC mobile API connector", () => {
     expect(
       (calls[7]?.body as { rqData?: { accountId?: string } }).rqData?.accountId,
     ).toBe("query-account-id");
-    expect(result.bankAccounts).toHaveLength(2);
+    // Deposit account, combined-bill summary account and the active card.
+    expect(result.bankAccounts?.map((account) => account.sourceId)).toEqual([
+      expect.stringMatching(/^bank:ctbc:/),
+      "credit:ctbc:main",
+      expect.stringMatching(/^credit:ctbc:\d{4}$/),
+    ]);
     expect(result.bankTransactions).toHaveLength(4);
     expect(result.creditCardBills).toHaveLength(1);
     expect(result.bankTransactions?.map((item) => item.status)).toEqual(
@@ -303,6 +308,44 @@ describe("CTBC mobile API connector", () => {
     },
   );
 
+  it.each([
+    {
+      label: "reports a forced App update",
+      response: {
+        sys: "SVC",
+        code: "0131",
+        desc: "<p><strong>請更新至最新版本使用</strong></p><p>此功能有重要調整，請至Google Play更新至最新版本。</p>",
+      },
+      message:
+        "中國信託目前不接受連接器的登入方式，需等待連接器更新後才能同步；不需要更新 App 或重設密碼，也請先不要重試。",
+    },
+    {
+      label: "keeps other 0131 login failures generic",
+      response: { sys: "SVC", code: "0131", desc: "其他提示" },
+      message: "中國信託資料同步暫時無法完成。",
+    },
+  ])("$label", async ({ response, message }) => {
+    const responses = [
+      jsonResponse({ access_token: "oauth-token" }),
+      jsonResponse({ statusCode: "0000" }),
+      jsonResponse({ success: true, rsData: { seed: "seed" }, token: "token" }),
+      jsonResponse(response),
+    ];
+    const fetcher = vi.fn(async () => responses.shift()!) as CtbcFetch;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(
+      createCtbcConnector(fetcher).sync({
+        userId: "A123456789",
+        account: "bank-user",
+        password: "bank-password",
+      }),
+    ).rejects.toMatchObject({ name: "CtbcConnectionError", message });
+    const logged = warn.mock.calls.flat().join("\n");
+    expect(logged).not.toContain("請更新");
+    expect(logged).not.toContain("<p>");
+  });
+
   it("turns an explicit needOTP flag in a failed response into a user-action error", async () => {
     const responses = [
       jsonResponse({ access_token: "oauth-token" }),
@@ -348,7 +391,14 @@ describe("CTBC mobile API connector", () => {
           },
         },
       }),
-      jsonResponse({ sys: "SVC", code: "0131", rsData: {} }),
+      // Same code and wording as the login forced-update page, but outside
+      // login it stays a generic connection error.
+      jsonResponse({
+        sys: "SVC",
+        code: "0131",
+        desc: "請更新至最新版本使用",
+        rsData: {},
+      }),
       jsonResponse({ code: "0000", rsData: {} }),
     ];
     const fetcher = vi.fn(async () => responses.shift()!) as CtbcFetch;

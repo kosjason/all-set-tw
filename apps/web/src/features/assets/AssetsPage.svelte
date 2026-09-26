@@ -1,7 +1,12 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
   import { ChevronRight } from "@lucide/svelte";
-  import { exchangeRatesQuery, manualAssetsQuery } from "@/data/assets/queries";
+  import type { Navigate } from "@/app/types";
+  import {
+    exchangeRatesQuery,
+    manualAssetsQuery,
+    netWorthHistoryQuery,
+  } from "@/data/assets/queries";
   import { bankQuery, creditCardBillsQuery } from "@/data/bank/queries";
   import {
     investmentsQuery,
@@ -12,9 +17,10 @@
   import EmptyState from "@/shared/ui/EmptyState.svelte";
   import InstitutionDetails from "./components/InstitutionDetails.svelte";
   import InvestmentWorkspace from "./components/InvestmentWorkspace.svelte";
+  import NetWorthHistoryChart from "./components/NetWorthHistoryChart.svelte";
   import ManualAssets from "./ManualAssets.svelte";
-  import { calculateAssetSummary } from "./model/summary";
-  import type { InstitutionAssetGroup } from "./model/summary";
+  import { calculateAssetSummary } from "@/data/assets/summary";
+  import type { InstitutionAssetGroup } from "@/data/assets/summary";
 
   type LedgerItem =
     | {
@@ -26,7 +32,7 @@
     | { key: "investments"; kind: "investments"; label: "投資" }
     | { key: "manual-assets"; kind: "manual-assets"; label: "其他資產" };
 
-  let { api }: { api: ApiClient } = $props();
+  let { api, navigate }: { api: ApiClient; navigate?: Navigate } = $props();
 
   const bank = createQuery(bankQuery(() => api));
   const bills = createQuery(creditCardBillsQuery(() => api));
@@ -34,6 +40,7 @@
   const trades = createQuery(investmentTransactionsQuery(() => api));
   const manual = createQuery(manualAssetsQuery(() => api));
   const rates = createQuery(exchangeRatesQuery(() => api));
+  const history = createQuery(netWorthHistoryQuery(() => api));
 
   const summary = $derived(
     calculateAssetSummary({
@@ -181,6 +188,13 @@
         </div>
       </div>
     </section>
+
+    <div class="min-w-0 border-t border-ink/10 pt-6">
+      <NetWorthHistoryChart
+        data={$history.data ?? []}
+        loading={$history.isPending}
+      />
+    </div>
 
     {#if ledgerItems.length === 0}
       <EmptyState
@@ -447,5 +461,22 @@
         </div>
       </section>
     {/if}
+
+    <button
+      type="button"
+      class="flex min-h-14 min-w-0 items-center justify-between gap-3 rounded-xl border border-ink/10 bg-card px-4 text-left transition hover:bg-ink/3"
+      onclick={() =>
+        navigate
+          ? navigate("own-accounts")
+          : (window.location.hash = "#/own-accounts")}
+    >
+      <span class="min-w-0">
+        <span class="block text-sm font-semibold">我的其他帳戶</span>
+        <span class="block text-caption text-subtle"
+          >無法同步的自有帳戶與卡片；轉入轉出不計入收支</span
+        >
+      </span>
+      <ChevronRight class="size-4 shrink-0 text-subtle" />
+    </button>
   </div>
 {/if}

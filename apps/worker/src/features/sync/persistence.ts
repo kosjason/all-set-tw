@@ -57,6 +57,8 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "invoice_date",
       "seller_name",
       "amount",
+      "carrier_type",
+      "carrier_suffix",
       "raw_payload",
       "created_at",
       "updated_at",
@@ -67,6 +69,8 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "invoice_date",
       "seller_name",
       "amount",
+      "carrier_type",
+      "carrier_suffix",
       "raw_payload",
       "updated_at",
     ],
@@ -182,6 +186,8 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "currency",
       "description",
       "counterparty",
+      "counterparty_bank_code",
+      "counterparty_account_suffix",
       "status",
       "transfer_peer_id",
       "raw_payload",
@@ -196,6 +202,8 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "currency",
       "description",
       "counterparty",
+      "counterparty_bank_code",
+      "counterparty_account_suffix",
       "status",
       "transfer_peer_id",
       "raw_payload",
@@ -249,6 +257,8 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "cash_balance",
       "currency",
       "as_of_date",
+      "broker_no",
+      "broker_name",
       "raw_payload",
       "created_at",
       "updated_at",
@@ -262,6 +272,8 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "market_value",
       "cash_balance",
       "currency",
+      "broker_no",
+      "broker_name",
       "raw_payload",
       "updated_at",
     ],
@@ -519,6 +531,12 @@ function promotionStatement(
           WHEN length(invoices.invoice_date) > 10 AND length(excluded.invoice_date) = 10
             AND date(invoices.invoice_date, '+8 hours') = excluded.invoice_date
           THEN invoices.invoice_date ELSE excluded.invoice_date END`;
+      // 載具資訊只在新版表頭出現；舊來源重寫時保留既有值。
+      if (
+        entityType === "invoice" &&
+        (column === "carrier_type" || column === "carrier_suffix")
+      )
+        return `${column} = COALESCE(excluded.${column}, invoices.${column})`;
       if (entityType === "credit_card_bill") {
         if (column === "paid_amount")
           return "paid_amount = COALESCE(excluded.paid_amount, credit_card_bills.paid_amount)";

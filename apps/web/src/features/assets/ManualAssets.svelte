@@ -72,7 +72,7 @@
     vehicle: "交通工具",
     other: "其他",
   };
-  const currencies = ["TWD", "USD", "JPY", "EUR"] as const;
+  const currencies = ["TWD", "USD", "JPY", "EUR", "CNY"] as const;
   const rateValues = $derived(
     Object.fromEntries(
       ($rates.data ?? []).map((rate) => [rate.currency, rate.rateTwd]),

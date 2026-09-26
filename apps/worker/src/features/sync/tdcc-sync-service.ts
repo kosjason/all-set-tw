@@ -27,7 +27,7 @@ import { getConnectorSettings, nextSyncRunAt } from "@taiwan-fin-hub/db";
 import { configEncryptionKey } from "../../platform/config";
 import { decryptJson, encryptJson } from "../../platform/crypto";
 import type { Env } from "../../platform/env";
-import { rebuildBankDepositHistory, dateFromIso } from "../net-worth/service";
+import { refreshBankDepositHistory } from "../net-worth/service";
 import {
   safelySendScheduledSyncSummary,
   safelySendSyncNotification,
@@ -72,7 +72,7 @@ import {
   NeedsUserActionError,
   safeErrorMessage,
   SyncAlreadyRunningError,
-  SYNC_LOCK_LEASE_MS,
+  DURABLE_SYNC_LOCK_LEASE_MS,
 } from "./service";
 import {
   serializePublicConnectorConfig,
@@ -598,7 +598,7 @@ async function promoteTdccRun(env: Env, run: TdccRunRow) {
     finalizeStatements,
   });
   if (includesBank(run.scope)) {
-    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+    await refreshBankDepositHistory(env.DB, new Date(now));
   }
   await updateTdccRunState(env.DB, {
     runId: run.id,
@@ -1033,7 +1033,7 @@ async function holdTdccRunLock(
     )
     .bind(
       runId,
-      new Date(now.getTime() + SYNC_LOCK_LEASE_MS).toISOString(),
+      new Date(now.getTime() + DURABLE_SYNC_LOCK_LEASE_MS).toISOString(),
       trigger,
       scope,
       now.toISOString(),

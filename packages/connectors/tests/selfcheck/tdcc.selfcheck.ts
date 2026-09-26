@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {
   createTdccConnector,
   normalizeTdccBankAuthorizedAt,
+  normalizeTdccSnapshot,
   parseTdccTradePageItems,
   parseTdccConfig,
   TdccOtpExpiredError,
@@ -583,6 +584,84 @@ async function main() {
     connector.sync(configWithOtp, undefined),
     TdccOtpExpiredError,
     "expired OTP should throw TdccOtpExpiredError",
+  );
+
+  // The same security held at two brokers is two genuine positions. They must
+  // keep separate sourceIds and carry the broker so the UI can label them.
+  const holdingRow = (quantity: string) => [
+    "0050",
+    "ETF50",
+    null,
+    null,
+    null,
+    null,
+    "12",
+    quantity,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    "100",
+    "20240615",
+    "TWD",
+    null,
+    "20240615",
+  ];
+  const splitSnapshot = normalizeTdccSnapshot({
+    stockPayload: {
+      accounts: [
+        {
+          brokerNo: "9A92",
+          brokerAccount: "1111111",
+          brokerName: "Broker A",
+          items: [holdingRow("1000")],
+        },
+        {
+          brokerNo: "9B01",
+          brokerAccount: "2222222",
+          brokerName: "Broker B",
+          items: [holdingRow("1")],
+        },
+      ],
+    },
+    fundPayload: {},
+    bankBalancesPayload: {},
+    trendPayload: null,
+    bankEntries: [],
+  });
+  const splitPositions = splitSnapshot.investmentPositions.filter(
+    (position) => position.symbol === "0050",
+  );
+  assert.equal(splitPositions.length, 2);
+  assert.notEqual(splitPositions[0]?.sourceId, splitPositions[1]?.sourceId);
+  assert.deepEqual(
+    splitPositions
+      .map((position) => ({
+        brokerNo: position.brokerNo,
+        brokerName: position.brokerName,
+        quantity: position.quantity,
+        marketValue: position.marketValue,
+      }))
+      .sort((a, b) => String(a.brokerNo).localeCompare(String(b.brokerNo))),
+    [
+      {
+        brokerNo: "9A92",
+        brokerName: "Broker A",
+        quantity: 1000,
+        marketValue: 100000,
+      },
+      {
+        brokerNo: "9B01",
+        brokerName: "Broker B",
+        quantity: 1,
+        marketValue: 100,
+      },
+    ],
   );
 
   console.log("tdcc.selfcheck: ok");

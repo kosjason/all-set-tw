@@ -1,4 +1,9 @@
-import { parseTaishinCreditCardData } from "@taiwan-fin-hub/connectors";
+import {
+  pairTaishinTransactions,
+  parseTaishinCreditCardData,
+  taishinTransactionMatchKind,
+  type TaishinMatchTransaction,
+} from "@taiwan-fin-hub/connectors";
 import { describe, expect, it } from "vitest";
 
 const summary = {
@@ -31,6 +36,8 @@ function transaction(
   amount: string,
   cardLast4 = "3108",
   currency = "新臺幣",
+  transactionDate = "2026/07/08",
+  country = "TW",
 ) {
   return {
     order: `信用卡 (卡號末四碼:${cardLast4})`,
@@ -39,9 +46,9 @@ function transaction(
         showOutDesc: description,
         showOutCurrency: currency,
         showOutPostDate: "2026/07/10",
-        showOutTXNDate: "2026/07/08",
+        showOutTXNDate: transactionDate,
         showOutAmt: amount,
-        showOutCountry: "TW",
+        showOutCountry: country,
       },
     ],
   };
@@ -238,7 +245,7 @@ describe("Taishin credit-card parser", () => {
 
     expect(result.bankTransactions).toHaveLength(3);
     expect(result.bankTransactions.map(({ sourceId }) => sourceId)).toEqual([
-      expect.stringMatching(/第一商店:1$/),
+      expect.stringMatching(/第一商店入帳後:1$/),
       expect.stringMatching(/第二商店:1$/),
       expect.stringMatching(/尚未入帳:1$/),
     ]);
@@ -249,31 +256,109 @@ describe("Taishin credit-card parser", () => {
     ]);
   });
 
-  it("keeps an ambiguous same-day same-amount authorization pending", () => {
+  it("replaces an MCC-category authorization with its posted merchant row", () => {
+    const result = parseTaishinCreditCardData({
+      summary,
+      bills: [
+        bill("2026/09", [
+          transaction(
+            "SAMPLE SOFTWARE 0000-00",
+            "793",
+            "4321",
+            "新臺幣",
+            "2026/09/15",
+            "US",
+          ),
+        ]),
+      ],
+      realtime: realtime(
+        [
+          [
+            "2026/09/15",
+            "18:05:02",
+            "電腦、電腦外圍用具、軟體",
+            "793",
+            "US",
+            "成功",
+          ],
+        ],
+        "4321",
+      ),
+    });
+
+    expect(result.bankTransactions).toEqual([
+      expect.objectContaining({
+        description: "SAMPLE SOFTWARE 0000-00",
+        status: "posted",
+        amount: -793,
+        authorizedAt: "2026-09-15T18:05:02+08:00",
+        sourceId: expect.stringMatching(/samplesoftware000000:1$/),
+      }),
+    ]);
+  });
+
+  it("pairs an authorization posted up to three days later but not four", () => {
+    const parse = (transactionDate: string) =>
+      parseTaishinCreditCardData({
+        summary,
+        bills: [
+          bill("2026/07", [
+            transaction("商戶 B", "350", "3108", "新臺幣", transactionDate),
+          ]),
+        ],
+        realtime: realtime([
+          ["2026/07/08", "23:30:00", "餐飲", "350", "TW", "成功"],
+        ]),
+      }).bankTransactions.map(({ status }) => status);
+
+    expect(parse("2026/07/11")).toEqual(["posted"]);
+    expect(parse("2026/07/12")).toEqual(["posted", "pending"]);
+  });
+
+  it("never merges when two same-amount authorizations compete for one posted row", () => {
     const result = parseTaishinCreditCardData({
       summary,
       bills: [bill("2026/07", [transaction("商戶 B", "350")])],
       realtime: realtime([
-        ["2026/07/08", "12:30:00", "商戶 A", "350", "TW", "成功"],
+        ["2026/07/08", "12:30:00", "餐飲", "350", "TW", "成功"],
+        ["2026/07/08", "19:30:00", "餐飲", "350", "TW", "成功"],
       ]),
     });
 
-    expect(result.bankTransactions).toHaveLength(2);
-    expect(result.bankTransactions).toEqual([
-      expect.objectContaining({
-        description: "商戶 B",
-        status: "posted",
-        sourceId: expect.stringMatching(/:1$/),
-      }),
-      expect.objectContaining({
-        description: "商戶 A",
-        status: "pending",
-        sourceId: expect.stringMatching(/:1$/),
-      }),
+    expect(result.bankTransactions.map(({ status }) => status)).toEqual([
+      "posted",
+      "pending",
+      "pending",
     ]);
+  });
+
+  it("does not pair a foreign transaction fee, another card or another country", () => {
+    const result = parseTaishinCreditCardData({
+      summary,
+      bills: [
+        bill("2026/07", [
+          transaction(
+            "國外交易服務費－793.00",
+            "12",
+            "3108",
+            "新臺幣",
+            "2026/07/08",
+            "",
+          ),
+          transaction("其他卡商戶", "90", "9921"),
+          transaction("愛爾蘭商戶", "60", "3108", "新臺幣", "2026/07/08", "IE"),
+        ]),
+      ],
+      realtime: realtime([
+        ["2026/07/08", "12:30:00", "其他交易", "12", "", "成功"],
+        ["2026/07/08", "12:40:00", "百貨公司", "90", "TW", "成功"],
+        ["2026/07/08", "12:50:00", "其他交易", "60", "US", "成功"],
+      ]),
+    });
+
     expect(
-      new Set(result.bankTransactions.map(({ sourceId }) => sourceId)).size,
-    ).toBe(2);
+      result.bankTransactions.filter(({ status }) => status === "pending"),
+    ).toHaveLength(3);
   });
 
   it("keeps different merchants stable across lifecycle subsets", () => {
@@ -282,7 +367,7 @@ describe("Taishin credit-card parser", () => {
       bills: [bill("2026/07", [])],
       realtime: realtime([
         ["2026/07/08", "12:30:00", "商戶 A", "350", "TW", "成功"],
-        ["2026/07/08", "13:30:00", "商戶 B", "350", "TW", "成功"],
+        ["2026/07/08", "13:30:00", "商戶 B", "420", "TW", "成功"],
       ]),
     });
     const firstIds = new Map(
@@ -296,7 +381,7 @@ describe("Taishin credit-card parser", () => {
       summary,
       bills: [bill("2026/07", [transaction("商戶 A", "350")])],
       realtime: realtime([
-        ["2026/07/08", "13:30:00", "商戶 B", "350", "TW", "成功"],
+        ["2026/07/08", "13:30:00", "商戶 B", "420", "TW", "成功"],
       ]),
     });
 
@@ -467,5 +552,89 @@ describe("Taishin credit-card parser", () => {
         bills: [bill()],
       }),
     ).toThrow("API 回傳錯誤");
+  });
+});
+
+describe("Taishin pending/posted matching", () => {
+  const pending = (
+    overrides: Partial<TaishinMatchTransaction> = {},
+    raw: Record<string, unknown> = {},
+  ): TaishinMatchTransaction => ({
+    authorizedAt: "2026-09-15T18:05:02+08:00",
+    amount: -793,
+    currency: "TWD",
+    description: "電腦、電腦外圍用具、軟體",
+    raw: { cardLast4: "4321", country: "US", ...raw },
+    ...overrides,
+  });
+  const posted = (
+    overrides: Partial<TaishinMatchTransaction> = {},
+    raw: Record<string, unknown> = {},
+  ): TaishinMatchTransaction => ({
+    authorizedAt: "2026-09-15",
+    amount: -793,
+    currency: "TWD",
+    description: "SAMPLE SOFTWARE 0000-00",
+    raw: { cardLast4: "4321", country: "US", ...raw },
+    ...overrides,
+  });
+
+  it("uses authorization codes before the card/amount/date fallback", () => {
+    expect(
+      taishinTransactionMatchKind(
+        pending({}, { authorizationCode: "A1" }),
+        posted({ authorizedAt: "2026-09-30" }, { authorizationCode: "A1" }),
+      ),
+    ).toBe("authorization");
+    expect(
+      taishinTransactionMatchKind(
+        pending({}, { authorizationCode: "A1" }),
+        posted({}, { authorizationCode: "B2" }),
+      ),
+    ).toBeUndefined();
+
+    const first = pending({}, { authorizationCode: "A1" });
+    const second = pending(
+      { authorizedAt: "2026-09-15T19:00:00+08:00" },
+      { authorizationCode: "B2" },
+    );
+    const target = posted({}, { authorizationCode: "B2" });
+    expect(
+      pairTaishinTransactions(
+        [first, second],
+        [target],
+        taishinTransactionMatchKind,
+      ),
+    ).toEqual([[second, target]]);
+  });
+
+  it("falls back to card, amount, currency and a three-day window without codes", () => {
+    expect(taishinTransactionMatchKind(pending(), posted())).toBe("fallback");
+    for (const mismatch of [
+      posted({ amount: -794 }),
+      posted({ currency: "USD" }),
+      posted({ authorizedAt: "2026-09-19" }),
+      posted({}, { cardLast4: "8765" }),
+      posted({}, { country: "IE" }),
+      posted({ description: "國外交易服務費－793.00" }, { country: undefined }),
+    ])
+      expect(taishinTransactionMatchKind(pending(), mismatch)).toBeUndefined();
+  });
+
+  it("leaves both sides unpaired when either has two candidates", () => {
+    const a = pending();
+    const b = pending({ authorizedAt: "2026-09-16T09:00:00+08:00" });
+    const target = posted();
+    expect(
+      pairTaishinTransactions([a, b], [target], taishinTransactionMatchKind),
+    ).toEqual([]);
+    const other = posted({ authorizedAt: "2026-09-16" });
+    expect(
+      pairTaishinTransactions(
+        [a],
+        [target, other],
+        taishinTransactionMatchKind,
+      ),
+    ).toEqual([]);
   });
 });
