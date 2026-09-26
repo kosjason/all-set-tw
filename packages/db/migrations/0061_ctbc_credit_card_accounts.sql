@@ -285,19 +285,29 @@ WHERE connector_id = 'ctbc'
 
 -- 6. 標記為舊帳戶重複來源的帳戶（canonical_account_id 指向舊帳戶，例如手動匯入的
 --    同一張卡）改指同幣別的摘要帳戶，維持「重複來源不重複計算」；不可設為 NULL，
---    否則這些帳戶會重新出現並重複計入。之後移除已清空的舊帳戶；仍被參照者
---    （理論上不會發生）保留不動。
+--    否則這些帳戶會重新出現並重複計入。
+--    步驟 3 已為每個舊帳戶建立（或沿用既有的）同幣別摘要帳戶，所以同幣別摘要帳戶
+--    必定存在；仍防禦性地退回台幣摘要帳戶，兩者都不存在時維持原值（此時舊帳戶
+--    仍被參照，下方的刪除會保留它，不會產生懸空參照）。
 UPDATE bank_accounts
-SET canonical_account_id = (
-  SELECT summary.id
-  FROM bank_accounts legacy
-  JOIN bank_accounts summary
-    ON summary.connector_id = 'ctbc'
-   AND summary.source_id = CASE legacy.currency
-     WHEN 'TWD' THEN 'credit:ctbc:main'
-     ELSE 'credit:ctbc:main:' || legacy.currency
-   END
-  WHERE legacy.id = bank_accounts.canonical_account_id
+SET canonical_account_id = COALESCE(
+  (
+    SELECT summary.id
+    FROM bank_accounts legacy
+    JOIN bank_accounts summary
+      ON summary.connector_id = 'ctbc'
+     AND summary.source_id = CASE legacy.currency
+       WHEN 'TWD' THEN 'credit:ctbc:main'
+       ELSE 'credit:ctbc:main:' || legacy.currency
+     END
+    WHERE legacy.id = bank_accounts.canonical_account_id
+  ),
+  (
+    SELECT summary.id FROM bank_accounts summary
+    WHERE summary.connector_id = 'ctbc'
+      AND summary.source_id = 'credit:ctbc:main'
+  ),
+  canonical_account_id
 )
 WHERE canonical_account_id IN (
   SELECT id FROM bank_accounts
@@ -312,6 +322,7 @@ SET canonical_account_id = NULL
 WHERE connector_id = 'ctbc'
   AND canonical_account_id = id;
 
+-- 移除已清空且不再被參照的舊帳戶。
 DELETE FROM bank_accounts
 WHERE connector_id = 'ctbc'
   AND account_type = 'credit'
@@ -324,4 +335,8 @@ WHERE connector_id = 'ctbc'
   )
   AND NOT EXISTS (
     SELECT 1 FROM bank_balance_snapshots s WHERE s.account_id = bank_accounts.id
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM bank_accounts other
+    WHERE other.canonical_account_id = bank_accounts.id
   );

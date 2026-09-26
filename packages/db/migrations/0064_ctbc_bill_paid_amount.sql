@@ -17,10 +17,13 @@ CREATE TABLE _0064_ctbc_bills (
   account_id TEXT NOT NULL,
   currency TEXT NOT NULL,
   billing_period TEXT NOT NULL,
-  statement_amount INTEGER,
-  paid_amount INTEGER
+  statement_amount REAL,
+  paid_amount REAL
 );
 
+-- raw 的應繳可能是數字或含千分位逗號的字串（例如 "12,345"）：去掉逗號與空白後，
+-- 只有純數字（可含負號與小數點）才採用，否則沿用原本的 statement_amount。舊的已繳金額
+-- 以同樣方式正規化後再位移與比較。
 INSERT INTO _0064_ctbc_bills
   (id, account_id, currency, billing_period, statement_amount, paid_amount)
 SELECT
@@ -28,18 +31,29 @@ SELECT
   account_id,
   currency,
   billing_period,
-  COALESCE(
+  CASE
+    WHEN raw_amount GLOB '*[0-9]*'
+      AND NOT raw_amount GLOB '*[^0-9.-]*'
+      THEN CAST(raw_amount AS REAL)
+    ELSE statement_amount
+  END,
+  CASE
+    WHEN paid_text GLOB '*[0-9]*' AND NOT paid_text GLOB '*[^0-9.-]*'
+      THEN CAST(paid_text AS REAL)
+  END
+FROM (
+  SELECT
+    id, account_id, currency, billing_period, statement_amount, paid_amount,
     CASE WHEN json_valid(raw_payload) THEN
-      COALESCE(
+      replace(trim(CAST(COALESCE(
         json_extract(raw_payload, '$.currentPayment'),
         json_extract(raw_payload, '$.currPmtAmt')
-      )
-    END,
-    statement_amount
-  ),
-  paid_amount
-FROM credit_card_bills
-WHERE connector_id = 'ctbc';
+      ) AS TEXT)), ',', '')
+    END AS raw_amount,
+    replace(trim(CAST(paid_amount AS TEXT)), ',', '') AS paid_text
+  FROM credit_card_bills
+  WHERE connector_id = 'ctbc'
+);
 
 UPDATE credit_card_bills
 SET

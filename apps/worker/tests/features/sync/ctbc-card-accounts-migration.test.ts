@@ -405,4 +405,68 @@ describe("CTBC credit card account split migration", () => {
     ).toEqual({ count: 0 });
     expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
+
+  it("falls back to the TWD summary account, then keeps the legacy account", () => {
+    // 步驟 3 一定會建立同幣別摘要帳戶；這裡用 trigger 模擬它不存在，驗證防禦性退路。
+    const setup = (dropTwdSummary: boolean) => {
+      const database = createDatabase();
+      insertAccount(
+        database,
+        "ctbc:credit:ctbc:USD",
+        "credit:ctbc:USD",
+        {},
+        { currency: "USD" },
+      );
+      insertAccount(
+        database,
+        "import-usd",
+        "credit:ctbc-import:USD",
+        {},
+        { connectorId: "ctbc-import", currency: "USD" },
+      );
+      database.exec(`
+        UPDATE bank_accounts SET canonical_account_id = 'ctbc:credit:ctbc:USD' WHERE id = 'import-usd';
+        CREATE TRIGGER drop_usd_summary AFTER INSERT ON bank_accounts
+          WHEN NEW.source_id = 'credit:ctbc:main:USD'
+          BEGIN DELETE FROM bank_accounts WHERE id = NEW.id; END;
+      `);
+      if (!dropTwdSummary) {
+        insertAccount(database, "ctbc:credit:ctbc:main", "credit:ctbc:main", {
+          summary: true,
+        });
+      }
+      applyMigration(database);
+      return database;
+    };
+
+    const withTwd = setup(false);
+    expect(
+      withTwd
+        .prepare(
+          "SELECT canonical_account_id AS canonical FROM bank_accounts WHERE id = 'import-usd'",
+        )
+        .get(),
+    ).toEqual({ canonical: "ctbc:credit:ctbc:main" });
+    expect(withTwd.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+
+    // 連台幣摘要帳戶都沒有：維持原值，舊帳戶因仍被參照而保留，不產生懸空參照。
+    const withoutSummary = setup(true);
+    expect(
+      withoutSummary
+        .prepare(
+          "SELECT canonical_account_id AS canonical FROM bank_accounts WHERE id = 'import-usd'",
+        )
+        .get(),
+    ).toEqual({ canonical: "ctbc:credit:ctbc:USD" });
+    expect(
+      withoutSummary
+        .prepare(
+          "SELECT COUNT(*) AS count FROM bank_accounts WHERE id = 'ctbc:credit:ctbc:USD'",
+        )
+        .get(),
+    ).toEqual({ count: 1 });
+    expect(withoutSummary.prepare("PRAGMA foreign_key_check").all()).toEqual(
+      [],
+    );
+  });
 });

@@ -187,4 +187,60 @@ describe("0064 CTBC bill paid amount shift", () => {
       },
     ]);
   });
+
+  it("跨年位移，並把字串金額（千分位）轉成數字", () => {
+    const database = createDatabase();
+    insertAccount(database, "ctbc", "ctbc-main");
+    insertBill(database, {
+      accountId: "ctbc-main",
+      period: "2026-12",
+      statementAmount: 20000,
+      paidAmount: 1000,
+      isPaid: 0,
+      raw: { billAmt: 20000, currPmtAmt: "12,345", pmtAmt: 1000 },
+    });
+    insertBill(database, {
+      accountId: "ctbc-main",
+      period: "2027-01",
+      statementAmount: 500,
+      paidAmount: 12345,
+      isPaid: 1,
+      raw: { billAmt: 500, currentPayment: " 1,500 ", pmtAmt: 12345 },
+    });
+    // 無法解析的應繳字串不採用，沿用原本的 statement_amount。
+    insertBill(database, {
+      accountId: "ctbc-main",
+      period: "2027-02",
+      statementAmount: 800,
+      paidAmount: 1500,
+      isPaid: 1,
+      raw: { currPmtAmt: "N/A" },
+    });
+
+    database.exec(
+      readFileSync(`${migrationsDirectory}/${migrationFile}`, "utf8"),
+    );
+
+    expect(bills(database)).toEqual([
+      // 12 月的已繳取 1 月的舊值；字串 "12,345" 視為 12345。
+      {
+        id: "ctbc-main:2026-12",
+        statementAmount: 12345,
+        paidAmount: 12345,
+        isPaid: 1,
+      },
+      {
+        id: "ctbc-main:2027-01",
+        statementAmount: 1500,
+        paidAmount: 1500,
+        isPaid: 1,
+      },
+      {
+        id: "ctbc-main:2027-02",
+        statementAmount: 800,
+        paidAmount: null,
+        isPaid: null,
+      },
+    ]);
+  });
 });
