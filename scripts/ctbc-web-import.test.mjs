@@ -76,6 +76,15 @@ test("parseArgs applies defaults and validates options", () => {
   assert.throws(() => parseArgs(["--bogus"], {}), CtbcWebImportError);
   assert.throws(() => parseArgs(["--worker"], {}), CtbcWebImportError);
   assert.throws(
+    () => parseArgs(["--worker", "http://fin.example.com"], {}),
+    CtbcWebImportError,
+  );
+  assert.equal(
+    parseArgs(["--worker", "http://127.0.0.1:8797"], {}).workerUrl,
+    "http://127.0.0.1:8797",
+  );
+
+  assert.throws(
     () => parseArgs(["--login-url", "https://evil.example.com/"], {}),
     CtbcWebImportError,
   );

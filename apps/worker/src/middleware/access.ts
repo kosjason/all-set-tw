@@ -16,7 +16,14 @@ export function isLocalDevRequest(
         env.LOCAL_DEV_MODE.trim().toLowerCase(),
       ));
 
-  return enabled && LOCAL_DEV_HOSTS.has(new URL(request.url).hostname);
+  // 經 Cloudflare 轉送（Tunnel／Proxy）的請求一律要驗證，即使 Host 被改成 localhost。
+  const viaCloudflare =
+    request.headers.has("cf-ray") || request.headers.has("cf-connecting-ip");
+  return (
+    enabled &&
+    !viaCloudflare &&
+    LOCAL_DEV_HOSTS.has(new URL(request.url).hostname)
+  );
 }
 
 function requireAccessSecrets(

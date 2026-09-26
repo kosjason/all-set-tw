@@ -129,7 +129,7 @@ export function parseArgs(argv, env = {}) {
   ) {
     throw new CtbcWebImportError("--timeout 必須是正數（分鐘）。");
   }
-  assertHttpUrl(options.workerUrl, "--worker");
+  assertWorkerUrl(options.workerUrl);
   const loginUrl = assertHttpUrl(options.loginUrl, "--login-url");
   if (loginUrl.protocol !== "https:" || !isCtbcHost(loginUrl.hostname)) {
     throw new CtbcWebImportError(
@@ -164,6 +164,19 @@ function assertHttpUrl(value, name) {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new CtbcWebImportError(`${name} 必須是 http 或 https 網址。`);
+  }
+  return url;
+}
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** 銀行資料只能送到 HTTPS，或本機 loopback 的 HTTP（開發用）。 */
+function assertWorkerUrl(value) {
+  const url = assertHttpUrl(value, "--worker");
+  if (url.protocol === "http:" && !LOOPBACK_HOSTS.has(url.hostname)) {
+    throw new CtbcWebImportError(
+      "--worker 必須是 https 網址；只有本機（localhost）可以用 http。",
+    );
   }
   return url;
 }

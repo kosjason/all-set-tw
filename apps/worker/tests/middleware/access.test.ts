@@ -35,6 +35,19 @@ describe("local development access", () => {
     expect(isLocalDevRequest(new Request("http://[::1]"), env)).toBe(true);
   });
 
+  it("never bypasses Access for requests forwarded by Cloudflare", () => {
+    const env = { LOCAL_DEV_MODE: "true" } as Env;
+    for (const header of ["cf-ray", "cf-connecting-ip"])
+      expect(
+        isLocalDevRequest(
+          new Request("http://localhost:8797/api/bank", {
+            headers: { [header]: "x" },
+          }),
+          env,
+        ),
+      ).toBe(false);
+  });
+
   it("requires an explicit opt-in even on localhost", () => {
     expect(
       isLocalDevRequest(new Request("http://localhost"), {

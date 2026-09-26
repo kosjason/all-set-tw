@@ -71,8 +71,9 @@ export function toActivityExportItem(
     categorySource: item.categorySource ?? "none",
     economicRole: item.economicRole ?? null,
     reviewStatus: item.reviewStatus ?? null,
-    note: item.note ?? null,
-    itemsPreview: item.itemsPreview ?? [],
+    // 自由文字也遮罩長數字：使用者可能在備註寫下帳號。
+    note: item.note ? maskLongDigits(item.note) : null,
+    itemsPreview: (item.itemsPreview ?? []).map(maskLongDigits),
     account: accountLabel(item),
   };
   if (item.currency !== "TWD" && item.amount != null)
