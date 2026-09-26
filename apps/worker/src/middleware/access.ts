@@ -4,6 +4,7 @@ import { honoFactory } from "../platform/hono";
 import { isDemoMode } from "../platform/http";
 
 const LOCAL_DEV_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const LOOPBACK_IPS = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 
 export function isLocalDevRequest(
   request: Request,
@@ -17,8 +18,14 @@ export function isLocalDevRequest(
       ));
 
   // 經 Cloudflare 轉送（Tunnel／Proxy）的請求一律要驗證，即使 Host 被改成 localhost。
+  // 本機 Miniflare 會自動替每個請求加上 loopback 的 CF-Connecting-IP，所以只有
+  // 帶 cf-ray，或 CF-Connecting-IP 不是 loopback 時才視為經 Cloudflare 轉送。
+  const connectingIp = request.headers.get("cf-connecting-ip")?.trim();
   const viaCloudflare =
-    request.headers.has("cf-ray") || request.headers.has("cf-connecting-ip");
+    request.headers.has("cf-ray") ||
+    (connectingIp !== undefined &&
+      connectingIp !== "" &&
+      !LOOPBACK_IPS.has(connectingIp));
   return (
     enabled &&
     !viaCloudflare &&
