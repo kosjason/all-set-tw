@@ -37,15 +37,32 @@ describe("local development access", () => {
 
   it("never bypasses Access for requests forwarded by Cloudflare", () => {
     const env = { LOCAL_DEV_MODE: "true" } as Env;
-    for (const header of ["cf-ray", "cf-connecting-ip"])
+    const request = (headers: Record<string, string>) =>
+      new Request("http://localhost:8797/api/bank", { headers });
+    expect(isLocalDevRequest(request({ "cf-ray": "x" }), env)).toBe(false);
+    // Tunnel 實際送達本機時的組合：cf-ray 加上 loopback 的連線 IP。
+    expect(
+      isLocalDevRequest(
+        request({ "cf-ray": "x", "cf-connecting-ip": "127.0.0.1" }),
+        env,
+      ),
+    ).toBe(false);
+    expect(
+      isLocalDevRequest(request({ "cf-connecting-ip": "203.0.113.7" }), env),
+    ).toBe(false);
+  });
+
+  it("still bypasses for Miniflare's loopback CF-Connecting-IP", () => {
+    const env = { LOCAL_DEV_MODE: "true" } as Env;
+    for (const ip of ["127.0.0.1", "::1", "::ffff:127.0.0.1"])
       expect(
         isLocalDevRequest(
           new Request("http://localhost:8797/api/bank", {
-            headers: { [header]: "x" },
+            headers: { "cf-connecting-ip": ip },
           }),
           env,
         ),
-      ).toBe(false);
+      ).toBe(true);
   });
 
   it("requires an explicit opt-in even on localhost", () => {
