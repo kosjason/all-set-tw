@@ -25,46 +25,166 @@ function createDatabase() {
   return database;
 }
 
-function insertBill(database: DatabaseSync, connectorId: string, id: string) {
+function insertAccount(
+  database: DatabaseSync,
+  connectorId: string,
+  id: string,
+  currency = "TWD",
+) {
   database
     .prepare(
       `INSERT INTO bank_accounts
         (id, connector_id, source_id, institution_name, account_name,
          account_type, currency, raw_payload, created_at, updated_at)
-       VALUES (?, ?, ?, '虛構銀行', '虛構卡', 'credit', 'TWD', '{}',
+       VALUES (?, ?, ?, '虛構銀行', '虛構卡', 'credit', ?, '{}',
                '2026-09-01', '2026-09-01')`,
     )
-    .run(`${id}:account`, connectorId, `${id}:account`);
+    .run(id, connectorId, id, currency);
+}
+
+function insertBill(
+  database: DatabaseSync,
+  {
+    connectorId = "ctbc",
+    accountId,
+    period,
+    statementAmount,
+    paidAmount,
+    isPaid,
+    currency = "TWD",
+    raw = {},
+  }: {
+    connectorId?: string;
+    accountId: string;
+    period: string;
+    statementAmount: number | null;
+    paidAmount: number | null;
+    isPaid: number | null;
+    currency?: string;
+    raw?: unknown;
+  },
+) {
   database
     .prepare(
       `INSERT INTO credit_card_bills
         (id, connector_id, account_id, source_id, billing_period,
          statement_amount, paid_amount, is_paid, currency, raw_payload,
          created_at, updated_at)
-       VALUES (?, ?, ?, ?, '2026-09', 1000, 3000, 1, 'TWD', '{}',
-               '2026-09-01', '2026-09-01')`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-01', '2026-09-01')`,
     )
-    .run(id, connectorId, `${id}:account`, id);
+    .run(
+      `${accountId}:${period}`,
+      connectorId,
+      accountId,
+      `${accountId}:bill:${period}`,
+      period,
+      statementAmount,
+      paidAmount,
+      isPaid,
+      currency,
+      JSON.stringify(raw),
+    );
 }
 
-describe("0064 CTBC bill paid amount cleanup", () => {
-  it("只清除中信帳單的已繳金額與已繳旗標", () => {
+function bills(database: DatabaseSync) {
+  return database
+    .prepare(
+      `SELECT id, statement_amount AS statementAmount, paid_amount AS paidAmount,
+              is_paid AS isPaid
+       FROM credit_card_bills ORDER BY id`,
+    )
+    .all();
+}
+
+describe("0064 CTBC bill paid amount shift", () => {
+  it("把舊版存成本期的已繳位移到上一期，最新一期留空", () => {
     const database = createDatabase();
-    insertBill(database, "ctbc", "ctbc-bill");
-    insertBill(database, "cathaybk", "cathay-bill");
+    insertAccount(database, "ctbc", "ctbc-main");
+    insertAccount(database, "ctbc", "ctbc-main-usd", "USD");
+    insertAccount(database, "cathaybk", "cathay-main");
+    // 舊版：每期的 paid_amount 其實是「本期間繳掉的上期帳單」（pmtAmt）。
+    insertBill(database, {
+      accountId: "ctbc-main",
+      period: "2026-07",
+      statementAmount: 5000,
+      paidAmount: 4000,
+      isPaid: 0,
+      raw: { billAmt: 5000, currPmtAmt: 4800, pmtAmt: 4000 },
+    });
+    insertBill(database, {
+      accountId: "ctbc-main",
+      period: "2026-08",
+      statementAmount: 3000,
+      paidAmount: 4800,
+      isPaid: 1,
+      raw: { billAmt: 3000, currPmtAmt: 3000, pmtAmt: 4800 },
+    });
+    insertBill(database, {
+      accountId: "ctbc-main",
+      period: "2026-09",
+      statementAmount: 2000,
+      paidAmount: 1000,
+      isPaid: 0,
+      raw: { billAmt: 2000, currentPayment: 2500, pmtAmt: 1000 },
+    });
+    // 外幣帳單不與台幣帳單互相位移；應繳 0 的帳單視為已繳。
+    insertBill(database, {
+      accountId: "ctbc-main-usd",
+      period: "2026-08",
+      statementAmount: 0,
+      paidAmount: 30,
+      isPaid: 1,
+      currency: "USD",
+    });
+    insertBill(database, {
+      connectorId: "cathaybk",
+      accountId: "cathay-main",
+      period: "2026-09",
+      statementAmount: 1000,
+      paidAmount: 3000,
+      isPaid: 1,
+    });
 
     database.exec(
       readFileSync(`${migrationsDirectory}/${migrationFile}`, "utf8"),
     );
 
-    const rows = database
-      .prepare(
-        "SELECT connector_id, paid_amount, is_paid FROM credit_card_bills ORDER BY connector_id",
-      )
-      .all();
-    expect(rows).toEqual([
-      { connector_id: "cathaybk", paid_amount: 3000, is_paid: 1 },
-      { connector_id: "ctbc", paid_amount: null, is_paid: null },
+    expect(bills(database)).toEqual([
+      // 國泰不受影響。
+      {
+        id: "cathay-main:2026-09",
+        statementAmount: 1000,
+        paidAmount: 3000,
+        isPaid: 1,
+      },
+      // 外幣：沒有下一期，應繳 0 仍視為已繳。
+      {
+        id: "ctbc-main-usd:2026-08",
+        statementAmount: 0,
+        paidAmount: null,
+        isPaid: 1,
+      },
+      // 7 月：應繳改為 currPmtAmt 4800，已繳取 8 月的舊值 4800。
+      {
+        id: "ctbc-main:2026-07",
+        statementAmount: 4800,
+        paidAmount: 4800,
+        isPaid: 1,
+      },
+      // 8 月：已繳取 9 月的舊值 1000，小於應繳 3000。
+      {
+        id: "ctbc-main:2026-08",
+        statementAmount: 3000,
+        paidAmount: 1000,
+        isPaid: 0,
+      },
+      // 9 月：沒有下一期，已繳留空；應繳改為 currentPayment 2500。
+      {
+        id: "ctbc-main:2026-09",
+        statementAmount: 2500,
+        paidAmount: null,
+        isPaid: null,
+      },
     ]);
   });
 });

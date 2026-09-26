@@ -283,15 +283,34 @@ WHERE connector_id = 'ctbc'
       AND source_id GLOB 'credit:ctbc:[A-Z][A-Z][A-Z]'
   );
 
--- 6. 移除已清空的舊帳戶；仍被參照者（理論上不會發生）保留不動。
+-- 6. 標記為舊帳戶重複來源的帳戶（canonical_account_id 指向舊帳戶，例如手動匯入的
+--    同一張卡）改指同幣別的摘要帳戶，維持「重複來源不重複計算」；不可設為 NULL，
+--    否則這些帳戶會重新出現並重複計入。之後移除已清空的舊帳戶；仍被參照者
+--    （理論上不會發生）保留不動。
 UPDATE bank_accounts
-SET canonical_account_id = NULL
+SET canonical_account_id = (
+  SELECT summary.id
+  FROM bank_accounts legacy
+  JOIN bank_accounts summary
+    ON summary.connector_id = 'ctbc'
+   AND summary.source_id = CASE legacy.currency
+     WHEN 'TWD' THEN 'credit:ctbc:main'
+     ELSE 'credit:ctbc:main:' || legacy.currency
+   END
+  WHERE legacy.id = bank_accounts.canonical_account_id
+)
 WHERE canonical_account_id IN (
   SELECT id FROM bank_accounts
   WHERE connector_id = 'ctbc'
     AND account_type = 'credit'
     AND source_id GLOB 'credit:ctbc:[A-Z][A-Z][A-Z]'
 );
+
+-- 摘要帳戶本身不能指向自己（只有在摘要帳戶先前已存在且指向舊帳戶時才會發生）。
+UPDATE bank_accounts
+SET canonical_account_id = NULL
+WHERE connector_id = 'ctbc'
+  AND canonical_account_id = id;
 
 DELETE FROM bank_accounts
 WHERE connector_id = 'ctbc'

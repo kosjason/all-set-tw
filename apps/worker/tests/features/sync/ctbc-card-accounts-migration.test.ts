@@ -353,4 +353,56 @@ describe("CTBC credit card account split migration", () => {
     expect(accountOf(database, "usd")).toBe("credit:ctbc:1111:USD");
     expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
+
+  it("points duplicate accounts of the legacy account to the summary account", () => {
+    const database = createDatabase();
+    insertAccount(database, "ctbc:credit:ctbc:TWD", "credit:ctbc:TWD", {});
+    insertAccount(
+      database,
+      "ctbc:credit:ctbc:USD",
+      "credit:ctbc:USD",
+      {},
+      { currency: "USD" },
+    );
+    // 手動匯入的重複帳戶以 canonical_account_id 指向舊帳戶，不重複計算。
+    insertAccount(
+      database,
+      "import-twd",
+      "credit:ctbc-import:TWD",
+      {},
+      { connectorId: "ctbc-import" },
+    );
+    insertAccount(
+      database,
+      "import-usd",
+      "credit:ctbc-import:USD",
+      {},
+      { connectorId: "ctbc-import", currency: "USD" },
+    );
+    database.exec(`
+      UPDATE bank_accounts SET canonical_account_id = 'ctbc:credit:ctbc:TWD' WHERE id = 'import-twd';
+      UPDATE bank_accounts SET canonical_account_id = 'ctbc:credit:ctbc:USD' WHERE id = 'import-usd';
+    `);
+
+    applyMigration(database);
+
+    expect(
+      database
+        .prepare(
+          "SELECT id, canonical_account_id AS canonical FROM bank_accounts WHERE id LIKE 'import-%' ORDER BY id",
+        )
+        .all(),
+    ).toEqual([
+      { id: "import-twd", canonical: "ctbc:credit:ctbc:main" },
+      { id: "import-usd", canonical: "ctbc:credit:ctbc:main:USD" },
+    ]);
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM bank_accounts WHERE source_id GLOB 'credit:ctbc:[A-Z][A-Z][A-Z]'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
 });
