@@ -243,4 +243,29 @@ describe("0064 CTBC bill paid amount shift", () => {
       },
     ]);
   });
+  it("格式錯誤的金額字串（1-2、1.2.3、--1）不採用，沿用原值", () => {
+    const database = createDatabase();
+    insertAccount(database, "ctbc", "ctbc-main");
+    for (const [period, value] of [
+      ["2026-03", "1-2"],
+      ["2026-04", "1.2.3"],
+      ["2026-05", "--1"],
+    ] as const)
+      insertBill(database, {
+        accountId: "ctbc-main",
+        period,
+        statementAmount: 700,
+        paidAmount: null,
+        isPaid: null,
+        raw: { currPmtAmt: value },
+      });
+
+    database.exec(
+      readFileSync(`${migrationsDirectory}/${migrationFile}`, "utf8"),
+    );
+
+    expect(bills(database).map((bill) => bill.statementAmount)).toEqual([
+      700, 700, 700,
+    ]);
+  });
 });

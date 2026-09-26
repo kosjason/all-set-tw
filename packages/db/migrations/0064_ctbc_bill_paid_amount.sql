@@ -32,13 +32,19 @@ SELECT
   currency,
   billing_period,
   CASE
+    -- 只接受「可選負號＋數字＋至多一個小數點」；1-2、1.2.3、--1 這類格式錯誤的值不採用。
     WHEN raw_amount GLOB '*[0-9]*'
       AND NOT raw_amount GLOB '*[^0-9.-]*'
+      AND instr(substr(raw_amount, 2), '-') = 0
+      AND length(raw_amount) - length(replace(raw_amount, '.', '')) <= 1
       THEN CAST(raw_amount AS REAL)
     ELSE statement_amount
   END,
   CASE
-    WHEN paid_text GLOB '*[0-9]*' AND NOT paid_text GLOB '*[^0-9.-]*'
+    WHEN paid_text GLOB '*[0-9]*'
+      AND NOT paid_text GLOB '*[^0-9.-]*'
+      AND instr(substr(paid_text, 2), '-') = 0
+      AND length(paid_text) - length(replace(paid_text, '.', '')) <= 1
       THEN CAST(paid_text AS REAL)
   END
 FROM (
