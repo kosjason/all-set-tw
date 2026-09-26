@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Ellipsis, Eye, EyeOff } from "@lucide/svelte";
-  import { QueryClientProvider } from "@tanstack/svelte-query";
-  import Overview from "@/features/overview/OverviewPage.svelte";
+  import { Eye, EyeOff, Inbox } from "@lucide/svelte";
+  import { createQuery, QueryClientProvider } from "@tanstack/svelte-query";
+  import MonthPage from "@/features/month/MonthPage.svelte";
   import type { ConnectorId } from "@/data/connectors/types";
   import { createApiClient } from "@/shared/api/client";
   import { swipeBack } from "@/shared/actions/swipe-back";
@@ -10,82 +10,98 @@
   import Button from "@/shared/ui/Button.svelte";
   import EmptyState from "@/shared/ui/EmptyState.svelte";
   import Icon from "@/shared/ui/Icon.svelte";
+  import { inboxQuery } from "@/data/inbox/queries";
+  import AppSidebar from "./AppSidebar.svelte";
+  import InboxBadge from "./InboxBadge.svelte";
+  import MobileTabBar from "./MobileTabBar.svelte";
+  import MoreMenu from "./MoreMenu.svelte";
   import {
+    EMPTY_INBOX_COUNTS,
+    activeNavigationView,
     detailLabels,
-    mobilePrimaryViews,
-    mobileSettingsLabels,
+    inboxAccessibleLabel,
+    inboxItem,
+    isDetailView,
+    navigationItem,
     navItems,
+    settingsItem,
   } from "./navigation-config";
-  import { parseViewHash, viewHash } from "./navigation";
+  import { resolveViewHash, viewHash } from "./navigation";
   import { queryClient } from "./query-client";
-  import type {
-    DetailView,
-    MobileSettingsView,
-    PrimaryView,
-    RuntimeInfo,
-    View,
-  } from "./types";
+  import type { NavigateOptions, RuntimeInfo, View } from "./types";
   import "../styles.css";
 
-  type LazyView = Exclude<View, "overview">;
   type PageKey =
-    "assets" | "activity" | "investments" | "manual-assets" | "settings";
+    | "cards"
+    | "transactions"
+    | "transaction-rules"
+    | "assets"
+    | "investments"
+    | "manual-assets"
+    | "own-accounts"
+    | "data-sources"
+    | "inbox"
+    | "settings";
   type LazyPageModule =
-    | typeof import("@/features/assets/AssetsPage.svelte")
+    | typeof import("@/features/cards/CardsPage.svelte")
     | typeof import("@/features/activity/ActivityPage.svelte")
+    | typeof import("@/features/activity/TransactionRulesPage.svelte")
+    | typeof import("@/features/assets/AssetsPage.svelte")
     | typeof import("@/features/assets/Investments.svelte")
     | typeof import("@/features/assets/ManualAssets.svelte")
+    | typeof import("@/features/assets/OwnAccountsPage.svelte")
+    | typeof import("@/features/data-sources/DataSourcesPage.svelte")
+    | typeof import("@/features/inbox/InboxPage.svelte")
     | typeof import("@/features/settings/SettingsPage.svelte");
 
   const pageLoaders = {
+    cards: () => import("@/features/cards/CardsPage.svelte"),
+    transactions: () => import("@/features/activity/ActivityPage.svelte"),
+    "transaction-rules": () =>
+      import("@/features/activity/TransactionRulesPage.svelte"),
     assets: () => import("@/features/assets/AssetsPage.svelte"),
-    activity: () => import("@/features/activity/ActivityPage.svelte"),
     investments: () => import("@/features/assets/Investments.svelte"),
     "manual-assets": () => import("@/features/assets/ManualAssets.svelte"),
+    "own-accounts": () => import("@/features/assets/OwnAccountsPage.svelte"),
+    "data-sources": () =>
+      import("@/features/data-sources/DataSourcesPage.svelte"),
+    inbox: () => import("@/features/inbox/InboxPage.svelte"),
     settings: () => import("@/features/settings/SettingsPage.svelte"),
   } satisfies Record<PageKey, () => Promise<LazyPageModule>>;
   const pagePromises: Partial<Record<PageKey, Promise<LazyPageModule>>> = {};
+  const isPageKey = (value: View): value is PageKey =>
+    Object.hasOwn(pageLoaders, value);
 
   const api = createApiClient();
-  let view = $state<View>("overview");
+  // 待處理 badge。App 本身在 QueryClientProvider 之外，直接指定 queryClient；
+  // 載入失敗時不顯示 badge（待處理頁會顯示錯誤）。
+  const inbox = createQuery(
+    inboxQuery(() => api),
+    queryClient,
+  );
+  const inboxCounts = $derived($inbox.data?.counts ?? EMPTY_INBOX_COUNTS);
+  // 首次渲染前就依網址決定頁面（含舊網址導向），避免先掛載本月頁再切換。
+  let view = $state<View>(
+    resolveViewHash(window.location.hash)?.view ?? "month",
+  );
   let connectorTarget = $state<ConnectorId | null>(null);
   let runtime = $state<RuntimeInfo>({ demoMode: false });
-  const isDetail = (v: View): v is DetailView => Object.hasOwn(detailLabels, v);
-  const isMobileSetting = (v: View): v is MobileSettingsView =>
-    Object.hasOwn(mobileSettingsLabels, v);
-  const primaryView = $derived(
-    view === "more" || isMobileSetting(view)
-      ? "settings"
-      : isDetail(view)
-        ? "assets"
-        : (view as PrimaryView),
+  // 窄螢幕的 sticky 頁首高度，供頁面內的 sticky 工具列接在頁首下方。
+  let headerHeight = $state(0);
+  const activeView = $derived(activeNavigationView(view));
+  const detail = $derived(isDetailView(view) ? detailLabels[view] : undefined);
+  const currentItem = $derived(
+    view === "more"
+      ? { label: "更多", description: "資料來源、待處理與設定。" }
+      : (detail ?? navigationItem(view) ?? navItems[0]!),
   );
-  const currentView = $derived(
-    navItems.find((item) => item.view === primaryView) ?? navItems[0]!,
+  const parentLabel = $derived(
+    detail ? (navigationItem(detail.parent)?.label ?? "") : "",
   );
-  const detail = $derived(isDetail(view) ? detailLabels[view] : undefined);
-  const mobileSetting = $derived(
-    isMobileSetting(view) ? mobileSettingsLabels[view] : undefined,
-  );
-
-  function pageKey(next: LazyView): PageKey {
-    if (
-      next === "assets" ||
-      next === "activity" ||
-      next === "investments" ||
-      next === "manual-assets"
-    )
-      return next;
-    return "settings";
-  }
-
-  function getPagePromise(key: PageKey) {
-    return (pagePromises[key] ??= pageLoaders[key]());
-  }
 
   const pagePromise = $derived.by(() => {
-    if (view === "overview") return Promise.resolve(undefined);
-    return getPagePromise(pageKey(view as LazyView));
+    if (!isPageKey(view)) return Promise.resolve(undefined);
+    return (pagePromises[view] ??= pageLoaders[view]());
   });
 
   function retryPage() {
@@ -99,23 +115,31 @@
     if (isStandalone()) document.getElementById("root")?.scrollTo(options);
     else window.scrollTo(options);
   }
+  function replaceHash(hash: string) {
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}${hash}`,
+    );
+  }
+
+  /** 依網址決定目前頁；舊路徑（總覽、活動、設定子頁）換成新網址並保留 query。 */
+  function syncFromLocation() {
+    const route = resolveViewHash(window.location.hash);
+    if (!route) {
+      view = "month";
+      replaceHash(viewHash("month"));
+      return;
+    }
+    if (route.redirected) replaceHash(route.hash);
+    view = route.view;
+  }
 
   onMount(() => {
-    const routeView = parseViewHash(window.location.hash);
-    if (routeView) view = routeView;
-    else
-      window.history.replaceState(
-        null,
-        "",
-        `${window.location.pathname}${window.location.search}${viewHash(view)}`,
-      );
-
+    syncFromLocation();
     const handleHashChange = () => {
-      const next = parseViewHash(window.location.hash);
-      if (next) {
-        view = next;
-        scrollToTop();
-      }
+      syncFromLocation();
+      scrollToTop();
     };
     window.addEventListener("hashchange", handleHashChange);
 
@@ -127,27 +151,22 @@
       localStorage.getItem("taiwan-fin-hub-money-hidden") === "true";
     return () => window.removeEventListener("hashchange", handleHashChange);
   });
-  function navigate(next: View, targetConnector?: ConnectorId) {
+
+  function navigate(next: View, options: NavigateOptions = {}) {
     view = next;
     connectorTarget =
-      next === "data-sources" ? (targetConnector ?? null) : null;
-    const nextHash = viewHash(next);
+      next === "data-sources" ? (options.connectorId ?? null) : null;
+    const nextHash = viewHash(next, options.query);
     if (window.location.hash !== nextHash) {
-      if (isStandalone()) {
-        window.history.replaceState(
-          null,
-          "",
-          `${window.location.pathname}${window.location.search}${nextHash}`,
-        );
-      } else {
-        window.location.hash = nextHash;
-      }
+      // 帶 query 的導覽（例如本月 → 交易篩選）在頁面掛載前換好網址，讓頁面
+      // 由網址還原狀態；PWA 不留上一頁紀錄。
+      if (isStandalone() || options.query) replaceHash(nextHash);
+      else window.location.hash = nextHash;
     }
     scrollToTop();
   }
   function navigateBack() {
-    if (isDetail(view)) navigate("assets");
-    else if (isMobileSetting(view)) navigate("more");
+    if (detail) navigate(detail.parent);
   }
   function toggleMoneyVisibility() {
     moneyState.hidden = !moneyState.hidden;
@@ -162,49 +181,37 @@
   <div
     class="min-h-screen bg-paper text-ink xl:grid xl:grid-cols-[240px_minmax(0,1fr)]"
     use:swipeBack={{
-      enabled: isStandalone() && (isDetail(view) || isMobileSetting(view)),
+      enabled: isStandalone() && Boolean(detail),
       onBack: navigateBack,
     }}
   >
-    <aside
-      class="hidden border-r border-white/10 bg-ink px-6 py-7 text-white xl:sticky xl:top-0 xl:flex xl:h-screen xl:flex-col"
-    >
-      <div class="px-2">
-        <h1 class="text-xl font-semibold tracking-normal">不用記帳</h1>
-        <p
-          class="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-steel/90"
-        >
-          ALL SET
-        </p>
-      </div>
-      <nav class="mt-6 grid gap-1">
-        {#each navItems as item (item.view)}
-          {@const NavIcon = item.icon}
-          <button
-            class={`flex min-h-11 items-center gap-3 rounded-lg px-3 text-left text-sm font-medium transition ${primaryView === item.view ? "bg-white/10 text-white" : "text-white/65 hover:bg-white/5 hover:text-white"}`}
-            aria-current={primaryView === item.view ? "page" : undefined}
-            onclick={() => navigate(item.view)}
-          >
-            <NavIcon class="size-[22px] shrink-0 stroke-[1.8]" />{item.label}
-          </button>
-        {/each}
-      </nav>
-    </aside>
+    <AppSidebar {activeView} {inboxCounts} {navigate} />
 
-    <div class="min-w-0 pb-20">
-      <div
+    <div class="min-w-0 pb-20" style={`--app-sticky-top:${headerHeight}px`}>
+      <nav
+        aria-label="頁面導覽"
         class="no-scrollbar hidden border-b border-ink/10 bg-paper px-4 py-2 md:flex md:gap-1 md:overflow-x-auto xl:hidden"
       >
-        {#each navItems as item (item.view)}
+        {#each [inboxItem, ...navItems, settingsItem] as item (item.view)}
           {@const NavIcon = item.icon}
           <button
-            class={`flex min-h-10 items-center gap-2 rounded-lg px-3 text-sm font-medium ${primaryView === item.view ? "bg-ink text-white" : "text-subtle hover:bg-ink/5"}`}
+            type="button"
+            class={`flex min-h-10 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-medium ${activeView === item.view ? "bg-ink text-white" : "text-subtle hover:bg-ink/5"}`}
+            aria-current={activeView === item.view ? "page" : undefined}
+            aria-label={item.view === "inbox"
+              ? inboxAccessibleLabel(inboxCounts)
+              : undefined}
             onclick={() => navigate(item.view)}
-            ><NavIcon class="size-4" />{item.label}</button
+            ><NavIcon
+              class="size-4"
+            />{item.label}{#if item.view === "inbox"}<InboxBadge
+                counts={inboxCounts}
+              />{/if}</button
           >
         {/each}
-      </div>
+      </nav>
       <header
+        bind:offsetHeight={headerHeight}
         class="sticky top-0 z-20 border-b border-ink/10 bg-paper/95 backdrop-blur-sm xl:static xl:bg-transparent xl:backdrop-blur-0"
       >
         <div
@@ -212,54 +219,35 @@
         >
           <div class="flex items-center justify-between gap-3">
             <div class="min-w-0">
-              {#if mobileSetting}
-                <div class="flex items-center gap-2 md:block">
-                  <button
-                    aria-label="返回更多"
-                    class="flex size-10 shrink-0 items-center justify-center rounded-full text-xl text-ink hover:bg-ink/5 md:hidden"
-                    onclick={() => navigate("more")}>←</button
-                  >
-                  <h1
-                    class="truncate text-2xl font-semibold tracking-tight xl:text-3xl"
-                  >
-                    <span class="md:hidden">{mobileSetting.label}</span>
-                    <span class="hidden md:inline">設定</span>
-                  </h1>
-                </div>
-              {:else}
-                {#if detail}<button
-                    class="mb-1 inline-flex items-center gap-1 text-xs font-medium text-steel"
-                    onclick={() => navigate("assets")}>← 返回資產</button
-                  >{/if}
-                <h1
-                  class="truncate text-2xl font-semibold tracking-tight xl:text-3xl"
+              {#if detail}
+                <button
+                  type="button"
+                  class="mb-1 inline-flex items-center gap-1 text-xs font-medium text-steel"
+                  onclick={() => navigate(detail.parent)}
+                  >← 返回{parentLabel}</button
                 >
-                  <span class="md:hidden"
-                    >{view === "more"
-                      ? "更多"
-                      : primaryView === "overview"
-                        ? "資產總覽"
-                        : primaryView === "activity"
-                          ? "所有活動"
-                          : (currentView.pageTitle ?? currentView.label)}</span
-                  ><span class="hidden md:inline"
-                    >{detail?.label ??
-                      currentView.pageTitle ??
-                      currentView.label}</span
-                  >
-                </h1>
               {/if}
+              <h1
+                class="truncate text-2xl font-semibold tracking-tight xl:text-3xl"
+              >
+                {currentItem.label}
+              </h1>
               <p class="mt-1 hidden text-sm leading-6 text-subtle md:block">
-                {detail?.description ??
-                  mobileSetting?.description ??
-                  currentView.description}
+                {currentItem.description}
               </p>
             </div>
             <div class="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                class={`relative flex size-10 items-center justify-center rounded-full md:hidden ${view === "inbox" ? "bg-ink text-white" : "bg-secondary text-ink"}`}
+                aria-label={inboxAccessibleLabel(inboxCounts)}
+                onclick={() => navigate("inbox")}
+                ><Inbox class="size-5" /><span aria-hidden="true"
+                  ><InboxBadge counts={inboxCounts} variant="overlay" /></span
+                ></button
+              >
               <Button
-                class={mobileSetting
-                  ? "hidden rounded-full md:inline-flex"
-                  : "rounded-full"}
+                class="rounded-full"
                 aria-label={moneyState.hidden ? "顯示金額" : "隱藏金額"}
                 onclick={toggleMoneyVisibility}
                 size="icon"
@@ -277,21 +265,31 @@
       <main
         class="mx-auto max-w-[1440px] px-4 pb-5 pt-0 sm:px-6 md:py-5 xl:px-8 xl:py-6"
       >
-        {#if view === "overview"}
-          <Overview {api} {navigate} />
+        {#if view === "month"}
+          <MonthPage {api} {navigate} {inboxCounts} />
+        {:else if view === "more"}
+          <MoreMenu {inboxCounts} demoMode={runtime.demoMode} {navigate} />
         {:else}
           {#await pagePromise}
             <EmptyState title="載入頁面中" body="正在準備內容。" />
           {:then module}
             {#if module}
-              {#if view === "assets"}
+              {#if view === "cards"}
                 {@const Page =
-                  module.default as typeof import("@/features/assets/AssetsPage.svelte").default}
+                  module.default as typeof import("@/features/cards/CardsPage.svelte").default}
                 <Page {api} />
-              {:else if view === "activity"}
+              {:else if view === "transactions"}
                 {@const Page =
                   module.default as typeof import("@/features/activity/ActivityPage.svelte").default}
+                <Page {api} {navigate} />
+              {:else if view === "transaction-rules"}
+                {@const Page =
+                  module.default as typeof import("@/features/activity/TransactionRulesPage.svelte").default}
                 <Page {api} />
+              {:else if view === "assets"}
+                {@const Page =
+                  module.default as typeof import("@/features/assets/AssetsPage.svelte").default}
+                <Page {api} {navigate} />
               {:else if view === "investments"}
                 {@const Page =
                   module.default as typeof import("@/features/assets/Investments.svelte").default}
@@ -300,20 +298,22 @@
                 {@const Page =
                   module.default as typeof import("@/features/assets/ManualAssets.svelte").default}
                 <Page {api} />
+              {:else if view === "own-accounts"}
+                {@const Page =
+                  module.default as typeof import("@/features/assets/OwnAccountsPage.svelte").default}
+                <Page {api} demoMode={runtime.demoMode} />
+              {:else if view === "data-sources"}
+                {@const Page =
+                  module.default as typeof import("@/features/data-sources/DataSourcesPage.svelte").default}
+                <Page {api} demoMode={runtime.demoMode} {connectorTarget} />
+              {:else if view === "inbox"}
+                {@const Page =
+                  module.default as typeof import("@/features/inbox/InboxPage.svelte").default}
+                <Page {api} {navigate} />
               {:else}
                 {@const Page =
                   module.default as typeof import("@/features/settings/SettingsPage.svelte").default}
-                <Page
-                  {api}
-                  demoMode={runtime.demoMode}
-                  {connectorTarget}
-                  mobileView={view === "more"
-                    ? "more"
-                    : isMobileSetting(view)
-                      ? view
-                      : undefined}
-                  {navigate}
-                />
+                <Page {api} demoMode={runtime.demoMode} />
               {/if}
             {/if}
           {:catch}
@@ -339,24 +339,6 @@
       </footer>
     </div>
 
-    <nav
-      aria-label="主要導覽"
-      class="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 gap-1 border-t border-ink/10 bg-ink px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 text-white shadow-[0_-8px_28px_rgba(31,41,51,0.12)] md:hidden"
-    >
-      {#each mobilePrimaryViews as mobileView (mobileView)}
-        {@const item = navItems.find(
-          (candidate) => candidate.view === mobileView,
-        )!}{@const NavIcon = item.icon}
-        <button
-          class={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11px] font-medium transition ${primaryView === item.view ? "bg-white/10 text-white" : "text-white/65"}`}
-          onclick={() => navigate(item.view)}
-          ><NavIcon class="size-5" />{item.shortLabel}</button
-        >
-      {/each}
-      <button
-        class={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11px] font-medium transition ${view === "more" || !mobilePrimaryViews.includes(primaryView) ? "bg-white/10 text-white" : "text-white/65"}`}
-        onclick={() => navigate("more")}><Ellipsis class="size-5" />更多</button
-      >
-    </nav>
+    <MobileTabBar {activeView} {inboxCounts} {navigate} />
   </div>
 </QueryClientProvider>

@@ -108,6 +108,7 @@ const TEXT_PRIMARY_KEY_COLUMNS: Array<{ table: string; column: string }> = [
   { table: "bank_transaction_preferences", column: "transaction_id" },
   { table: "bank_transactions", column: "id" },
   { table: "classification_categories", column: "id" },
+  { table: "classification_migration_notes", column: "id" },
   { table: "classification_overrides", column: "id" },
   { table: "classification_rules", column: "id" },
   { table: "connector_settings", column: "id" },
@@ -121,8 +122,10 @@ const TEXT_PRIMARY_KEY_COLUMNS: Array<{ table: string; column: string }> = [
   { table: "invoice_transaction_preferences", column: "invoice_id" },
   { table: "invoices", column: "id" },
   { table: "manual_assets", column: "id" },
+  { table: "merchant_aliases", column: "merchant_key" },
   { table: "net_worth_history", column: "id" },
   { table: "notification_preferences", column: "id" },
+  { table: "own_accounts", column: "id" },
   { table: "push_subscriptions", column: "id" },
   { table: "scheduled_sync_batches", column: "id" },
   { table: "sync_jobs", column: "id" },
@@ -215,7 +218,7 @@ describe("Drizzle schema parity", () => {
         }
       }
       const expected = inspect(migrated);
-      expect(expected).toHaveLength(31);
+      expect(expected).toHaveLength(36);
       expect(inspect(generated)).toEqual(expected);
       expect(generated.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
       // An unchanged schema must never produce an initialization migration.

@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
+import { routeActivityApi } from "./activity-api";
 
 for (const width of [1440, 390]) {
-  test(`overview sync details expand lazily without overflow at ${width}px`, async ({
+  test(`data sources sync details expand lazily without overflow at ${width}px`, async ({
     page,
   }) => {
     await page.setViewportSize({ width, height: 1000 });
@@ -14,6 +15,7 @@ for (const width of [1440, 390]) {
       if (path === "/api/runtime") json = { demoMode: true };
       else if (path === "/api/bank") json = { accounts: [], transactions: [] };
       else if (path === "/api/notifications/config") json = { enabled: false };
+      else if (path === "/api/sync-schedule") json = null;
       else if (path === "/api/sync-reports/latest")
         json = {
           id: "default:report",
@@ -86,7 +88,8 @@ for (const width of [1440, 390]) {
       }
       await route.fulfill({ json });
     });
-    await page.goto("/#/overview");
+    await routeActivityApi(page);
+    await page.goto("/#/data-sources");
     await expect(
       page.getByText("最近一次排程同步", { exact: true }),
     ).toBeVisible();

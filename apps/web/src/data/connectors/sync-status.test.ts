@@ -6,6 +6,7 @@ import {
   getPendingSyncJobs,
   getSyncSourceStatus,
   getSyncSourceStatusLabel,
+  getSyncWarning,
   isActionableSyncJob,
 } from "./sync-status";
 import type { SyncJobRow } from "./types";
@@ -83,6 +84,21 @@ describe("sync source status", () => {
   it("does not treat an empty source list as a healthy source", () => {
     expect(getHealthySyncJobs([])).toEqual([]);
     expect(getPendingSyncJobs([])).toEqual([]);
+  });
+
+  it("exposes a warning only for successful syncs with partial data", () => {
+    expect(
+      getSyncWarning(
+        job({ lastStatus: "success", lastError: " 即時消費暫時無法取得 " }),
+      ),
+    ).toBe("即時消費暫時無法取得");
+    expect(
+      getSyncWarning(job({ lastStatus: "success", lastError: null })),
+    ).toBeUndefined();
+    expect(
+      getSyncWarning(job({ lastStatus: "failed", lastError: "連線失敗" })),
+    ).toBeUndefined();
+    expect(getSyncWarning(undefined)).toBeUndefined();
   });
 
   it("counts at most the all-scope job for each configured source", () => {

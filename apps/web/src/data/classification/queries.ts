@@ -1,7 +1,11 @@
 import { queryOptions } from "@tanstack/svelte-query";
 import type { ApiClient } from "@/shared/api/client";
 import { queryKeys } from "@/shared/api/query-keys";
-import type { ClassificationCategoryRow, ClassificationRuleRow } from "./types";
+import type {
+  ClassificationCategoryRow,
+  ClassificationMigrationNoteRow,
+  ClassificationRuleRow,
+} from "./types";
 
 type ApiProvider = () => ApiClient;
 
@@ -18,5 +22,14 @@ export const classificationCategoriesQuery = (getApi: ApiProvider) =>
     queryFn: () =>
       getApi().get<ClassificationCategoryRow[]>(
         "/api/classification/categories",
+      ),
+  });
+
+export const classificationMigrationNotesQuery = (getApi: ApiProvider) =>
+  queryOptions({
+    queryKey: [...queryKeys.classificationRules, "migration-notes"] as const,
+    queryFn: () =>
+      getApi().get<ClassificationMigrationNoteRow[]>(
+        "/api/classification/migration-notes",
       ),
   });

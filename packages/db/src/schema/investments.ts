@@ -31,6 +31,8 @@ export const investmentPositions = sqliteTable(
     rawPayload: text("raw_payload"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
+    brokerNo: text("broker_no"),
+    brokerName: text("broker_name"),
   },
   (table) => [
     primaryKey({ columns: [table.id] }),

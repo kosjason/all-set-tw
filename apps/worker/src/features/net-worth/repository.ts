@@ -2,12 +2,21 @@ import {
   createDrizzle,
   bankAccounts,
   bankBalanceSnapshots,
+  bankTransactions,
   exchangeRates,
   manualAssets,
   netWorthHistory,
 } from "@taiwan-fin-hub/db";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
+import {
+  DERIVED_BALANCE_SOURCE_PREFIX,
+  derivedAsOfAt,
+  derivedSourceId,
+  type BackfillAccountInput,
+  type BackfillPlan,
+  type BackfillTransactionInput,
+} from "./backfill";
 
 const history = alias(netWorthHistory, "history");
 const asset = alias(manualAssets, "asset");
@@ -181,4 +190,207 @@ export async function upsertBankDepositHistory(
       );
     if (first) await database.batch([first, ...rest]);
   }
+}
+
+const DERIVED_SOURCE_PATTERN = `${DERIVED_BALANCE_SOURCE_PREFIX}%`;
+
+function depositAccountFilter() {
+  return and(
+    isNull(bankAccounts.canonicalAccountId),
+    sql`COALESCE(${bankAccounts.accountType}, 'unknown') != 'credit'`,
+  );
+}
+
+/** 存款帳戶（排除信用卡與已合併帳戶）及其最早一筆真實餘額快照。 */
+export async function listDepositBackfillAccounts(
+  db: D1Database,
+): Promise<BackfillAccountInput[]> {
+  const rows = await createDrizzle(db)
+    .select({
+      id: bankAccounts.id,
+      connectorId: bankAccounts.connectorId,
+      accountLast4: bankAccounts.accountLast4,
+      openedDate: bankAccounts.openedDate,
+      anchorBalance: latest.balance,
+      anchorCurrency: latest.currency,
+      anchorAsOfAt: latest.asOfAt,
+    })
+    .from(bankAccounts)
+    .leftJoin(
+      latest,
+      eq(
+        latest.id,
+        sql`(
+          SELECT snapshot.id
+          FROM bank_balance_snapshots snapshot
+          WHERE snapshot.account_id = ${bankAccounts.id}
+            AND snapshot.source_id NOT LIKE ${DERIVED_SOURCE_PATTERN}
+          ORDER BY snapshot.as_of_at ASC, snapshot.updated_at ASC
+          LIMIT 1
+        )`,
+      ),
+    )
+    .where(depositAccountFilter())
+    .orderBy(asc(bankAccounts.connectorId), asc(bankAccounts.id))
+    .all();
+  return rows.map((row) => ({
+    id: row.id,
+    connectorId: row.connectorId,
+    accountLast4: row.accountLast4,
+    openedDate: row.openedDate?.slice(0, 10) ?? null,
+    anchor:
+      row.anchorAsOfAt && row.anchorBalance !== null
+        ? {
+            balance: row.anchorBalance,
+            currency: row.anchorCurrency || "TWD",
+            asOfAt: row.anchorAsOfAt,
+          }
+        : null,
+  }));
+}
+
+/** 存款帳戶的已入帳交易（推算只需要金額、日期與 raw 中的交易後餘額）。 */
+export async function listDepositBackfillTransactions(
+  db: D1Database,
+): Promise<BackfillTransactionInput[]> {
+  return createDrizzle(db)
+    .select({
+      accountId: bankTransactions.accountId,
+      postedDate: bankTransactions.postedDate,
+      authorizedAt: bankTransactions.authorizedAt,
+      amount: bankTransactions.amount,
+      currency: bankTransactions.currency,
+      rawPayload: bankTransactions.rawPayload,
+    })
+    .from(bankTransactions)
+    .innerJoin(bankAccounts, eq(bankAccounts.id, bankTransactions.accountId))
+    .where(and(depositAccountFilter(), eq(bankTransactions.status, "posted")))
+    .orderBy(asc(bankTransactions.accountId), asc(bankTransactions.id))
+    .all();
+}
+
+/**
+ * 寫入推算快照並清掉不再成立的舊推算值；真實快照（source_id 不以 derived 前綴開頭）
+ * 不會被刪除或覆蓋。source_id 以日期組成，重跑不會重複寫入。
+ */
+export async function replaceDerivedBalanceSnapshots(
+  db: D1Database,
+  plan: BackfillPlan,
+  now: string,
+) {
+  const database = createDrizzle(db);
+  const cleanup = plan.accounts.map((report) =>
+    database.delete(bankBalanceSnapshots).where(
+      and(
+        eq(bankBalanceSnapshots.accountId, report.accountId),
+        sql`${bankBalanceSnapshots.sourceId} LIKE ${DERIVED_SOURCE_PATTERN}`,
+        report.status === "backfilled" && report.from && report.to
+          ? sql`(${bankBalanceSnapshots.sourceId} < ${derivedSourceId(report.from)}
+                OR ${bankBalanceSnapshots.sourceId} > ${derivedSourceId(report.to)})`
+          : undefined,
+      ),
+    ),
+  );
+  const upserts = plan.snapshots.map((snapshot) => {
+    const sourceId = derivedSourceId(snapshot.date);
+    const asOfAt = derivedAsOfAt(snapshot.date);
+    const rawPayload = JSON.stringify({
+      derived: true,
+      method: snapshot.method,
+    });
+    return database
+      .insert(bankBalanceSnapshots)
+      .values({
+        id: `${snapshot.accountId}:${sourceId}`,
+        connectorId: snapshot.connectorId,
+        accountId: snapshot.accountId,
+        sourceId,
+        balance: snapshot.balance,
+        currency: snapshot.currency,
+        asOfAt,
+        rawPayload,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [
+          bankBalanceSnapshots.connectorId,
+          bankBalanceSnapshots.accountId,
+          bankBalanceSnapshots.sourceId,
+        ],
+        set: {
+          balance: snapshot.balance,
+          currency: snapshot.currency,
+          asOfAt,
+          rawPayload,
+          updatedAt: now,
+        },
+        setWhere: sql`${bankBalanceSnapshots.sourceId} LIKE ${DERIVED_SOURCE_PATTERN}`,
+      });
+  });
+  const statements = [...cleanup, ...upserts];
+  for (let offset = 0; offset < statements.length; offset += 100) {
+    const [first, ...rest] = statements.slice(offset, offset + 100);
+    if (first) await database.batch([first, ...rest]);
+  }
+}
+
+/** 計算存款歷史所需的全部快照（含推算），一次載入後在記憶體內逐日計算。 */
+export async function listDepositHistorySnapshots(db: D1Database) {
+  return createDrizzle(db)
+    .select({
+      accountId: latest.accountId,
+      balance: latest.balance,
+      currency: latest.currency,
+      asOfAt: latest.asOfAt,
+      updatedAt: latest.updatedAt,
+      rateToTwd: rate.rateToTwd,
+    })
+    .from(latest)
+    .innerJoin(account, eq(account.id, latest.accountId))
+    .leftJoin(rate, eq(rate.currency, latest.currency))
+    .where(
+      and(
+        isNull(account.canonicalAccountId),
+        sql`COALESCE(${account.accountType}, 'unknown') != 'credit'`,
+      ),
+    )
+    .orderBy(asc(latest.accountId), asc(latest.asOfAt), asc(latest.updatedAt))
+    .all();
+}
+
+/** 推算快照涵蓋的日期範圍（供前端標示推算區段）。 */
+export async function findDerivedBalanceDateBounds(db: D1Database) {
+  return (
+    (await createDrizzle(db)
+      .select({
+        from: sql<
+          string | null
+        >`min(substr(${bankBalanceSnapshots.asOfAt}, 1, 10))`.as("from"),
+        until: sql<
+          string | null
+        >`max(substr(${bankBalanceSnapshots.asOfAt}, 1, 10))`.as("until"),
+      })
+      .from(bankBalanceSnapshots)
+      .where(
+        sql`${bankBalanceSnapshots.sourceId} LIKE ${DERIVED_SOURCE_PATTERN}`,
+      )
+      .get()) ?? null
+  );
+}
+
+export async function findLatestBankDepositHistoryDate(db: D1Database) {
+  const row = await createDrizzle(db)
+    .select({
+      date: sql<string | null>`max(${netWorthHistory.date})`.as("date"),
+    })
+    .from(netWorthHistory)
+    .where(
+      and(
+        eq(netWorthHistory.source, "bank"),
+        eq(netWorthHistory.assetType, "deposit"),
+      ),
+    )
+    .get();
+  return row?.date ?? null;
 }

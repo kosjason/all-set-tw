@@ -22,6 +22,7 @@ import {
   CathayOtpRequiredError,
   CathayOtpSessionExpiredError,
 } from "../../../src/connectors/cathaybk";
+import { BrowserCapacityError } from "../../../src/connectors/browser";
 import {
   TaishinBrowserCapacityError,
   TaishinConnectionError,
@@ -41,6 +42,7 @@ const mocks = vi.hoisted(() => ({
   startEinvoiceSyncRun: vi.fn(),
   startTdccSyncRun: vi.fn(),
   syncCtbc: vi.fn(),
+  importCtbcPayloads: vi.fn(),
   syncCathaybk: vi.fn(),
   syncEsun: vi.fn(),
   syncObank: vi.fn(),
@@ -49,6 +51,11 @@ const mocks = vi.hoisted(() => ({
   syncKgibank: vi.fn(),
   syncTaishin: vi.fn(),
   syncSkbank: vi.fn(),
+}));
+
+vi.mock("../../../src/features/sync/ctbc-import", () => ({
+  CtbcImportPayloadError: class CtbcImportPayloadError extends Error {},
+  importCtbcPayloads: mocks.importCtbcPayloads,
 }));
 
 vi.mock("../../../src/features/sync/einvoice-sync-service", () => ({
@@ -101,7 +108,11 @@ vi.mock("../../../src/features/sync/service", () => ({
   ) => task(),
 }));
 
-import { syncRoutes } from "../../../src/features/sync/route";
+import { CtbcImportPayloadError } from "../../../src/features/sync/ctbc-import";
+import {
+  CTBC_IMPORT_MAX_BYTES,
+  syncRoutes,
+} from "../../../src/features/sync/route";
 
 const env = {} as Env;
 
@@ -396,6 +407,125 @@ describe("CTBC sync route", () => {
   });
 });
 
+describe("CTBC web import route", () => {
+  const secretAccount = "9990001112223334";
+  const validBody = {
+    payloads: {
+      depositOverview: { rsData: { marker: secretAccount } },
+      depositTransactions: { rsData: { detailList: [] } },
+      creditCards: { rsData: {} },
+      unbilled: { rsData: { allItems: [] } },
+      realtime: { rsData: { allItems: [] } },
+    },
+    depositTransactionsUnavailable: true,
+  };
+
+  function postImport(body: string) {
+    return syncRoutes.request(
+      "/connectors/ctbc/import",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      },
+      env,
+    );
+  }
+
+  it("imports validated payloads under the manual sync lock", async () => {
+    mocks.importCtbcPayloads.mockResolvedValueOnce({
+      success: true,
+      connectorId: "ctbc",
+      scope: "all",
+      records: 7,
+      newRecords: {
+        invoices: 0,
+        bankTransactions: 3,
+        investmentTransactions: 0,
+      },
+      cursorUpdated: false,
+    });
+
+    const response = await postImport(JSON.stringify(validBody));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+      connectorId: "ctbc",
+      records: 7,
+    });
+    expect(mocks.importCtbcPayloads).toHaveBeenCalledWith(
+      env,
+      validBody.payloads,
+      { depositTransactionsUnavailable: true },
+    );
+  });
+
+  it.each([
+    ["missing payloads", {}],
+    [
+      "missing required response",
+      { payloads: { depositOverview: { marker: secretAccount } } },
+    ],
+    [
+      "array instead of response object",
+      {
+        payloads: {
+          ...validBody.payloads,
+          depositOverview: [secretAccount],
+        },
+      },
+    ],
+    [
+      "unknown top-level field",
+      { ...validBody, password: `secret-${secretAccount}` },
+    ],
+  ])("rejects %s without echoing data", async (_name, body) => {
+    const response = await postImport(JSON.stringify(body));
+    const text = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(text)).toMatchObject({
+      success: false,
+      error: { code: "INVALID_REQUEST" },
+    });
+    expect(text).not.toContain(secretAccount);
+    expect(mocks.importCtbcPayloads).not.toHaveBeenCalled();
+  });
+
+  it("rejects bodies above the size limit", async () => {
+    const body = JSON.stringify({
+      payloads: {
+        ...validBody.payloads,
+        depositOverview: { padding: "x".repeat(CTBC_IMPORT_MAX_BYTES) },
+      },
+    });
+
+    const response = await postImport(body);
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "PAYLOAD_TOO_LARGE" },
+    });
+    expect(mocks.importCtbcPayloads).not.toHaveBeenCalled();
+  });
+
+  it("maps unparsable payloads to a fixed message", async () => {
+    mocks.importCtbcPayloads.mockRejectedValueOnce(
+      new CtbcImportPayloadError("中國信託匯入資料格式不符，未寫入任何資料。"),
+    );
+
+    const response = await postImport(JSON.stringify(validBody));
+    const text = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(text)).toMatchObject({
+      error: { code: "CTBC_IMPORT_INVALID" },
+    });
+    expect(text).not.toContain(secretAccount);
+  });
+});
+
 describe("SKBank sync route", () => {
   it("dispatches a manual sync", async () => {
     const response = await syncRoutes.request(
@@ -443,6 +573,30 @@ describe("E.SUN sync route", () => {
         code: "SYNC_FAILED",
         message:
           "E.SUN browser login: duplicate-login dialog kept reappearing.",
+      },
+    });
+  });
+
+  it.each([
+    ["esun", mocks.syncEsun],
+    ["cathaybk", mocks.syncCathaybk],
+  ])("maps %s Browser Run capacity failures", async (connectorId, sync) => {
+    sync.mockRejectedValueOnce(
+      new BrowserCapacityError("Cloudflare 瀏覽器暫時達到使用上限。", 20),
+    );
+
+    const response = await syncRoutes.request(
+      `/connectors/${connectorId}/sync`,
+      { method: "POST" },
+      env,
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("20");
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "BROWSER_BUSY",
+        message: "Cloudflare 瀏覽器暫時達到使用上限。",
       },
     });
   });

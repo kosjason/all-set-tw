@@ -2,7 +2,11 @@
   import type { ActivityItem } from "../model/types";
   import type { ExchangeRateRow } from "@/data/assets/types";
   import { activityAmountTwd, activityDisplayAmount } from "../model/chart";
-  import { formatCurrency, formatDateTime } from "@/shared/format/financial";
+  import {
+    formatCurrency,
+    formatCurrencyPrecise,
+    formatDateTime,
+  } from "@/shared/format/financial";
   import { moneyState } from "@/shared/state/money-visibility.svelte";
 
   let {
@@ -34,7 +38,7 @@
 </span>
 {#if foreign}
   <span class="mt-1 block text-caption font-normal text-subtle"
-    >原幣 {formatCurrency(original!, item.currency)}</span
+    >原幣 {formatCurrencyPrecise(original!, item.currency)}</span
   >
   {#if detail && twd != null && rate}
     <span

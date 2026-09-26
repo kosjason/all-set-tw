@@ -18,6 +18,17 @@ export function getSyncSourceStatus(
   return job?.lastSuccessAt ? "healthy" : "not_synced";
 }
 
+/**
+ * 同步成功但部分資料未取得時，後端把說明保留在 lastError；
+ * 失敗狀態的 lastError 另由錯誤訊息顯示，這裡只回傳成功時的警告。
+ */
+export function getSyncWarning(
+  job: Pick<SyncJobRow, "lastStatus" | "lastError"> | undefined,
+): string | undefined {
+  if (job?.lastStatus !== "success") return undefined;
+  return job.lastError?.trim() || undefined;
+}
+
 export function getSyncSourceStatusLabel(status: SyncSourceStatus) {
   switch (status) {
     case "unconfigured":

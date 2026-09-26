@@ -81,7 +81,7 @@ vi.mock("../../../src/features/sync/service", () => ({
   syncTaishin: mocks.syncTaishin,
   syncSkbank: mocks.syncSkbank,
   syncTdcc: vi.fn(),
-  SYNC_LOCK_LEASE_MS: 30 * 60 * 1000,
+  SYNC_LOCK_LEASE_MS: 10 * 60 * 1000,
 }));
 
 vi.mock("../../../src/features/notifications/service", () => ({
@@ -297,6 +297,46 @@ describe("scheduled sync rounds", () => {
       expect.anything(),
       "scheduled",
       {},
+    );
+  });
+
+  it("keeps a partial-data warning on an otherwise successful job", async () => {
+    const job = syncJob("custom", "taishin");
+    mocks.findOpenDefaultScheduleBatchId.mockResolvedValue(null);
+    mocks.findNextDueSyncJob.mockResolvedValue(job);
+    mocks.syncTaishin.mockResolvedValueOnce({
+      connectorId: "taishin",
+      scope: "all",
+      records: 2,
+      newRecords: {
+        invoices: 0,
+        bankTransactions: 0,
+        investmentTransactions: 0,
+      },
+      warnings: [" 即時消費暫時無法取得 "],
+    });
+
+    await runSchedulerTick(env(), scheduledController);
+
+    expect(mocks.completeSyncJob).toHaveBeenCalledWith(
+      expect.anything(),
+      job,
+      "即時消費暫時無法取得",
+    );
+    expect(mocks.failSyncJob).not.toHaveBeenCalled();
+  });
+
+  it("clears the job warning when a sync has no warnings", async () => {
+    const job = syncJob("custom", "taishin");
+    mocks.findOpenDefaultScheduleBatchId.mockResolvedValue(null);
+    mocks.findNextDueSyncJob.mockResolvedValue(job);
+
+    await runSchedulerTick(env(), scheduledController);
+
+    expect(mocks.completeSyncJob).toHaveBeenCalledWith(
+      expect.anything(),
+      job,
+      null,
     );
   });
 

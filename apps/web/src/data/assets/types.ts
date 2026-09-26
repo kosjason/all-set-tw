@@ -3,6 +3,8 @@ export interface NetWorthHistoryRow {
   netWorth: number;
   assetType: string;
   source: string;
+  /** 存款列：該日餘額由交易明細推算（第一次同步之前）。 */
+  derived?: boolean;
 }
 
 export interface ExchangeRateRow {

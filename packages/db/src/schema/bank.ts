@@ -121,6 +121,8 @@ export const bankTransactions = sqliteTable(
       .default(sql`'posted'`),
     transferPeerId: text("transfer_peer_id"),
     matchedTransactionId: text("matched_transaction_id"),
+    counterpartyBankCode: text("counterparty_bank_code"),
+    counterpartyAccountSuffix: text("counterparty_account_suffix"),
   },
   (table) => [
     primaryKey({ columns: [table.id] }),
@@ -164,6 +166,17 @@ export const bankTransactions = sqliteTable(
       foreignColumns: [bankAccounts.id],
     }),
     check("bank_transactions_check_1", sql`status IN ('pending', 'posted')`),
+    check(
+      "bank_transactions_check_2",
+      sql`counterparty_bank_code IS NULL OR counterparty_bank_code GLOB '[0-9][0-9][0-9]'`,
+    ),
+    check(
+      "bank_transactions_check_3",
+      sql`counterparty_account_suffix IS NULL OR (
+      length(counterparty_account_suffix) BETWEEN 4 AND 5
+      AND counterparty_account_suffix NOT GLOB '*[^0-9]*'
+    )`,
+    ),
   ],
 );
 
@@ -230,5 +243,36 @@ export const creditCardBills = sqliteTable(
       columns: [table.accountId],
       foreignColumns: [bankAccounts.id],
     }),
+  ],
+);
+
+export const ownAccounts = sqliteTable(
+  "own_accounts",
+  {
+    id: text("id").notNull(),
+    kind: text("kind")
+      .notNull()
+      .default(sql`'own_account'`),
+    bankCode: text("bank_code").notNull(),
+    accountSuffix: text("account_suffix").notNull(),
+    label: text("label"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    unique().on(table.bankCode, table.accountSuffix),
+    check(
+      "own_accounts_check_1",
+      sql`kind IN ('own_account', 'unsynced_card')`,
+    ),
+    check("own_accounts_check_2", sql`bank_code GLOB '[0-9][0-9][0-9]'`),
+    check(
+      "own_accounts_check_3",
+      sql`
+    length(account_suffix) BETWEEN 4 AND 5
+    AND account_suffix NOT GLOB '*[^0-9]*'
+  `,
+    ),
   ],
 );

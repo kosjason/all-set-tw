@@ -1,4 +1,7 @@
-import { ctbcTransactionsMatch } from "@taiwan-fin-hub/connectors";
+import {
+  ctbcTransactionMatchKind,
+  pairCtbcTransactions,
+} from "@taiwan-fin-hub/connectors";
 import type { SyncWriteRecord } from "./persistence";
 
 type Row = Record<string, unknown> & {
@@ -91,19 +94,22 @@ export async function prepareCtbcAuthorizationWrite(
       }
     }
     if (!existing && row.status === "posted") {
+      // Two posted rows are only the same purchase when their authorization
+      // codes agree; the weaker card/amount/date fallback is reserved for
+      // replacing authorizations and must never overwrite another posted row.
+      const sameAuthorization = (left: Row, right: Row) =>
+        ctbcTransactionMatchKind(candidate(left), candidate(right)) ===
+        "authorization";
       const matches = stored.filter(
         (s) =>
           s.status === "posted" &&
           s.account_id === row.account_id &&
-          ctbcTransactionsMatch(candidate(s), candidate(row)),
+          sameAuthorization(s, row),
       );
       if (
         matches.length === 1 &&
         incomingPosted.filter((r) =>
-          ctbcTransactionsMatch(
-            candidate(r.payload as Row),
-            candidate(matches[0]!),
-          ),
+          sameAuthorization(r.payload as Row, matches[0]!),
         ).length === 1
       )
         existing = matches[0];
@@ -172,22 +178,13 @@ export async function prepareCtbcAuthorizationWrite(
       !usedPosted.has(s.id) &&
       !authorizationIds.has(s.id),
   );
-  const candidates = pending.map((p) =>
-    posted.filter(
-      (t) =>
-        p.account_id === t.account_id &&
-        ctbcTransactionsMatch(candidate(p), candidate(t)),
-    ),
-  );
-  const newLinks = pending.flatMap((p, i) => {
-    const matches = candidates[i]!;
-    if (
-      matches.length !== 1 ||
-      candidates.filter((xs) => xs.includes(matches[0]!)).length !== 1
-    )
-      return [];
-    return [{ ...p, matched_transaction_id: matches[0]!.id }];
-  });
+  // Same one-to-one pairing as the parser: authorization codes first, then the
+  // card/amount/date fallback for rows without comparable codes.
+  const newLinks = pairCtbcTransactions(pending, posted, (p, t) =>
+    p.account_id === t.account_id
+      ? ctbcTransactionMatchKind(candidate(p), candidate(t))
+      : undefined,
+  ).map(([p, t]) => ({ ...p, matched_transaction_id: t.id }));
   const linksJson = JSON.stringify(
     [...savedLinks, ...newLinks].flatMap((pendingRow) => {
       const posted = all.get(pendingRow.matched_transaction_id ?? "");

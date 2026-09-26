@@ -5,7 +5,7 @@
     formatCurrency,
     formatDate,
   } from "@/shared/format/financial";
-  import type { InstitutionAssetGroup } from "../model/summary";
+  import type { InstitutionAssetGroup } from "@/data/assets/summary";
 
   let {
     group,

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { ActivityItem } from "@taiwan-fin-hub/core";
+import { routeActivityApi } from "./activity-api";
 
 async function mockSearch(
   page: Page,
@@ -50,6 +51,7 @@ async function mockSearch(
             : [],
     });
   });
+  await routeActivityApi(page);
   return requests;
 }
 const gas = (index: number): ActivityItem => ({
@@ -75,20 +77,21 @@ for (const width of [1440, 390, 320]) {
       {
         ...gas(0),
         id: "recent",
+        source: "invoice",
         title: "AIRBNB stay",
         date: "2025-12-15",
         invoiceId: "invoice",
       },
       { ...gas(1), id: "old", title: "AIRBNB stay", date: "2024-06-15" },
     ]);
-    await page.goto("/#/activity");
+    await page.goto("/#/transactions");
     const month = page.getByLabel("選擇活動月份");
     await month.selectOption({ index: 1 });
     const selected = await month.inputValue();
-    await page.getByRole("tab", { name: "信用卡", exact: true }).click();
-    const monthlySearch = page.getByRole("searchbox", { name: "搜尋該月活動" });
-    await monthlySearch.fill("月報關鍵字");
-    const search = page.getByRole("searchbox", { name: "搜尋所有活動" });
+    const roleFilter = page.getByRole("combobox", { name: "活動角色" });
+    await roleFilter.selectOption("spending");
+    await expect(page).toHaveURL(/role=spending/);
+    const search = page.getByRole("searchbox", { name: "搜尋活動" });
     await search.fill("airbnb");
     await page.waitForTimeout(500); // Typing must not trigger the former debounce.
     expect(requests).toHaveLength(0);
@@ -116,27 +119,23 @@ for (const width of [1440, 390, 320]) {
     await expect(search).toHaveValue("airbnb");
     await page.goBack();
     await expect(month).toHaveValue(selected);
-    await expect(monthlySearch).toHaveValue("月報關鍵字");
+    await expect(roleFilter).toHaveValue("spending");
+    await expect(search).toHaveValue("");
     await page.goForward();
     await expect(search).toHaveValue("airbnb");
-    if (width < 768)
-      await page.getByRole("button", { name: "篩選", exact: true }).click();
-    await page
-      .getByLabel("搜尋來源", { exact: true })
-      .filter({ visible: true })
-      .selectOption("invoice");
-    if (width < 768)
-      await page.getByRole("button", { name: "查看結果", exact: true }).click();
+    // 來源改為分頁：發票分頁只列發票紀錄，搜尋 API 也帶 source=invoice。
+    await page.getByRole("tab", { name: "發票", exact: true }).click();
     await expect(
       page.getByRole("heading", { name: "已載入 1 筆", exact: true }),
     ).toBeVisible();
     expect(requests.at(-1)?.searchParams.get("source")).toBe("invoice");
     await page.getByRole("button", { name: "清空搜尋，返回月報" }).click();
     await expect(month).toHaveValue(selected);
+    await page.getByRole("tab", { name: "總帳", exact: true }).click();
     await search.fill("airbnb");
     await search.press("Enter");
-    if (width < 768)
-      await page.getByRole("button", { name: "篩選", exact: true }).click();
+    // 搜尋時間範圍收在「篩選」（桌面為 popover、手機為 sheet）。
+    await page.getByRole("button", { name: "篩選", exact: true }).click();
     await page
       .getByLabel("搜尋時間範圍")
       .filter({ visible: true })
@@ -149,8 +148,7 @@ for (const width of [1440, 390, 320]) {
       .getByLabel("搜尋結束日期")
       .filter({ visible: true })
       .fill("2024-06-15");
-    if (width < 768)
-      await page.getByRole("button", { name: "查看結果", exact: true }).click();
+    await page.getByRole("button", { name: "查看結果", exact: true }).click();
     await expect(
       page.getByRole("heading", { name: "已載入 1 筆", exact: true }),
     ).toBeVisible();
@@ -185,8 +183,8 @@ for (const total of [7, 30, 65]) {
       page,
       Array.from({ length: total }, (_, i) => gas(i)),
     );
-    await page.goto("/#/activity");
-    await page.getByRole("searchbox", { name: "搜尋所有活動" }).fill("加油");
+    await page.goto("/#/transactions");
+    await page.getByRole("searchbox", { name: "搜尋活動" }).fill("加油");
     await page.getByRole("button", { name: "搜尋", exact: true }).click();
     await expect(
       page.getByRole("heading", {
@@ -221,8 +219,8 @@ test("failed next batch retains results and can be retried", async ({
     Array.from({ length: 35 }, (_, i) => gas(i)),
     options,
   );
-  await page.goto("/#/activity");
-  await page.getByRole("searchbox", { name: "搜尋所有活動" }).fill("加油");
+  await page.goto("/#/transactions");
+  await page.getByRole("searchbox", { name: "搜尋活動" }).fill("加油");
   await page.getByRole("button", { name: "搜尋", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "已載入 30 筆", exact: true }),
@@ -249,10 +247,15 @@ test("monthly search filters selected month without global requests", async ({
   page,
 }) => {
   const requests = await mockSearch(page, []);
+  // 所有活動都在本月（台北時間）；切到上個月時應看不到。
+  const month = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+  })
+    .format(new Date())
+    .slice(0, 7);
   await page.route("**/api/bank**", async (route) => {
-    const month = new URL(route.request().url()).searchParams
-      .get("to")
-      ?.slice(0, 7);
     await route.fulfill({
       json: {
         accounts: [
@@ -278,7 +281,7 @@ test("monthly search filters selected month without global requests", async ({
       },
     });
   });
-  await page.goto("/#/activity");
+  await page.goto("/#/transactions");
   const coffee = page
     .getByRole("button", { name: "查看 咖啡 活動詳情" })
     .filter({ visible: true });
@@ -287,7 +290,7 @@ test("monthly search filters selected month without global requests", async ({
     .filter({ visible: true });
   await expect(coffee).toBeVisible();
   await expect(lunch).toBeVisible();
-  const search = page.getByRole("searchbox", { name: "搜尋該月活動" });
+  const search = page.getByRole("searchbox", { name: "搜尋活動" });
   await search.fill("咖啡");
   await expect(coffee).toBeVisible();
   await expect(lunch).toHaveCount(0);

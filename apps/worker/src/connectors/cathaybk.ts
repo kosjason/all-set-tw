@@ -1,4 +1,4 @@
-import { launchBrowserWithRetry } from "./browser.js";
+import { launchBrowserOrCapacityError } from "./browser.js";
 import puppeteer, {
   type Browser,
   type CookieParam,
@@ -15,6 +15,10 @@ import {
   BANK_SYNC_MONTHS,
   type CathaybkConfig,
 } from "@taiwan-fin-hub/connectors";
+import {
+  deriveCathayDepositCounterparty,
+  maskCathayDepositRaw,
+} from "./cathaybk-deposit-counterparty.js";
 
 const LOGIN_URL = "https://www.cathaybk.com.tw/MyBank/";
 const DEPOSIT_OVERVIEW_URL =
@@ -160,7 +164,7 @@ async function scrapeWithBrowser(
     );
     b = reconnecting
       ? await connectCathayBrowser(browserBinding, config.browserSessionId!)
-      : await launchBrowserWithRetry(browserBinding, {
+      : await launchBrowserOrCapacityError(browserBinding, {
           keep_alive: OTP_SESSION_TTL_MS,
         });
     const pages = await b.pages();
@@ -1041,6 +1045,8 @@ interface TransferDetail {
   balance?: number | null;
   specialMemo?: string | null;
   memo?: string | null;
+  expendBankId?: string | null;
+  expendAcctNo?: string | null;
   [key: string]: unknown;
 }
 
@@ -1106,52 +1112,101 @@ function periodLabel(days: number): string {
   return "近 1 年";
 }
 
+type CathayCombobox = "account" | "period";
+
+/**
+ * The transaction page uses react-select comboboxes: the menu opens from the
+ * keyboard and options render as `[id*='-option-']` elements.
+ */
+export async function chooseCathayComboboxOption(
+  page: Page,
+  kind: CathayCombobox,
+  optionMatch: string,
+): Promise<boolean> {
+  const marked = await page.evaluate((target: CathayCombobox) => {
+    // react-select keeps the input empty and renders the chosen label in the
+    // surrounding control, so identify each combobox by that control's text.
+    const labelOf = (input: HTMLInputElement) => {
+      let node: HTMLElement | null = input;
+      for (let depth = 0; depth < 5 && node; depth += 1) {
+        node = node.parentElement;
+        const text = (node?.innerText ?? "").replace(/\s+/g, "");
+        if (text) return text;
+      }
+      return "";
+    };
+    const input = Array.from(
+      document.querySelectorAll<HTMLInputElement>("input[role='combobox']"),
+    ).find((candidate) => {
+      const label = labelOf(candidate);
+      return target === "period"
+        ? /^近\d+(天|個?月|年)$/.test(label)
+        : /\d{10,}/.test(label);
+    });
+    if (!input) return false;
+    input.dataset.cathayCombobox = target;
+    return true;
+  }, kind);
+  if (!marked) return false;
+
+  await page.focus(`[data-cathay-combobox="${kind}"]`);
+  await page.keyboard.press("ArrowDown");
+  await page
+    .waitForFunction(
+      () =>
+        document.querySelectorAll("[role='option'], [id*='-option-']").length >
+        0,
+      { timeout: 5000 },
+    )
+    .catch(() => null);
+  return page.evaluate(
+    (match: string, exactAccount: boolean) => {
+      const normalize = (value: string) => value.replace(/\s+/g, "");
+      const option = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          "[role='option'], [id*='-option-']",
+        ),
+      ).find((candidate) => {
+        const text = normalize(candidate.textContent ?? "");
+        // Account options start with the account number; compare it exactly
+        // so one account number cannot match inside another.
+        return exactAccount
+          ? text.match(/\d{10,}/)?.[0] === match
+          : text === normalize(match);
+      });
+      option?.click();
+      return Boolean(option);
+    },
+    optionMatch,
+    kind === "account",
+  );
+}
+
 async function selectTransactionPeriod(
   page: Page,
   days: number,
 ): Promise<void> {
   const label = periodLabel(days);
   if (label === "近 30 天") return; // default, no action needed
-
-  // Open the period dropdown (find the one showing days/天)
-  const opened = await page.evaluate(() => {
-    const dropdowns = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        "[role='combobox'], button[aria-haspopup]",
-      ),
-    ).filter(
-      (el) =>
-        (el as HTMLElement).innerText?.includes("天") ||
-        (el as HTMLElement).innerText?.includes("月"),
-    );
-    if (!dropdowns[0]) return false;
-    dropdowns[0].click();
-    return true;
-  });
-
-  if (!opened) {
-    console.log("[cathaybk] could not open period dropdown, using default");
-    return;
+  if (!(await chooseCathayComboboxOption(page, "period", label))) {
+    throw new Error(`Cathay Bank period option "${label}" was not found.`);
   }
-
-  await new Promise((r) => setTimeout(r, 500));
-
-  const clicked = await page.evaluate((targetLabel: string) => {
-    const opts = Array.from(
-      document.querySelectorAll<HTMLElement>("[role='option'], li"),
-    ).filter((el) => el.textContent?.trim() === targetLabel);
-    if (!opts[0]) return false;
-    opts[0].click();
-    return true;
-  }, label);
-
-  if (!clicked) {
-    console.log(`[cathaybk] period option "${label}" not found, using default`);
-    return;
-  }
-
-  await new Promise((r) => setTimeout(r, 300));
   console.log(`[cathaybk] set period to "${label}"`);
+}
+
+function waitForDepositTransactions(page: Page) {
+  return page
+    .waitForResponse(
+      (r) => r.url().includes(API_DEPOSIT_TX) && r.status() === 200,
+      { timeout: 30000 },
+    )
+    .catch(() => null);
+}
+
+function assertCathayNotLoggedOut(page: Pick<Page, "url">) {
+  if (page.url().toLowerCase().includes("/logout/")) {
+    throw new Error("Cathay Bank forced logout on transaction page.");
+  }
 }
 
 async function scrapeDeposits(
@@ -1168,7 +1223,7 @@ async function scrapeDeposits(
     timeout: 60000,
   });
   console.log("[cathaybk] deposit page opened");
-  if (page.url().includes("/logout/")) {
+  if (page.url().toLowerCase().includes("/logout/")) {
     throw new Error("Cathay Bank forced logout on deposit page.");
   }
 
@@ -1207,67 +1262,88 @@ async function scrapeDeposits(
       asOfAt,
       raw: acct,
     });
+  }
 
-    // Click account button → navigates to B0103 (transaction detail page)
-    const initialTxPromise = page
-      .waitForResponse(
-        (r) => r.url().includes(API_DEPOSIT_TX) && r.status() === 200,
-        { timeout: 30000 },
-      )
-      .catch(() => null);
-
-    const clicked = await page.evaluate((acctNo: string) => {
-      const btn = Array.from(
-        document.querySelectorAll<HTMLButtonElement>("button"),
-      ).find((b) => b.textContent?.trim() === acctNo);
-      if (btn) {
-        btn.click();
-        return true;
-      }
-      return false;
-    }, acct.acctNo);
-
-    if (!clicked) {
-      console.log(
-        `[cathaybk] no button found for account ${maskAccountNumber(acct.acctNo)}`,
-      );
-      continue;
-    }
-
-    await page
-      .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
-      .catch(() => null);
-
-    let txRsp = null;
-
-    if (lookbackDays > 30) {
-      // Initial page load triggered API with default 30-day period; re-query with desired period
-      const reTxPromise = page
-        .waitForResponse(
-          (r) => r.url().includes(API_DEPOSIT_TX) && r.status() === 200,
-          { timeout: 30000 },
-        )
-        .catch(() => null);
-
-      await selectTransactionPeriod(page, lookbackDays);
-
-      await page.evaluate(() => {
+  // Open the transaction page once from the first account, then switch
+  // accounts in place: returning to the overview between accounts makes
+  // Cathay end the session (/OnlineBanking/Logout/SystemError).
+  let detailPageOpen = false;
+  for (const acct of accounts) {
+    const sourceId = `bank:cathaybk:${acct.acctNo}`;
+    if (!detailPageOpen) {
+      // Opening the page queries the default 30 days; consume that response
+      // so it cannot be mistaken for this account's own query below.
+      const initialQuery = waitForDepositTransactions(page);
+      const clicked = await page.evaluate((acctNo: string) => {
         const btn = Array.from(
           document.querySelectorAll<HTMLButtonElement>("button"),
-        ).find((b) => b.textContent?.trim() === "查詢");
+        ).find((b) => b.textContent?.trim() === acctNo);
         btn?.click();
-      });
-
-      txRsp = await reTxPromise;
-    } else {
-      txRsp = await initialTxPromise;
+        return Boolean(btn);
+      }, acct.acctNo);
+      if (!clicked) {
+        console.log(
+          `[cathaybk] no button found for account ${maskAccountNumber(acct.acctNo)}`,
+        );
+        continue;
+      }
+      await page
+        .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
+        .catch(() => null);
+      await initialQuery;
+      await page
+        .waitForFunction(
+          () => document.querySelectorAll("input[role='combobox']").length > 0,
+          { timeout: 15000 },
+        )
+        .catch(() => null);
+      detailPageOpen = true;
+    } else if (
+      !(await chooseCathayComboboxOption(page, "account", acct.acctNo))
+    ) {
+      assertCathayNotLoggedOut(page);
+      throw new Error(
+        "Cathay Bank account was not found in the transaction account selector.",
+      );
     }
+    assertCathayNotLoggedOut(page);
 
-    const txData: TransferDetailResponse = txRsp
-      ? ((await txRsp.json().catch(() => ({}))) as TransferDetailResponse)
-      : {};
+    await selectTransactionPeriod(page, lookbackDays);
+    // Let any query triggered by switching the selectors settle first.
+    await page
+      .waitForNetworkIdle({ idleTime: 500, timeout: 10000 })
+      .catch(() => null);
+    const txRsp = waitForDepositTransactions(page);
+    await page.evaluate(() => {
+      const btn = Array.from(
+        document.querySelectorAll<HTMLButtonElement>("button"),
+      ).find((b) => b.textContent?.trim() === "查詢");
+      btn?.click();
+    });
+    const response = await txRsp;
+    assertCathayNotLoggedOut(page);
+    if (!response) {
+      throw new Error("Cathay Bank transaction query did not respond.");
+    }
+    const txData = (await response.json().catch(() => {
+      throw new Error("Cathay Bank transaction response was not JSON.");
+    })) as TransferDetailResponse;
 
     const datas = txData.content?.datas ?? [];
+    // The API zero-pads the account number (e.g. 16 digits for a 12-digit
+    // account shown on the page). Every entry must belong to this account.
+    const belongsToAccount = (accountNumber: string | undefined) => {
+      const digits = (accountNumber ?? "").replace(/\D/g, "");
+      return (
+        digits.endsWith(acct.acctNo) &&
+        /^0*$/.test(digits.slice(0, -acct.acctNo.length))
+      );
+    };
+    if (!datas.every((data) => belongsToAccount(data.accountNumber))) {
+      throw new Error(
+        "Cathay Bank returned transactions for a different account.",
+      );
+    }
     const details: TransferDetail[] = datas.flatMap((d) => d.details ?? []);
     console.log(
       `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: ${details.length} tx (period=${periodLabel(lookbackDays)})`,
@@ -1279,21 +1355,6 @@ async function scrapeDeposits(
       sourceId,
       acct.currency,
     );
-
-    // Return to deposit overview for next account
-    await page.goto(DEPOSIT_OVERVIEW_URL, {
-      waitUntil: "networkidle2",
-      timeout: 60000,
-    });
-    await page
-      .waitForFunction(
-        () =>
-          Array.from(document.querySelectorAll("button")).some((b) =>
-            /^\d{10,}$/.test(b.textContent?.trim() ?? ""),
-          ),
-        { timeout: 10000 },
-      )
-      .catch(() => null);
   }
 
   return {
@@ -1325,6 +1386,7 @@ export function appendCathayDepositTransactions(
     const key = [date, accountId, amount, desc].join(":");
     const occ = (seen.get(key) ?? 0) + 1;
     seen.set(key, occ);
+    const counterparty = deriveCathayDepositCounterparty(d, amount);
     target.push({
       accountId,
       sourceId: `${key}:${occ}`,
@@ -1333,43 +1395,265 @@ export function appendCathayDepositTransactions(
       amount,
       currency,
       description: desc,
-      raw: { ...d, duplicateOccurrence: occ },
+      ...counterparty,
+      raw: { ...maskCathayDepositRaw(d), duplicateOccurrence: occ },
     });
   }
 }
 
 // ---- Credit cards ----
 
-interface HistoryBillItem {
+export interface HistoryBillItem {
   billDate: string;
   twdAmount: number | null;
   usdAmount: number | null;
   billStatus: string;
 }
 
-interface TradeItem {
+export interface TradeItem {
   consumeDate: string | null;
   transDesc: string;
   amount: number;
   currency: string;
+  cardNo?: string | null;
+  [key: string]: unknown;
 }
 
-interface BillDetailSection {
+export interface BillDetailSection {
   detailType: string;
   tradeData: TradeItem[] | null;
 }
 
-interface MonthDetail {
+export interface MonthDetail {
   billDate: string;
   twdAmount: number | null;
   sections: BillDetailSection[];
 }
 
-export async function scrapeCreditCards(page: Page): Promise<Scraped> {
-  const bankAccounts: Scraped["bankAccounts"] = [];
-  const bankBalanceSnapshots: Scraped["bankBalanceSnapshots"] = [];
-  const bankTransactions: Scraped["bankTransactions"] = [];
+export type CathayCardOverview = ReturnType<typeof parseCathayCardOverview>;
+
+export interface CathayCardBillData {
+  allBills: HistoryBillItem[];
+  monthDetails: MonthDetail[];
+}
+
+// 國泰的信用額度、應繳金額與帳單為所有卡片共用；早期同步把全部卡片資料
+// 寫在這個帳戶，交易 sourceId 也以它組成，因此保留作為多卡摘要帳戶。
+const CATHAY_CARD_SUMMARY_ACCOUNT_ID = "credit:cathaybk:main";
+
+const CATHAY_CARD_PAYMENT_COUNTERPARTY = "國泰世華信用卡繳款";
+
+function isCathayCardPayment(section: BillDetailSection, trade: TradeItem) {
+  return (
+    section.detailType === "PaymentAmount" ||
+    trade.detailType === "PaymentAmount"
+  );
+}
+
+function cathayCardLast4(cardNo: unknown): string | undefined {
+  if (typeof cardNo !== "string") return undefined;
+  return cardNo.replace(/[\s-]/g, "").match(/(\d{4})$/)?.[1];
+}
+
+function cathayCardSourceId(last4: string) {
+  return `credit:cathaybk:${last4}`;
+}
+
+/**
+ * 共用額度的餘額快照與帳單放在哪個帳戶：只有一張實體卡時放在該卡，
+ * 多張卡（或讀不到卡號）時放在摘要帳戶，與玉山規則一致。
+ */
+export function cathayCreditBalanceAccountId(
+  physicalCardSourceIds: Iterable<string>,
+) {
+  const accountIds = [
+    ...new Set(
+      [...physicalCardSourceIds].filter(
+        (accountId) => accountId !== CATHAY_CARD_SUMMARY_ACCOUNT_ID,
+      ),
+    ),
+  ];
+  return accountIds.length === 1
+    ? accountIds[0]!
+    : CATHAY_CARD_SUMMARY_ACCOUNT_ID;
+}
+
+/** 信用卡明細只有消費日期；不得把銀行補上的 `T00:00:00` 當成交易時間。 */
+function cathayCardDate(value: unknown): string | undefined {
+  return normalizeCathayAuthorizedAt(value)?.slice(0, 10);
+}
+
+export function normalizeCathayCreditCards(
+  overview: CathayCardOverview,
+  billData: CathayCardBillData | null,
+  asOfAt: string,
+): Scraped {
+  const trades = (billData?.monthDetails ?? []).flatMap((month) =>
+    (month.sections ?? [])
+      .filter((section) => section.detailType !== "LastBillAmount")
+      .flatMap((section) =>
+        (section.tradeData ?? [])
+          .filter((trade) => trade.amount)
+          .map((trade) => ({ month, section, trade })),
+      ),
+  );
+  const physicalLast4s = [
+    ...new Set([
+      ...overview.cardLast4s,
+      ...trades
+        .filter(({ section, trade }) => !isCathayCardPayment(section, trade))
+        .map(({ trade }) => cathayCardLast4(trade.cardNo))
+        .filter((last4): last4 is string => Boolean(last4)),
+    ]),
+  ];
+  const balanceAccountId = cathayCreditBalanceAccountId(
+    physicalLast4s.map(cathayCardSourceId),
+  );
+
+  const accountIds = [
+    ...physicalLast4s.map(cathayCardSourceId),
+    ...(balanceAccountId === CATHAY_CARD_SUMMARY_ACCOUNT_ID
+      ? [CATHAY_CARD_SUMMARY_ACCOUNT_ID]
+      : []),
+  ];
+  const bankAccounts: Scraped["bankAccounts"] = accountIds.map((sourceId) => ({
+    sourceId,
+    institutionName: "國泰世華銀行",
+    accountName:
+      sourceId === CATHAY_CARD_SUMMARY_ACCOUNT_ID
+        ? "國泰信用卡"
+        : `國泰信用卡 ${sourceId.slice(-4)}`,
+    accountType: "credit",
+    currency: "TWD",
+    ...(sourceId === balanceAccountId
+      ? { creditLimit: overview.creditLimit || undefined, raw: overview }
+      : {}),
+  }));
+
+  const bankBalanceSnapshots: Scraped["bankBalanceSnapshots"] = [
+    {
+      accountId: balanceAccountId,
+      sourceId: `${balanceAccountId}:${asOfAt}`,
+      balance: -overview.unpaidAmount,
+      availableBalance: overview.availableCredit || undefined,
+      paymentDueDate: overview.paymentDueDate ?? undefined,
+      noPaymentNeeded: overview.noPaymentNeeded,
+      currency: "TWD",
+      asOfAt,
+      raw: overview,
+    },
+  ];
+
   const creditCardBills: Scraped["creditCardBills"] = [];
+  const allBills = billData?.allBills ?? [];
+  const latestBillDate = allBills[0]?.billDate;
+  for (const bill of allBills) {
+    const period = bill.billDate.slice(0, 7); // "YYYY-MM"
+    const isLatest = bill.billDate === latestBillDate;
+    creditCardBills.push({
+      accountId: balanceAccountId,
+      sourceId: `${balanceAccountId}:bill:${period}`,
+      billingPeriod: period,
+      statementAmount: bill.twdAmount ?? undefined,
+      statementClosingDate: bill.billDate.slice(0, 10),
+      paymentDueDate: isLatest
+        ? (overview.paymentDueDate ?? undefined)
+        : undefined,
+      isPaid: isLatest ? overview.noPaymentNeeded : true,
+      currency: "TWD",
+      raw: bill,
+    });
+  }
+
+  // Build bankTransactions from bill details (skip carry-forward summary rows)
+  const bankTransactions: Scraped["bankTransactions"] = [];
+  const seen = new Map<string, number>();
+  for (const { month, section, trade } of trades) {
+    const sourceDate = trade.consumeDate ?? month.billDate;
+    // 交易 identity 沿用拆卡前的算法（含摘要帳戶 ID 與原始日期字串），
+    // 改掛到實體卡帳戶時才能由 reconcile 以相同 sourceId 併回既有資料。
+    const identityDate = normalizeDateStr(sourceDate);
+    const date = cathayCardDate(sourceDate);
+    const desc = trade.transDesc || "國泰信用卡消費";
+    const key = [
+      identityDate,
+      CATHAY_CARD_SUMMARY_ACCOUNT_ID,
+      trade.amount,
+      desc,
+    ].join(":");
+    const occ = (seen.get(key) ?? 0) + 1;
+    seen.set(key, occ);
+    const payment = isCathayCardPayment(section, trade);
+    const last4 = payment ? undefined : cathayCardLast4(trade.cardNo);
+    const { cardNo: _cardNo, ...tradeRaw } = trade;
+    bankTransactions.push({
+      // 繳款沖銷的是共用帳單，掛在與帳單相同的餘額帳戶。
+      accountId: last4 ? cathayCardSourceId(last4) : balanceAccountId,
+      sourceId: `${key}:${occ}`,
+      postedDate: date ?? identityDate,
+      authorizedAt: date,
+      // 帳單明細的消費為正數，繳款、退款與回饋等貸項為負數；
+      // 卡片帳戶以支出為負、入帳為正。
+      amount: payment ? Math.abs(trade.amount) : -trade.amount,
+      currency: "TWD",
+      description: desc,
+      // 繳款描述只有「本行自動扣繳」等字樣，補上對象讓既有信用卡繳費規則
+      // 將其歸為轉帳並排除計算，避免與存款端扣款重複計入支出。
+      ...(payment ? { counterparty: CATHAY_CARD_PAYMENT_COUNTERPARTY } : {}),
+      raw: {
+        ...tradeRaw,
+        ...(last4 ? { cardLast4: last4 } : {}),
+        billDate: month.billDate,
+        detailType: section.detailType,
+        duplicateOccurrence: occ,
+      },
+    });
+  }
+
+  return {
+    bankAccounts,
+    bankBalanceSnapshots,
+    bankTransactions,
+    creditCardBills,
+  };
+}
+
+/** Parses the Cathay credit card overview (C0101) page text. */
+export function parseCathayCardOverview(text: string) {
+  const parseAmt = (s: string | undefined) =>
+    parseInt((s ?? "").replace(/[^\d]/g, ""), 10) || 0;
+  // 總覽頁逐卡列出「卡片末四碼」；額度與帳單金額為所有卡片共用。
+  const cardLast4s = [
+    ...new Set(
+      Array.from(text.matchAll(/卡片末四碼[：:]\s*(\d{4})/g), (m) => m[1]!),
+    ),
+  ];
+  const limitMatch = text.match(/永久信用額度\s*(?:TWD\s*)?([\d,]+)/);
+  const availMatch = text.match(/剩餘可用額度[\s\S]{0,20}?(?:TWD\s*)?([\d,]+)/);
+  const dueDateMatch = text.match(
+    /繳款截止日[\s\S]{0,10}?(\d{4}[\/\-]\d{2}[\/\-]\d{2})/,
+  );
+  const noPaymentNeeded = text.includes("無需繳費");
+  // The current overview shows the latest statement as "臺幣帳單 TWD 12,345"
+  // without an 應繳金額 label; keep the older wording as the first choice.
+  const unpaidMatch = !noPaymentNeeded
+    ? (text.match(
+        /(?:應繳|未繳)(?:金額|餘額)?[\s\S]{0,20}?(?:TWD\s*)?([\d,]+)/,
+      ) ?? text.match(/臺幣帳單\s*(?:TWD\s*)?([\d,]+)/))
+    : null;
+  return {
+    cardDetected: cardLast4s.length > 0,
+    last4: cardLast4s[0] ?? "",
+    cardLast4s,
+    creditLimit: parseAmt(limitMatch?.[1]),
+    availableCredit: parseAmt(availMatch?.[1]),
+    unpaidAmount: noPaymentNeeded ? 0 : parseAmt(unpaidMatch?.[1]),
+    paymentDueDate: dueDateMatch?.[1]?.replace(/\//g, "-") ?? null,
+    noPaymentNeeded,
+  };
+}
+
+export async function scrapeCreditCards(page: Page): Promise<Scraped> {
   const asOfAt = new Date().toISOString();
 
   // ── C0101: card overview (DOM) ─────────────────────────────────────────
@@ -1378,47 +1662,24 @@ export async function scrapeCreditCards(page: Page): Promise<Scraped> {
     timeout: 60000,
   });
   console.log("[cathaybk] credit card overview opened");
-  await new Promise((r) => setTimeout(r, 2000));
+  // The overview renders after load; a fixed delay sometimes read the page
+  // before the card block appeared and reported no card. Customers without a
+  // card wait for the timeout.
+  await page
+    .waitForFunction(() => /卡片末四碼/.test(document.body?.innerText ?? ""), {
+      timeout: 15000,
+    })
+    .catch(() => null);
 
-  const cardOverview = await page.evaluate(() => {
-    const text = document.body.innerText;
-    const parseAmt = (s: string | undefined) =>
-      parseInt((s ?? "").replace(/[^\d]/g, ""), 10) || 0;
-    const last4Match = text.match(/卡片末四碼[：:]\s*(\d{4})/);
-    const cardNameMatch = text.match(
-      /([^\n]+?(?:MasterCard|VISA|JCB|銀聯)[^\n]*)/,
-    );
-    const limitMatch = text.match(/永久信用額度\s*(?:TWD\s*)?([\d,]+)/);
-    const availMatch = text.match(
-      /剩餘可用額度[\s\S]{0,20}?(?:TWD\s*)?([\d,]+)/,
-    );
-    const dueDateMatch = text.match(
-      /繳款截止日[\s\S]{0,10}?(\d{4}[\/\-]\d{2}[\/\-]\d{2})/,
-    );
-    const noPaymentNeeded = text.includes("無需繳費");
-    const unpaidMatch = !noPaymentNeeded
-      ? text.match(
-          /(?:應繳|未繳)(?:金額|餘額)?[\s\S]{0,20}?(?:TWD\s*)?([\d,]+)/,
-        )
-      : null;
-    return {
-      cardDetected: Boolean(last4Match),
-      last4: last4Match?.[1] ?? "",
-      cardName: last4Match
-        ? `國泰信用卡 末四碼 ${last4Match[1]}`
-        : (cardNameMatch?.[1]?.trim() ?? "國泰信用卡"),
-      creditLimit: parseAmt(limitMatch?.[1]),
-      availableCredit: parseAmt(availMatch?.[1]),
-      unpaidAmount: noPaymentNeeded ? 0 : parseAmt(unpaidMatch?.[1]),
-      paymentDueDate: dueDateMatch?.[1]?.replace(/\//g, "-") ?? null,
-      noPaymentNeeded,
-    };
-  });
+  const cardOverview = parseCathayCardOverview(
+    await page.evaluate(() => document.body.innerText),
+  );
 
   console.log(
     JSON.stringify({
       event: "cathaybk_card_overview_parsed",
       cardDetected: cardOverview.cardDetected,
+      cardCount: cardOverview.cardLast4s.length,
       paymentDueDateAvailable: Boolean(cardOverview.paymentDueDate),
       noPaymentNeeded: cardOverview.noPaymentNeeded,
     }),
@@ -1429,37 +1690,12 @@ export async function scrapeCreditCards(page: Page): Promise<Scraped> {
       "[cathaybk] no credit card detected; skipping card account and bills",
     );
     return {
-      bankAccounts,
-      bankBalanceSnapshots,
-      bankTransactions,
-      creditCardBills,
+      bankAccounts: [],
+      bankBalanceSnapshots: [],
+      bankTransactions: [],
+      creditCardBills: [],
     };
   }
-
-  // ponytail: always use main — CathayBK pools limit across all cards
-  const sourceId = "credit:cathaybk:main";
-
-  bankAccounts.push({
-    sourceId,
-    institutionName: "國泰世華銀行",
-    accountName: cardOverview.cardName,
-    accountType: "credit",
-    currency: "TWD",
-    creditLimit: cardOverview.creditLimit || undefined,
-    raw: cardOverview,
-  });
-
-  bankBalanceSnapshots.push({
-    accountId: sourceId,
-    sourceId: `${sourceId}:${asOfAt}`,
-    balance: -cardOverview.unpaidAmount,
-    availableBalance: cardOverview.availableCredit || undefined,
-    paymentDueDate: cardOverview.paymentDueDate ?? undefined,
-    noPaymentNeeded: cardOverview.noPaymentNeeded,
-    currency: "TWD",
-    asOfAt,
-    raw: cardOverview,
-  });
 
   // ── C0102: bill history + transactions via OnlineBankingApi ───────────
   await page.goto(CREDIT_CARD_BILL_URL, {
@@ -1558,91 +1794,21 @@ export async function scrapeCreditCards(page: Page): Promise<Scraped> {
     }
 
     return { allBills: targetBills, monthDetails };
-  }, BANK_SYNC_MONTHS)) as {
-    allBills: HistoryBillItem[];
-    monthDetails: MonthDetail[];
-  } | null;
+  }, BANK_SYNC_MONTHS)) as CathayCardBillData | null;
 
   if (!apiResult) {
     console.log("[cathaybk] credit card API failed — no bill data");
-    return {
-      bankAccounts,
-      bankBalanceSnapshots,
-      bankTransactions,
-      creditCardBills,
-    };
+  } else {
+    console.log(
+      `[cathaybk] fetched ${apiResult.allBills.length} historical bills`,
+    );
   }
 
+  const result = normalizeCathayCreditCards(cardOverview, apiResult, asOfAt);
   console.log(
-    `[cathaybk] fetched ${apiResult.allBills.length} historical bills`,
+    `[cathaybk] credit card accounts: ${result.bankAccounts.length}, bills: ${result.creditCardBills.length}, transactions: ${result.bankTransactions.length}`,
   );
-
-  // Build creditCardBills from history list
-  const latestBillDate = apiResult.allBills[0]?.billDate;
-  for (const bill of apiResult.allBills) {
-    const period = bill.billDate.slice(0, 7); // "YYYY-MM"
-    const isLatest = bill.billDate === latestBillDate;
-    creditCardBills.push({
-      accountId: sourceId,
-      sourceId: `${sourceId}:bill:${period}`,
-      billingPeriod: period,
-      statementAmount: bill.twdAmount ?? undefined,
-      statementClosingDate: bill.billDate.slice(0, 10),
-      paymentDueDate: isLatest
-        ? (cardOverview.paymentDueDate ?? undefined)
-        : undefined,
-      isPaid: isLatest ? cardOverview.noPaymentNeeded : true,
-      currency: "TWD",
-      raw: bill,
-    });
-  }
-
-  console.log(`[cathaybk] credit card bills: ${creditCardBills.length}`);
-
-  // Build bankTransactions from bill details (skip carry-forward summary rows)
-  const seen = new Map<string, number>();
-  for (const month of apiResult.monthDetails) {
-    for (const section of month.sections as BillDetailSection[]) {
-      if (section.detailType === "LastBillAmount") continue;
-      for (const trade of section.tradeData ?? []) {
-        if (!trade.amount) continue;
-        const date = normalizeDateStr(trade.consumeDate ?? month.billDate);
-        const authorizedAt = normalizeCathayAuthorizedAt(
-          trade.consumeDate ?? month.billDate,
-        );
-        const desc = trade.transDesc || "國泰信用卡消費";
-        const key = [date, sourceId, trade.amount, desc].join(":");
-        const occ = (seen.get(key) ?? 0) + 1;
-        seen.set(key, occ);
-        bankTransactions.push({
-          accountId: sourceId,
-          sourceId: `${key}:${occ}`,
-          postedDate: date,
-          authorizedAt,
-          amount: trade.amount < 0 ? trade.amount : -trade.amount,
-          currency: "TWD",
-          description: desc,
-          raw: {
-            ...trade,
-            billDate: month.billDate,
-            detailType: section.detailType,
-            duplicateOccurrence: occ,
-          },
-        });
-      }
-    }
-  }
-
-  console.log(
-    `[cathaybk] credit card transactions: ${bankTransactions.length}`,
-  );
-
-  return {
-    bankAccounts,
-    bankBalanceSnapshots,
-    bankTransactions,
-    creditCardBills,
-  };
+  return result;
 }
 
 // ---- Utilities ----

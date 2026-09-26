@@ -1,6 +1,7 @@
 import {
   createDrizzle,
   classificationCategories as categories,
+  classificationMigrationNotes as migrationNotes,
   classificationOverrides as overrides,
   classificationRules as rules,
 } from "@taiwan-fin-hub/db";
@@ -16,6 +17,7 @@ export type ClassificationRuleMatchRow = Awaited<
 export async function listClassificationOverrides(
   db: D1Database,
   transactionIds: string[],
+  targetType: "bank_transaction" | "invoice" = "bank_transaction",
 ) {
   return (
     createDrizzle(db)
@@ -29,7 +31,7 @@ export async function listClassificationOverrides(
       // Keep one bound JSON array, including for large transaction lists.
       .where(
         and(
-          eq(overrides.targetType, "bank_transaction"),
+          eq(overrides.targetType, targetType),
           sql`${overrides.targetId} IN (SELECT value FROM json_each(${JSON.stringify(transactionIds)}))`,
         ),
       )
@@ -38,23 +40,28 @@ export async function listClassificationOverrides(
 }
 
 export async function listEnabledClassificationRules(db: D1Database) {
-  return createDrizzle(db)
-    .select({
-      id: rules.id,
-      category_id: rules.categoryId,
-      label: categories.label,
-      target_type: rules.targetType,
-      field: rules.field,
-      operator: rules.operator,
-      pattern: rules.pattern,
-      is_system: rules.isSystem,
-      excluded_from_calculation: rules.excludedFromCalculation,
-    })
-    .from(rules)
-    .innerJoin(categories, eq(categories.id, rules.categoryId))
-    .where(eq(rules.enabled, 1))
-    .orderBy(desc(rules.priority), desc(rules.updatedAt), rules.id)
-    .all();
+  return (
+    createDrizzle(db)
+      .select({
+        id: rules.id,
+        category_id: rules.categoryId,
+        label: categories.label,
+        economic_role: rules.economicRole,
+        target_type: rules.targetType,
+        field: rules.field,
+        operator: rules.operator,
+        pattern: rules.pattern,
+        is_system: rules.isSystem,
+        excluded_from_calculation: rules.excludedFromCalculation,
+        amount_direction: rules.amountDirection,
+      })
+      .from(rules)
+      // 只指定角色（或轉帳提示）的規則沒有分類。
+      .leftJoin(categories, eq(categories.id, rules.categoryId))
+      .where(eq(rules.enabled, 1))
+      .orderBy(desc(rules.priority), desc(rules.updatedAt), rules.id)
+      .all()
+  );
 }
 
 export async function listClassificationCategories(db: D1Database) {
@@ -64,6 +71,7 @@ export async function listClassificationCategories(db: D1Database) {
       label: categories.label,
       sortOrder: categories.sortOrder,
       isSystem: categories.isSystem,
+      parentId: categories.parentId,
     })
     .from(categories)
     .orderBy(categories.sortOrder, categories.id)
@@ -113,6 +121,7 @@ export async function listClassificationRules(db: D1Database) {
     .select({
       id: rules.id,
       categoryId: rules.categoryId,
+      economicRole: rules.economicRole,
       targetType: rules.targetType,
       field: rules.field,
       operator: rules.operator,
@@ -123,6 +132,7 @@ export async function listClassificationRules(db: D1Database) {
       source: rules.source,
       description: rules.description,
       excludedFromCalculation: rules.excludedFromCalculation,
+      amountDirection: rules.amountDirection,
     })
     .from(rules)
     .orderBy(desc(rules.priority), desc(rules.updatedAt), rules.id)
@@ -153,6 +163,67 @@ export async function updateClassificationRuleOrder(
       .where(and(eq(rules.id, ruleId), eq(rules.isSystem, 0))),
   );
   if (first) await database.batch([first, ...rest]);
+}
+
+/** 批次覆寫用：upsert 或刪除個別分類覆寫的 statements（由呼叫端組成同一 batch）。 */
+export function classificationOverrideStatements(
+  db: D1Database,
+  input: Array<{
+    targetType: string;
+    targetId: string;
+    categoryId: string | null;
+  }>,
+  now: string,
+) {
+  const database = createDrizzle(db);
+  return input.map(({ targetType, targetId, categoryId }) =>
+    categoryId
+      ? database
+          .insert(overrides)
+          .values({
+            id: `override:${targetType}:${targetId}`,
+            targetType,
+            targetId,
+            categoryId,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: [overrides.targetType, overrides.targetId],
+            set: { categoryId, updatedAt: now },
+          })
+      : database
+          .delete(overrides)
+          .where(
+            and(
+              eq(overrides.targetType, targetType),
+              eq(overrides.targetId, targetId),
+            ),
+          ),
+  );
+}
+
+export async function listClassificationMigrationNotes(db: D1Database) {
+  return createDrizzle(db)
+    .select({
+      id: migrationNotes.id,
+      subjectType: migrationNotes.subjectType,
+      subjectId: migrationNotes.subjectId,
+      targetType: migrationNotes.targetType,
+      targetId: migrationNotes.targetId,
+      legacyCategoryId: migrationNotes.legacyCategoryId,
+      legacyLabel: migrationNotes.legacyLabel,
+      newCategoryId: migrationNotes.newCategoryId,
+      newEconomicRole: migrationNotes.newEconomicRole,
+      needsAttention: migrationNotes.needsAttention,
+      createdAt: migrationNotes.createdAt,
+      newLabel: migrationNotes.newLabel,
+      legacyPattern: migrationNotes.legacyPattern,
+      newPattern: migrationNotes.newPattern,
+    })
+    .from(migrationNotes)
+    .orderBy(desc(migrationNotes.needsAttention), migrationNotes.id)
+    .all();
 }
 
 export async function upsertClassificationOverride(
@@ -210,11 +281,27 @@ export async function classificationCategoryExists(
   );
 }
 
+export async function listExistingCategoryIds(
+  db: D1Database,
+  categoryIds: string[],
+) {
+  if (categoryIds.length === 0) return new Set<string>();
+  const rows = await createDrizzle(db)
+    .select({ id: categories.id })
+    .from(categories)
+    .where(
+      sql`${categories.id} IN (SELECT value FROM json_each(${JSON.stringify(categoryIds)}))`,
+    )
+    .all();
+  return new Set(rows.map((row) => row.id));
+}
+
 export async function insertClassificationRule(
   db: D1Database,
   input: {
     id: string;
-    categoryId: string;
+    categoryId: string | null;
+    economicRole?: string | null;
     targetType: string | null;
     field: string;
     operator: string;
@@ -222,6 +309,7 @@ export async function insertClassificationRule(
     priority: number;
     description: string | null;
     excludedFromCalculation: boolean;
+    amountDirection?: string;
     now: string;
   },
 ) {
@@ -230,6 +318,8 @@ export async function insertClassificationRule(
     .values({
       id: input.id,
       categoryId: input.categoryId,
+      economicRole: input.economicRole ?? null,
+      amountDirection: input.amountDirection ?? "any",
       targetType: input.targetType,
       field: input.field,
       operator: input.operator,
@@ -250,7 +340,9 @@ export async function updateClassificationRule(
   db: D1Database,
   ruleId: string,
   input: {
-    categoryId?: string;
+    categoryId?: string | null;
+    economicRole?: string | null;
+    amountDirection?: string;
     operator?: string;
     pattern?: string;
     priority?: number;
@@ -263,7 +355,10 @@ export async function updateClassificationRule(
   const result = await createDrizzle(db)
     .update(rules)
     .set({
-      categoryId: input.categoryId || undefined,
+      categoryId:
+        input.categoryId === null ? null : input.categoryId || undefined,
+      economicRole: input.economicRole,
+      amountDirection: input.amountDirection,
       operator: input.operator,
       pattern: input.pattern,
       priority: input.priority,

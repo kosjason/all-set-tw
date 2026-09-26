@@ -85,6 +85,9 @@ const fakeFetch: typeof fetch = async (input, init) => {
             },
             amount: "120",
             sellerName: "測試商店",
+            // 歸戶在手機條碼下的信用卡載具（合成的類別與隱碼）。
+            cardType: "EK0002",
+            cardNo: "SYNTHETIC-HIDDEN-9876",
           },
         ],
       },
@@ -174,6 +177,13 @@ async function main() {
     "AA-12345678:2026-07-01T04:34:56.000Z",
   );
   assert.equal(initialized.detailTasks[0].invNum, "AA-12345678");
+  // 載具只保存類別與隱碼末 4 碼，完整隱碼不進正規化資料或 raw。
+  assert.equal(initialized.headers[0].invoice.carrierType, "EK0002");
+  assert.equal(initialized.headers[0].invoice.carrierSuffix, "9876");
+  assert.equal(
+    JSON.stringify(initialized.headers[0].invoice).includes("SYNTHETIC-HIDDEN"),
+    false,
+  );
   assert.equal(initialized.detailTasks[0].detailInvDate, "2026/07/01");
   assert.equal(initialized.configUpdates.sid, syntheticSession.sid);
   assert.deepEqual(

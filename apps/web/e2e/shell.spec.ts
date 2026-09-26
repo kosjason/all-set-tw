@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { routeActivityApi, routeNavigationApi } from "./activity-api";
 
 function taipeiMonth() {
   const parts = Object.fromEntries(
@@ -11,6 +12,11 @@ function taipeiMonth() {
       .map(({ type, value }) => [type, value]),
   );
   return `${parts.year}-${parts.month}`;
+}
+
+/** 本月頁收支區塊的標題（例如「9 月收支」），與「近 6 個月收支」區分。 */
+function monthCashFlowName() {
+  return `${Number(taipeiMonth().slice(5))} 月收支`;
 }
 
 test.beforeEach(async ({ page }) => {
@@ -43,36 +49,58 @@ test.beforeEach(async ({ page }) => {
     else if (path === "/api/history/net-worth/chart") body = [];
     else if (path === "/api/sync-jobs") body = [];
     else if (path === "/api/sync-reports/latest") body = null;
+    else if (path === "/api/sync-schedule")
+      body = {
+        intervalMinutes: 1440,
+        preferredTime: "09:00",
+        preferredWeekday: 1,
+        timezone: "Asia/Taipei",
+        updatedAt: "2026-08-15T01:00:00.000Z",
+      };
     else if (path === "/api/classification/categories")
+      // 0067 起消費只有 8 個頂層分類（沒有子類），另有收入子類與未分類。
       body = [
-        { id: "salary", label: "薪資", sortOrder: 1, isSystem: true },
-        { id: "transfer", label: "轉帳", sortOrder: 2, isSystem: true },
-        { id: "food", label: "餐飲", sortOrder: 3, isSystem: true },
-        { id: "transport", label: "交通", sortOrder: 4, isSystem: true },
-        { id: "shopping", label: "購物", sortOrder: 5, isSystem: true },
-        { id: "housing", label: "居住", sortOrder: 6, isSystem: true },
-        { id: "health", label: "醫療", sortOrder: 7, isSystem: true },
-        { id: "education", label: "教育", sortOrder: 8, isSystem: true },
-        {
-          id: "entertainment",
-          label: "娛樂",
-          sortOrder: 9,
+        ["food", "餐飲", "🍜"],
+        ["transport", "交通", "🚇"],
+        ["housing", "居住", "🏠"],
+        ["shopping", "購物", "🛍️"],
+        ["tech", "3C 數位", "💻"],
+        ["entertainment", "娛樂", "🎬"],
+        ["health", "醫療保險", "🩺"],
+        ["misc", "其他", "📌"],
+      ]
+        .map(([id, label, emoji], index) => ({
+          id,
+          label,
+          emoji,
+          sortOrder: index + 1,
           isSystem: true,
-        },
-        { id: "investment", label: "投資", sortOrder: 10, isSystem: true },
-        { id: "fee", label: "手續費", sortOrder: 11, isSystem: true },
-        { id: "insurance", label: "保險", sortOrder: 12, isSystem: true },
-        { id: "tax", label: "稅務", sortOrder: 13, isSystem: true },
-        { id: "software", label: "軟體服務", sortOrder: 14, isSystem: true },
-        { id: "utilities", label: "生活繳費", sortOrder: 15, isSystem: true },
-        {
-          id: "other-income",
-          label: "其他收入",
-          sortOrder: 16,
-          isSystem: true,
-        },
-        { id: "other", label: "未分類", sortOrder: 17, isSystem: true },
-      ];
+          parentId: null,
+          topLevelId: id,
+          kind: "spending",
+        }))
+        .concat([
+          {
+            id: "income.salary",
+            label: "薪資",
+            emoji: "💼",
+            sortOrder: 101,
+            isSystem: true,
+            parentId: "income",
+            topLevelId: "income",
+            kind: "income",
+          },
+          {
+            id: "other",
+            label: "未分類",
+            emoji: "❔",
+            sortOrder: 200,
+            isSystem: true,
+            parentId: null,
+            topLevelId: "other",
+            kind: "uncategorized",
+          },
+        ]);
     else if (path === "/api/classification/rules") body = [];
     else if (path.includes("/connectors/") && path.endsWith("/settings"))
       body = { configured: false, publicConfig: {} };
@@ -83,6 +111,8 @@ test.beforeEach(async ({ page }) => {
       body: JSON.stringify(body),
     });
   });
+  await routeActivityApi(page);
+  await routeNavigationApi(page);
 });
 
 async function expectSelectedConnectorInView(
@@ -90,7 +120,7 @@ async function expectSelectedConnectorInView(
   connectorId: string,
   title: string,
 ) {
-  await expect(page).toHaveURL(/#\/data-sources$/);
+  await expect(page).toHaveURL(/#\/data-sources(\?.*)?$/);
   const connectorSettings = page.locator(
     `[data-connector-settings="${connectorId}"]`,
   );
@@ -99,7 +129,10 @@ async function expectSelectedConnectorInView(
     connectorSettings.getByRole("heading", { name: title, exact: true }),
   ).toBeVisible();
   await expect(
-    connectorSettings.getByRole("button", { name: "收合", exact: true }),
+    connectorSettings.getByRole("button", {
+      name: "收合台新銀行設定",
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(
     connectorSettings.getByRole("heading", {
@@ -141,8 +174,7 @@ async function expectSelectedConnectorInView(
 }
 
 for (const { hash, heading } of [
-  { hash: "/#/overview", heading: "載入總覽中" },
-  { hash: "/#/activity", heading: "載入活動中" },
+  { hash: "/#/transactions", heading: "載入活動中" },
   { hash: "/#/assets", heading: "載入資產清冊中" },
 ]) {
   test(`shows a paper loading state for ${heading}`, async ({ page }) => {
@@ -170,12 +202,19 @@ for (const { hash, heading } of [
   });
 }
 
-test("overview uses one monthly bank request for balances and cash flow", async ({
+test("month page uses one monthly bank request for net worth and the six-month summary API", async ({
   page,
 }) => {
   const bankRequests: URL[] = [];
+  const summaryRequests: URL[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/activity/summary") summaryRequests.push(url);
+  });
   await page.route("**/api/bank**", async (route) => {
-    bankRequests.push(new URL(route.request().url()));
+    const url = new URL(route.request().url());
+    // 活動 API 替身組 summary 時的請求不算頁面自己的請求。
+    if (!url.searchParams.has("_source")) bankRequests.push(url);
     await route.fulfill({
       json: {
         accounts: [
@@ -193,16 +232,18 @@ test("overview uses one monthly bank request for balances and cash flow", async 
     });
   });
 
-  await page.goto("/#/overview");
-  await expect(
-    page.getByText("NT$12,345", { exact: true }).first(),
-  ).toBeVisible();
-  await expect(page.getByText("載入總覽中")).toHaveCount(0);
+  await page.goto("/#/month");
+  await expect(page.getByTestId("month-net-worth")).toContainText("NT$12,345");
   expect(bankRequests).toHaveLength(1);
   expect(bankRequests[0].searchParams.get("from")).toMatch(/^\d{4}-\d{2}$/);
   expect(bankRequests[0].searchParams.get("to")).toBe(
     bankRequests[0].searchParams.get("from"),
   );
+  const pageSummaryRequests = summaryRequests.filter(
+    (url) => !url.searchParams.has("_source"),
+  );
+  expect(pageSummaryRequests).toHaveLength(1);
+  expect(pageSummaryRequests[0].searchParams.get("to")).toBe(taipeiMonth());
 });
 
 test("loads the responsive shell and changes primary views", async ({
@@ -212,8 +253,9 @@ test("loads the responsive shell and changes primary views", async ({
   await expect(page.getByText("不用記帳").first()).toBeVisible();
   await expect(page.getByText("ALL SET").first()).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "總覽", exact: true }),
+    page.getByRole("heading", { name: "本月", exact: true }),
   ).toBeVisible();
+  await expect(page).toHaveURL(/#\/month$/);
 
   await page
     .getByRole("button", { name: "資產", exact: true })
@@ -221,13 +263,13 @@ test("loads the responsive shell and changes primary views", async ({
     .first()
     .click();
   await expect(
-    page.getByRole("heading", { name: "資產清冊", exact: true }),
+    page.getByRole("heading", { name: "資產", exact: true }),
   ).toBeVisible();
   await expect(page).toHaveURL(/#\/assets$/);
 
   await page.goBack();
   await expect(
-    page.getByRole("heading", { name: "總覽", exact: true }),
+    page.getByRole("heading", { name: "本月", exact: true }),
   ).toBeVisible();
 });
 
@@ -237,10 +279,44 @@ test("renders the mobile bottom navigation", async ({ page }) => {
   await expect(
     page.getByRole("navigation", { name: "主要導覽" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "更多" }).click();
+  const tabs = page.getByRole("navigation", { name: "主要導覽" });
+  await expect(tabs.getByRole("button")).toHaveText([
+    "本月",
+    "交易",
+    "信用卡",
+    "資產",
+    "更多",
+  ]);
+  await tabs.getByRole("button", { name: "更多" }).click();
   await expect(
     page.getByRole("heading", { name: "更多", exact: true }),
   ).toBeVisible();
+  const more = page.getByRole("navigation", { name: "更多功能" });
+  await expect(more.getByRole("button", { name: /資料來源/ })).toBeVisible();
+  await expect(more.getByRole("button", { name: /待處理/ })).toBeVisible();
+  await expect(more.getByRole("button", { name: /設定/ })).toBeVisible();
+});
+
+test("redirects old hashes to the new pages and keeps the query", async ({
+  page,
+}) => {
+  await page.goto("/#/month");
+  await expect(page).toHaveURL(/#\/month$/);
+  await page.goto("/#/activity?review=1");
+  await expect(page).toHaveURL(/#\/transactions\?review=1$/);
+  await expect(
+    page.getByRole("heading", { name: "交易", exact: true }),
+  ).toBeVisible();
+  await page.goto("/#/settings/classification-rules");
+  await expect(page).toHaveURL(/#\/transactions\/rules$/);
+  await page.goto("/#/settings/data-sources");
+  await expect(page).toHaveURL(/#\/data-sources$/);
+  await page.goto("/#/own-accounts");
+  await expect(
+    page.getByRole("heading", { name: "我的其他帳戶", exact: true }),
+  ).toBeVisible();
+  await page.goto("/#/sync-notifications");
+  await expect(page).toHaveURL(/#\/settings$/);
 });
 
 test("opens and scrolls to the selected connector from mobile more", async ({
@@ -249,12 +325,20 @@ test("opens and scrolls to the selected connector from mobile more", async ({
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/#/more");
 
-  await page.getByRole("button", { name: "管理台新銀行", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "更多功能" })
+    .getByRole("button", { name: /資料來源/ })
+    .click();
+  // 更多選單只導向資料來源頁；手機版在該頁以連接器卡片的「管理設定」展開。
+  await page
+    .locator('[data-connector-settings="taishin"]')
+    .getByRole("button", { name: "管理台新銀行設定", exact: true })
+    .click();
 
   await expectSelectedConnectorInView(page, "taishin", "台新銀行");
 });
 
-test("opens and scrolls to the actionable connector from mobile overview", async ({
+test("opens and scrolls to the actionable connector from the mobile inbox", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -301,9 +385,31 @@ test("opens and scrolls to the actionable connector from mobile overview", async
       }),
     });
   });
-  await page.goto("/#/overview");
+  await page.route("**/api/inbox", async (route) => {
+    await route.fulfill({
+      json: {
+        counts: { blocking: 1, tidy: 0 },
+        months: [],
+        unavailable: [],
+        items: [
+          {
+            id: "connector_needs_user_action:taishin:1",
+            kind: "connector_needs_user_action",
+            severity: "blocking",
+            title: "台新銀行需要你完成驗證",
+            detail: "需要重新驗證",
+            target: { view: "data-sources", query: { connector: "taishin" } },
+            createdAt: "2026-08-15T01:00:00.000Z",
+            action: { kind: "open_connector", label: "前往驗證" },
+          },
+        ],
+      },
+    });
+  });
+  await page.goto("/#/month");
 
-  await page.getByRole("button", { name: /1 個資料來源需要處理/ }).click();
+  await page.getByRole("button", { name: /待處理（1 件需要處理）/ }).click();
+  await page.getByRole("button", { name: "前往驗證" }).click();
 
   await expectSelectedConnectorInView(page, "taishin", "台新銀行");
 });
@@ -334,13 +440,11 @@ test("warns about a missing exchange rate only when the foreign balance is posit
     });
   });
 
-  const warning = page.getByText(/資產含外幣（HKD）尚未設定匯率/);
+  const warning = page.getByText(/缺少 HKD 匯率/);
 
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/#/overview");
-  await expect(
-    page.getByRole("heading", { name: "總覽", exact: true }),
-  ).toBeVisible();
+  await page.goto("/#/assets");
+  await expect(page.getByRole("region", { name: "淨資產" })).toBeVisible();
   await expect(warning).toHaveCount(0);
 
   hkdBalance = 100;
@@ -391,10 +495,10 @@ test("does not show a missing-rate warning while exchange rates are loading", as
     });
   });
 
-  await page.goto("/#/overview");
-  const warning = page.getByText(/資產含外幣（HKD）尚未設定匯率/);
+  await page.goto("/#/assets");
+  const warning = page.getByText(/缺少 HKD 匯率/);
   await expect(
-    page.getByRole("heading", { name: "總覽", exact: true }),
+    page.getByRole("heading", { name: "載入資產清冊中", exact: true }),
   ).toBeVisible();
   await expect(warning).toHaveCount(0);
 
@@ -450,7 +554,9 @@ test("shows a loading state while a connector sync is pending", async ({
   const ctbcCard = page.locator("div.rounded-xl").filter({
     has: page.getByRole("heading", { name: "中國信託銀行", exact: true }),
   });
-  await ctbcCard.getByRole("button", { name: "管理設定" }).click();
+  await ctbcCard
+    .getByRole("button", { name: "管理中國信託銀行設定", exact: true })
+    .click();
   const syncButton = page.getByRole("button", {
     name: "同步",
     exact: true,
@@ -465,7 +571,7 @@ test("shows a loading state while a connector sync is pending", async ({
   await expect(syncButton).toBeEnabled();
 });
 
-test("keeps the desktop overview within the viewport with long data", async ({
+test("keeps the desktop month page within the viewport with long data", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -494,9 +600,12 @@ test("keeps the desktop overview within the viewport with long data", async ({
     });
   });
 
-  await page.goto("/#/overview");
-  await expect(page.getByRole("heading", { name: "本月收支" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "值得留意" })).toBeVisible();
+  await page.goto("/#/month");
+  await expect(
+    page.getByRole("heading", { name: monthCashFlowName(), exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "最近交易" })).toBeVisible();
+  await expect(page.getByText("LONGACTIVITY", { exact: false })).toBeVisible();
   const pageWidth = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,
     scroll: document.documentElement.scrollWidth,
@@ -540,7 +649,7 @@ test("keeps net worth comparison details readable across viewports", async ({
     { width: 1280, height: 900 },
   ]) {
     await page.setViewportSize(viewport);
-    await page.goto("/#/overview");
+    await page.goto("/#/assets");
 
     await expect(page.getByRole("heading", { name: "資產走勢" })).toBeVisible();
     const settings = page.getByRole("button", { name: "顯示設定" });
@@ -685,7 +794,7 @@ test("keeps partial sync financial changes readable on mobile", async ({
     });
   });
 
-  await page.goto("/#/overview");
+  await page.goto("/#/data-sources");
   await expect(
     page.getByText("依 2/3 已更新來源計算，其餘沿用上次資料"),
   ).toBeVisible();
@@ -710,16 +819,21 @@ test("keeps partial sync financial changes readable on mobile", async ({
 
   await page.getByText("查看各資料來源", { exact: true }).click();
   await expect(page.getByText("收合各資料來源", { exact: true })).toBeVisible();
-  await expect(page.getByText("玉山銀行", { exact: true })).toBeVisible();
-  await expect(page.getByText("台新銀行", { exact: true })).toBeVisible();
+  // 資料來源頁同時列出連接器卡片，因此只在同步報告區塊內確認各來源。
+  const report = page.getByRole("region", {
+    name: "最近一次排程同步",
+    exact: true,
+  });
+  await expect(report.getByText("玉山銀行", { exact: true })).toBeVisible();
+  await expect(report.getByText("台新銀行", { exact: true })).toBeVisible();
   expect((await pageWidth()).scroll).toBe((await pageWidth()).client);
 });
 
-test("shows this month's cash flow on the overview and opens activity", async ({
+test("shows this month's cash flow equation on the month page and opens transactions", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const month = new Date().toISOString().slice(0, 7);
+  const month = taipeiMonth();
   await page.route("**/api/bank**", async (route) => {
     await route.fulfill({
       status: 200,
@@ -754,22 +868,32 @@ test("shows this month's cash flow on the overview and opens activity", async ({
     });
   });
 
-  await page.goto("/#/overview");
-  const cashFlowSection = page.getByRole("region", { name: "本月收支" });
+  await page.goto("/#/month");
+  const cashFlowSection = page.getByRole("region", {
+    name: monthCashFlowName(),
+    exact: true,
+  });
   await expect(cashFlowSection).toBeVisible();
-  await expect(cashFlowSection.getByText("+NT$50,000")).toBeVisible();
-  await expect(cashFlowSection.getByText("−NT$12,000")).toBeVisible();
-  await expect(cashFlowSection.getByText("NT$38,000")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "資產配置" })).toHaveCount(0);
-  const insightsSection = page.getByRole("region", { name: "值得留意" });
-  await expect(insightsSection.getByText("尚未設定資料來源")).toBeVisible();
-  await expect(page.getByText(/存款佔全部資產/)).toHaveCount(0);
+  // 收入 − 消費 ＝ 存下來，數字來自 summary API；投資是存下來的去向。
+  await expect(cashFlowSection.getByTestId("cash-flow-income")).toHaveText(
+    "NT$50,000",
+  );
+  await expect(cashFlowSection.getByTestId("cash-flow-spending")).toHaveText(
+    "NT$12,000",
+  );
+  await expect(cashFlowSection.getByTestId("cash-flow-saved")).toHaveText(
+    "NT$38,000",
+  );
+  await expect(
+    cashFlowSection.getByTestId("cash-flow-destination"),
+  ).toContainText("留在帳戶");
+  await expect(page.getByText(/消費高於收入/)).toHaveCount(0);
 
-  await cashFlowSection.getByRole("button", { name: "查看活動 →" }).click();
-  await expect(page).toHaveURL(/#\/activity$/);
+  await page.getByRole("button", { name: "查看全部交易 →" }).click();
+  await expect(page).toHaveURL(/#\/transactions$/);
 });
 
-test("filters activity by cash flow and keeps source filters composable", async ({
+test("separates bank and card records into tabs and filters the ledger by role", async ({
   page,
 }) => {
   const month = taipeiMonth();
@@ -844,31 +968,42 @@ test("filters activity by cash flow and keeps source filters composable", async 
     });
   });
 
-  await page.goto("/#/activity");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/#/transactions");
 
   const activityRows = page.locator("tbody tr");
-  const sourceFilters = page.getByRole("tablist", { name: "活動來源" });
+  const roleFilter = page.getByRole("combobox", { name: "活動角色" });
 
   await expect(activityRows).toHaveCount(4);
-  await page.getByRole("button", { name: "查看收入活動" }).click();
-  await expect(activityRows).toHaveCount(2);
+  // 1440px 時工具列維持一列、搜尋框至少 240px。
+  const toolbarRow = page.getByTestId("activity-toolbar-row");
+  const searchBox = page.getByRole("searchbox", { name: "搜尋活動" });
+  const rowBox = await toolbarRow.boundingBox();
+  const searchBoxSize = await searchBox.boundingBox();
+  expect(rowBox?.height ?? 0).toBeLessThan(56);
+  expect(searchBoxSize?.width ?? 0).toBeGreaterThanOrEqual(240);
+
+  await roleFilter.selectOption("income");
   await expect(activityRows.filter({ hasText: "薪資入帳" })).toBeVisible();
-  await expect(activityRows.filter({ hasText: "信用卡退款" })).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "顯示全部活動" }),
-  ).toHaveAttribute("aria-pressed", "true");
+  await expect(activityRows.filter({ hasText: "房租支出" })).toHaveCount(0);
+  await expect(page).toHaveURL(/role=income/);
 
-  await sourceFilters.getByRole("tab", { name: "銀行" }).click();
-  await expect(activityRows).toHaveCount(1);
-  await expect(activityRows).toContainText("薪資入帳");
+  await roleFilter.selectOption("all");
+  await page.getByRole("tab", { name: "銀行" }).click();
+  await expect(page).toHaveURL(/tab=bank/);
+  await expect(page.getByTestId("raw-records-note")).toContainText(
+    "原始紀錄，不等於消費",
+  );
+  const sourceRows = page.getByTestId("source-row");
+  await expect(sourceRows).toHaveCount(2);
+  await expect(sourceRows.filter({ hasText: "薪資入帳" })).toBeVisible();
+  await expect(sourceRows.filter({ hasText: "房租支出" })).toBeVisible();
+  await expect(page.getByRole("region", { name: /月收支$/ })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "查看支出活動" }).click();
-  await expect(activityRows).toHaveCount(1);
-  await expect(activityRows).toContainText("房租支出");
-
-  await sourceFilters.getByRole("tab", { name: "信用卡" }).click();
-  await expect(activityRows).toHaveCount(1);
-  await expect(activityRows).toContainText("信用卡消費");
+  await page.getByRole("tab", { name: "信用卡" }).click();
+  await expect(sourceRows).toHaveCount(2);
+  await expect(sourceRows.filter({ hasText: "信用卡消費" })).toBeVisible();
+  await expect(sourceRows.filter({ hasText: "信用卡退款" })).toBeVisible();
 });
 
 test("shows reliable activity times and sorts them on desktop and mobile", async ({
@@ -962,9 +1097,24 @@ test("shows reliable activity times and sorts them on desktop and mobile", async
     });
   });
 
-  await page.goto("/#/activity");
+  await page.goto("/#/transactions");
 
   const desktopRows = page.locator("tbody tr");
+  const tabs = page.getByRole("tablist", { name: "交易分頁" });
+  // 總帳只列去重後的 4 筆交易；已配對的發票併入刷卡交易，只在發票分頁的原始
+  // 紀錄列出並標示已對應（不重複計算）。
+  await expect(desktopRows).toHaveCount(4);
+  await expect(page.getByRole("region", { name: "活動列表" })).toContainText(
+    "另 1 筆重複已併入（見發票分頁）",
+  );
+  await tabs.getByRole("tab", { name: "發票", exact: true }).click();
+  const invoiceRows = page.getByTestId("source-row");
+  await expect(invoiceRows).toHaveCount(1);
+  await expect(invoiceRows).toContainText("配對發票提供時間");
+  await expect(invoiceRows.getByTestId("match-status")).toHaveText(
+    "已對應刷卡",
+  );
+  await tabs.getByRole("tab", { name: "總帳", exact: true }).click();
   await expect(desktopRows).toHaveCount(4);
   await expect(desktopRows.filter({ hasText: "有時間活動" })).toContainText(
     "14:30",
@@ -975,9 +1125,10 @@ test("shows reliable activity times and sorts them on desktop and mobile", async
   await expect(desktopRows.filter({ hasText: "舊資料活動" })).not.toContainText(
     "00:00",
   );
-  await expect(desktopRows.filter({ hasText: "無授權時間配對" })).toContainText(
-    "23:45",
-  );
+  // 已配對發票的交易以發票商家命名，時間取自發票。
+  await expect(
+    desktopRows.filter({ hasText: "配對發票提供時間" }),
+  ).toContainText("23:45");
 
   const desktopRowTexts = await desktopRows.allTextContents();
   expect(desktopRowTexts.findIndex((text) => text.includes("舊資料活動"))).toBe(
@@ -989,12 +1140,15 @@ test("shows reliable activity times and sorts them on desktop and mobile", async
     desktopRowTexts.findIndex((text) => text.includes("真午夜活動")),
   );
   expect(
-    desktopRowTexts.findIndex((text) => text.includes("無授權時間配對")),
+    desktopRowTexts.findIndex((text) => text.includes("配對發票提供時間")),
   ).toBeLessThan(
     desktopRowTexts.findIndex((text) => text.includes("有時間活動")),
   );
 
-  await desktopRows.filter({ hasText: "無授權時間配對" }).click();
+  await desktopRows
+    .filter({ hasText: "配對發票提供時間" })
+    .getByRole("button", { name: "查看 配對發票提供時間 活動詳情" })
+    .click();
   const desktopDetail = page.getByRole("dialog", { name: "活動明細" });
   await expect(desktopDetail).toBeVisible();
   await expect(desktopDetail).toContainText("23:45");
@@ -1012,7 +1166,7 @@ test("shows reliable activity times and sorts them on desktop and mobile", async
     name: "查看 舊資料活動 活動詳情",
   });
   const mobileMatched = page.getByRole("button", {
-    name: "查看 無授權時間配對 活動詳情",
+    name: "查看 配對發票提供時間 活動詳情",
   });
   await expect(mobileTimed).toContainText("14:30");
   await expect(mobileMidnight).toContainText("00:00");
@@ -1058,16 +1212,18 @@ test("uses app-like scrolling and history only in standalone display mode", asyn
   await page.getByRole("button", { name: "資產", exact: true }).last().click();
   await expect(page).toHaveURL(/#\/assets$/);
   await expect(
-    page.getByRole("heading", { name: "資產清冊", exact: true }),
+    page.getByRole("heading", { name: "資產", exact: true }),
   ).toBeVisible();
   expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
 });
 
-test("redirects the removed invoices route to overview", async ({ page }) => {
+test("redirects the removed invoices route to the month page", async ({
+  page,
+}) => {
   await page.goto("/#/invoices");
-  await expect(page).toHaveURL(/#\/overview$/);
+  await expect(page).toHaveURL(/#\/month$/);
   await expect(
-    page.getByRole("heading", { name: "總覽", exact: true }),
+    page.getByRole("heading", { name: "本月", exact: true }),
   ).toBeVisible();
 });
 
@@ -1081,7 +1237,7 @@ test("excludes a bank transaction from activity calculations and restores it", a
     });
   });
   let excludedFromCalculation = false;
-  const month = new Date().toISOString().slice(0, 7);
+  const month = taipeiMonth();
 
   await page.route("**/api/bank**", async (route) => {
     await route.fulfill({
@@ -1136,12 +1292,10 @@ test("excludes a bank transaction from activity calculations and restores it", a
     },
   );
 
-  await page.goto("/#/activity");
+  await page.goto("/#/transactions");
   await expect(page.locator("html")).toHaveClass(/is-standalone/);
-  const expenseSlice = page.getByRole("button", {
-    name: "未分類 100.0% NT$8,318",
-  });
-  await expect(expenseSlice).toBeVisible();
+  const spending = page.getByTestId("cash-flow-spending");
+  await expect(spending).toHaveText("NT$8,318");
 
   await page.getByRole("button", { name: "查看 台新卡費 活動詳情" }).click();
   await expect(page.getByRole("heading", { name: "活動明細" })).toBeVisible();
@@ -1169,7 +1323,7 @@ test("excludes a bank transaction from activity calculations and restores it", a
   await expect(
     page.getByRole("checkbox", { name: "排除 台新卡費 的統計計算" }),
   ).not.toBeChecked();
-  await expect(expenseSlice).toBeVisible();
+  await expect(spending).toHaveText("NT$8,318");
 
   await page
     .getByRole("checkbox", { name: "排除 台新卡費 的統計計算" })
@@ -1179,20 +1333,20 @@ test("excludes a bank transaction from activity calculations and restores it", a
   await expect(
     page.getByRole("checkbox", { name: "恢復 台新卡費 的統計計算" }),
   ).toBeChecked();
-  await expect(expenseSlice).toBeHidden();
   await page.getByRole("button", { name: "返回活動列表" }).click();
-  const excludedExpenseSlice = page.getByRole("button", {
-    name: "未分類 0.0% NT$0",
-  });
-  await expect(excludedExpenseSlice).toBeVisible();
-  await excludedExpenseSlice.click();
+  // 排除後不再是消費：消費為 0，摘要列列入「轉到自己帳戶」。
+  const noSpending = spending.filter({ hasText: "NT$0" });
+  await expect(noSpending).toBeVisible();
+  await expect(page.getByRole("region", { name: /月收支$/ })).toContainText(
+    "另有 轉到自己帳戶 NT$8,318 未計入",
+  );
   await page.getByRole("button", { name: "查看 台新卡費 活動詳情" }).click();
   await expect(
     page.getByRole("checkbox", { name: "恢復 台新卡費 的統計計算" }),
   ).toBeChecked();
 
   await page.reload();
-  await expect(excludedExpenseSlice).toBeVisible();
+  await expect(noSpending).toBeVisible();
   // Standalone navigation restores the open detail from browser history.
   await expect(desktopDetailDialog).toBeVisible();
   await expect(
@@ -1205,7 +1359,7 @@ test("excludes a bank transaction from activity calculations and restores it", a
   await expect(
     page.getByRole("checkbox", { name: "排除 台新卡費 的統計計算" }),
   ).not.toBeChecked();
-  await expect(expenseSlice).toBeVisible();
+  await expect(spending).toHaveText("NT$8,318");
 
   await page.getByRole("button", { name: "返回活動列表" }).click();
   await page.setViewportSize({ width: 390, height: 844 });
@@ -1294,7 +1448,7 @@ test("excludes a bank transaction from activity calculations and restores it", a
 test("can add a classification rule while excluding a transaction", async ({
   page,
 }) => {
-  const month = new Date().toISOString().slice(0, 7);
+  const month = taipeiMonth();
   let ruleBody: Record<string, unknown> | undefined;
   let overrideBody: Record<string, unknown> | undefined;
 
@@ -1363,7 +1517,7 @@ test("can add a classification rule while excluding a transaction", async ({
     });
   });
 
-  await page.goto("/#/activity");
+  await page.goto("/#/transactions");
   await page
     .getByRole("button", { name: "查看 每月家庭轉帳 活動詳情" })
     .click();
@@ -1372,15 +1526,15 @@ test("can add a classification rule while excluding a transaction", async ({
     .click();
 
   const dialog = page.getByRole("dialog", { name: "排除統計計算" });
-  await dialog.getByRole("combobox", { name: "分類" }).selectOption("transfer");
+  await dialog.getByRole("combobox", { name: "分類" }).selectOption("misc");
   await dialog.getByRole("checkbox", { name: "同時新增分類規則" }).check();
   await dialog.getByRole("textbox").fill("每月家庭轉帳");
   await dialog.getByRole("button", { name: "確認排除" }).click();
 
   await expect(dialog).toBeHidden();
-  expect(overrideBody).toEqual({ categoryId: "transfer" });
+  expect(overrideBody).toEqual({ categoryId: "misc" });
   expect(ruleBody).toMatchObject({
-    categoryId: "transfer",
+    categoryId: "misc",
     targetType: "bank_transaction",
     field: "any_text",
     operator: "contains",
@@ -1392,7 +1546,7 @@ test("can add a classification rule while excluding a transaction", async ({
 test("can modify an existing user rule while excluding a transaction", async ({
   page,
 }) => {
-  const month = new Date().toISOString().slice(0, 7);
+  const month = taipeiMonth();
   let updatedRuleBody: Record<string, unknown> | undefined;
 
   await page.route("**/api/bank**", async (route) => {
@@ -1452,7 +1606,7 @@ test("can modify an existing user rule while excluding a transaction", async ({
     },
   );
 
-  await page.goto("/#/activity");
+  await page.goto("/#/transactions");
   await page.getByRole("button", { name: "查看 固定轉帳 活動詳情" }).click();
   await page
     .getByRole("checkbox", { name: "排除 固定轉帳 的統計計算" })
@@ -1475,7 +1629,7 @@ test("can modify an existing user rule while excluding a transaction", async ({
 test("merges a matching invoice and counts an unmatched invoice as expense", async ({
   page,
 }) => {
-  const month = new Date().toISOString().slice(0, 7);
+  const month = taipeiMonth();
   await page.route("**/api/bank**", async (route) => {
     await route.fulfill({
       status: 200,
@@ -1545,42 +1699,55 @@ test("merges a matching invoice and counts an unmatched invoice as expense", asy
     });
   });
 
-  await page.goto("/#/activity");
+  await page.goto("/#/transactions");
 
-  await expect(
-    page.getByRole("button", { name: "發票 63.4% NT$1,490" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "餐飲 36.6% NT$860" }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("−NT$2,350", { exact: true }).first(),
-  ).toBeVisible();
+  await expect(page.getByTestId("cash-flow-spending")).toHaveText("NT$2,350");
+
+  await expect(page.getByRole("region", { name: /月收支$/ })).toContainText(
+    "重複發票 NT$860",
+  );
 
   const activityRows = page.locator("tbody tr");
+  // 總帳去重：已併入刷卡的發票不再單獨列出。
   await expect(activityRows).toHaveCount(2);
+  // 列表主標是清理後的商家名稱（交易對象），原始說明留在明細。
   const matchedActivityRow = activityRows.filter({
-    hasText: "信用卡消費",
+    has: page.getByRole("button", {
+      name: "查看 好食餐飲 活動詳情",
+      exact: true,
+    }),
   });
   await expect(matchedActivityRow).toContainText("測試銀行");
   await expect(matchedActivityRow).toContainText("測試信用卡");
   await expect(matchedActivityRow).toContainText("已配對發票");
   await expect(matchedActivityRow).not.toContainText("好食餐飲有限公司");
+  await expect(page.getByText(/另 1 筆重複已併入（見發票分頁）/)).toBeVisible();
   await expect(
     activityRows.filter({ hasText: "未支援銀行商店" }),
   ).toContainText("−NT$1,490");
 
-  await page.getByRole("tab", { name: "發票", exact: true }).click();
-  await expect(activityRows).toHaveCount(2);
-  await page.getByRole("tab", { name: "信用卡", exact: true }).click();
-  await expect(activityRows).toHaveCount(1);
+  await page.getByRole("tab", { name: "發票" }).click();
+  const sourceRows = page.getByTestId("source-row");
+  await expect(sourceRows).toHaveCount(2);
+  await expect(
+    sourceRows
+      .filter({ hasText: "好食餐飲有限公司" })
+      .getByTestId("match-status"),
+  ).toHaveText("已對應刷卡");
+  await expect(
+    sourceRows
+      .filter({ hasText: "未支援銀行商店" })
+      .getByTestId("match-status"),
+  ).toHaveText("未對應");
+  await page.getByRole("tab", { name: "信用卡" }).click();
+  await expect(sourceRows).toHaveCount(1);
 });
 
 test("manually maps, manages, and separates a same-day invoice transaction on mobile", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const month = new Date().toISOString().slice(0, 7);
+  const month = taipeiMonth();
   let mappings: Array<{
     invoiceId: string;
     transactionId: string | null;
@@ -1703,7 +1870,7 @@ test("manually maps, manages, and separates a same-day invoice transaction on mo
     });
   });
 
-  await page.goto("/#/activity");
+  await page.goto("/#/transactions");
   await page
     .getByRole("button", { name: "查看 合成發票商店 活動詳情" })
     .click();
@@ -1711,7 +1878,7 @@ test("manually maps, manages, and separates a same-day invoice transaction on mo
   await expect(page.getByText("尚未找到銀行／信用卡交易")).toBeVisible();
   await page.getByRole("button", { name: "配對交易" }).click();
   await expect(
-    page.getByRole("heading", { name: "選擇同日候選交易" }),
+    page.getByRole("heading", { name: "選擇候選交易" }),
   ).toBeVisible();
   await page
     .getByRole("button", {
@@ -1725,12 +1892,17 @@ test("manually maps, manages, and separates a same-day invoice transaction on mo
   await expect(page.getByText("差額 NT$20", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "確認配對" }).click();
 
-  await expect(page.getByText("已完成配對，活動只顯示一筆")).toBeVisible();
+  await expect(page.getByText("已完成配對，發票不再重複計算")).toBeVisible();
+  // 已配對的交易以發票商家為準命名，並併入發票（總帳不再另列發票）。
   const mappedActivityRow = page.getByRole("button", {
-    name: "查看 測試飲料店 活動詳情",
+    name: "查看 合成發票商店 活動詳情",
+    exact: true,
   });
-  await expect(mappedActivityRow).toContainText("測試銀行");
-  await expect(mappedActivityRow).toContainText("信用卡 · 餐飲");
+  await expect(mappedActivityRow).toHaveCount(1);
+  await expect(mappedActivityRow).toContainText("測試銀行 · 信用卡");
+  await expect(
+    mappedActivityRow.locator("[data-category-label]"),
+  ).toContainText("餐飲");
   await expect(mappedActivityRow).toContainText("已配對發票");
   await mappedActivityRow.click();
   const detail = page.getByRole("dialog", { name: "活動明細" });
@@ -1749,14 +1921,22 @@ test("manually maps, manages, and separates a same-day invoice transaction on mo
   await page.getByRole("button", { name: "管理配對" }).click();
   await page.getByRole("button", { name: "解除並保持分開" }).click();
   await expect(page.getByText("已解除配對，兩筆活動將保持分開")).toBeVisible();
-  await expect(page.getByText("合成發票商店").first()).toBeVisible();
-  await expect(page.getByText("測試飲料店").first()).toBeVisible();
+  // 解除後兩筆各自列出；交易主標是清理後的商家名稱（去掉尾端「店」）。
+  await expect(
+    page.getByRole("button", {
+      name: "查看 合成發票商店 活動詳情",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "查看 測試飲料店 活動詳情", exact: true }),
+  ).toBeVisible();
 });
 
 test("loads invoice line items only after opening an activity", async ({
   page,
 }) => {
-  const month = new Date().toISOString().slice(0, 7);
+  const month = taipeiMonth();
   let detailRequests = 0;
   const invoice = {
     id: "lazy-invoice",
@@ -1792,7 +1972,7 @@ test("loads invoice line items only after opening an activity", async ({
     await route.fulfill({ json: [invoice] });
   });
 
-  await page.goto("/#/activity");
+  await page.goto("/#/transactions");
   const activity = page.getByRole("button", {
     name: "查看 延遲載入商店 活動詳情",
   });
@@ -1828,7 +2008,7 @@ test.describe("mobile chart tooltip", () => {
         ],
       });
     });
-    await page.goto("/#/overview");
+    await page.goto("/#/assets"); // 資產走勢在資產頁頂
     await page.getByRole("tab", { name: "全部", exact: true }).click();
     const chart = page
       .getByRole("region", { name: "資產走勢" })
@@ -1901,7 +2081,7 @@ test("focuses asset categories without changing their total", async ({
     });
   });
   await page.setViewportSize({ width: 390, height: 1000 });
-  await page.goto("/#/overview");
+  await page.goto("/#/assets"); // 資產走勢在資產頁頂
   const chart = page.getByRole("region", { name: "資產走勢" });
   await page.getByRole("tab", { name: "全部", exact: true }).click();
   await page.getByRole("button", { name: "顯示設定" }).click();

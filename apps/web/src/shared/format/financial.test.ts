@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   bankAccountLast5,
   formatBankAccountName,
+  formatCurrency,
+  formatCurrencyPrecise,
   formatNumber,
   missingExchangeRateCurrencies,
   normalizeFinancialDate,
@@ -70,5 +72,15 @@ describe("financial formatting helpers", () => {
         { USD: 32 },
       ),
     ).toEqual(["HKD"]);
+  });
+});
+
+describe("formatCurrencyPrecise", () => {
+  it("keeps cents for foreign currencies and whole dollars for TWD", () => {
+    expect(formatCurrencyPrecise(10.98, "USD")).toBe("US$10.98");
+    expect(formatCurrencyPrecise(-3.5, "USD")).toBe("−US$3.5");
+    expect(formatCurrencyPrecise(20, "USD")).toBe("US$20");
+    expect(formatCurrencyPrecise(355.6, "TWD")).toBe("NT$356");
+    expect(formatCurrency(10.98, "USD")).toBe("US$11");
   });
 });

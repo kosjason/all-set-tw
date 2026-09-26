@@ -34,6 +34,8 @@ export function invoiceRecord(
       invoice_date: invoice.invoiceDate,
       seller_name: invoice.sellerName ?? null,
       amount: invoice.amount,
+      carrier_type: invoice.carrierType ?? null,
+      carrier_suffix: invoice.carrierSuffix?.slice(-4) ?? null,
       raw_payload: JSON.stringify(invoice.raw ?? invoice),
       created_at: now,
       updated_at: now,
@@ -156,6 +158,9 @@ export function bankTransactionRecord(
       currency: transaction.currency || "TWD",
       description: transaction.description ?? null,
       counterparty: transaction.counterparty ?? null,
+      counterparty_bank_code: transaction.counterpartyAccount?.bankCode ?? null,
+      counterparty_account_suffix:
+        transaction.counterpartyAccount?.accountSuffix ?? null,
       status: transaction.status ?? "posted",
       transfer_peer_id: transaction.transferPeer
         ? stableId(
@@ -223,6 +228,8 @@ export function investmentPositionRecord(
       cash_balance: normalized.cashBalance ?? null,
       currency: normalized.currency,
       as_of_date: normalized.asOfDate,
+      broker_no: normalized.brokerNo ?? null,
+      broker_name: normalized.brokerName ?? null,
       raw_payload: JSON.stringify(normalized.raw ?? normalized),
       created_at: now,
       updated_at: now,

@@ -4,6 +4,8 @@
 
 PRAGMA foreign_keys = OFF;
 
+DELETE FROM merchant_aliases;
+DELETE FROM classification_migration_notes;
 DELETE FROM classification_overrides;
 DELETE FROM classification_rules;
 DELETE FROM classification_categories;
@@ -22,61 +24,110 @@ DELETE FROM connector_settings;
 PRAGMA foreign_keys = ON;
 
 INSERT INTO classification_categories
-  (id, label, sort_order, is_system, created_at, updated_at) VALUES
-  ('salary',        '薪資',   1,  1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('transfer',      '轉帳',   2,  1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('food',          '餐飲',   3,  1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('transport',     '交通',   4,  1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('shopping',      '購物',   5,  1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('housing',       '居住',   6,  1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('health',        '醫療',   7,  1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('education',     '教育',   8,  1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('entertainment', '娛樂',   9,  1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('investment',    '投資',   10, 1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('fee',           '手續費', 11, 1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('insurance',     '保險',   12, 1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('tax',           '稅務',   13, 1, '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('software',      '軟體服務', 14, 1, '2026-09-06T00:00:00.000Z', '2026-09-06T00:00:00.000Z'),
-  ('utilities',     '生活繳費', 15, 1, '2026-09-06T00:00:00.000Z', '2026-09-06T00:00:00.000Z'),
-  ('other-income',  '其他收入', 16, 1, '2026-09-06T00:00:00.000Z', '2026-09-06T00:00:00.000Z'),
-  ('other',         '未分類', 17, 1, '2026-06-22T00:00:00.000Z', '2026-09-06T00:00:00.000Z');
+  (id, label, sort_order, is_system, parent_id, created_at, updated_at) VALUES
+  ('food', '餐飲', 1, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
+  ('transport', '交通', 2, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
+  ('housing', '居住', 3, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
+  ('shopping', '購物', 4, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
+  ('tech', '3C 數位', 5, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
+  ('entertainment', '娛樂', 6, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
+  ('health', '醫療保險', 7, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
+  ('donation', '捐款', 8, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
+  ('misc', '其他', 9, 1, NULL, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z'),
+  ('income', '收入', 100, 1, NULL, '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z'),
+  ('income.salary', '薪資', 101, 1, 'income', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z'),
+  ('income.investment', '股利利息', 102, 1, 'income', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z'),
+  ('income.other', '其他收入', 103, 1, 'income', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z'),
+  ('other', '未分類', 200, 1, NULL, '2026-06-22T00:00:00.000Z', '2026-09-26T00:00:00.000Z');
+
+INSERT INTO classification_rules
+  (id, category_id, economic_role, target_type, field, operator, pattern, priority, enabled,
+   is_system, source, description, created_at, updated_at, excluded_from_calculation, amount_direction) VALUES
+  ('system:bank:salary-keywords', 'income.salary', NULL, 'bank_transaction', 'any_text', 'regex',
+   '薪|salary|payroll|工資|獎金|bonus',
+   110, 1, 1, 'system', '薪資相關關鍵字（僅流入）', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'inflow'),
+  ('system:bank:investment-income-keywords', 'income.investment', NULL, 'bank_transaction', 'description', 'regex',
+   '^(?!.*(?:退刷|退款|退貨|折抵|利息調整|利息退還|貸款|借款|融資|循環利息|手續費)).*(?:^利息$|利息存入|存款利息|活存利息|定存利息|股息|股利|配息|^interest$|\binterest\s+(?:credit|income)\b|\bdividends?\b)',
+   109, 1, 1, 'system', '正金額的利息與股利', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'inflow'),
+  ('system:bank:other-income-keywords', 'income.other', NULL, 'bank_transaction', 'description', 'regex',
+   '^(?!.*(?:退刷|退款|退貨|折抵|貸款|借款|融資|手續費)).*(?:現金回饋|回饋金|現金回存|租金補貼|租屋補助|育兒津貼|生育補助|政府補助|稿費|稿酬|接案收入|退稅|\bcashback\b)',
+   108, 1, 1, 'system', '正金額的補助、稿費、退稅與現金回饋', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'inflow'),
+  ('system:bank:software-keywords', 'tech', NULL, 'bank_transaction', 'description', 'regex',
+   '^(?!.*(?:手續費|交易服務費|\bforeign\s+transaction\s+fee\b)).*(?:\b(?:openai|cursor|cloudflare)(?:\b|o[0-9])|\bchatgpt\b|\banthropic\b|\bclaude(?:\.ai|\s+(?:pro|max|subscription))\b|\bgoogle\s*[* ]\s*(?:cloud|one|workspace)\b|\b(?:github|jetbrains|adobe|notion|dropbox)(?:\b|o[0-9])|\b(?:microsoft|office)\s*365\b|\bicloud\b|\baws\b|amazon\s+web\s+services|\bgodaddy\b|\bnamecheap\b|\bgandi\b|\bdigitalocean\b|\blinode\b|\bvercel\b|\bheroku\b)',
+   108, 1, 1, 'system', '軟體、AI 訂閱與雲端服務', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:bank:streaming-keywords', 'entertainment', NULL, 'bank_transaction', 'description', 'regex',
+   '^(?!.*(?:手續費|交易服務費)).*(?:\bnetflix\b|\bspotify\b|\bkkbox\b|disney\s*\+|\byoutube\s*premium\b|friday影音|\blinetv\b)',
+   108, 1, 1, 'system', '影音串流訂閱', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:bank:utilities-keywords', 'housing', NULL, 'bank_transaction', 'description', 'regex',
+   '^(?!.*(?:手續費|交易服務費|購機|手機|設備|門市|商城|購物)).*(?:台灣電力|台灣自來水|臺北自來水|台北自來水|台電|台水|水費|電費|瓦斯費|天然氣費)',
+   108, 1, 1, 'system', '水、電與瓦斯費用', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:bank:telecom-keywords', 'housing', NULL, 'bank_transaction', 'description', 'regex',
+   '^(?!.*(?:手續費|交易服務費|購機|手機|設備|門市|商城|購物)).*(?:中華電信|遠傳電信|台灣大哥大|台灣之星|亞太電信|電信費|電話費|網路費|寬頻費|\bhinet\b)',
+   108, 1, 1, 'system', '電信、電話與網路費用', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:bank:ewallet-topup', NULL, 'own_transfer', 'bank_transaction', 'any_text', 'regex',
+   '^(?!.*手續費).*(?:電支.{0,12}儲值|(?:街口|連加|一卡通|全支付|悠遊付|全盈|icash ?pay|line ?pay).{0,8}儲值)',
+   107, 1, 1, 'system', '電子支付儲值（轉入自己的電子錢包）', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 1, 'any'),
+  ('system:bank:creditcard-payment', NULL, 'card_payment', 'bank_transaction', 'any_text', 'regex',
+   '信用卡.*繳|信用卡款|繳卡費|credit.?card.*(pay|bill|repay)',
+   106, 1, 1, 'system', '信用卡繳費', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 1, 'any'),
+  ('system:bank:transfer-keywords', NULL, NULL, 'bank_transaction', 'any_text', 'regex',
+   '轉帳|轉入|轉出|匯款|transfer|remit|atm|跨行',
+   105, 1, 1, 'system', '轉帳提示：無法確認對方時標示待確認', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:drinks-keywords', 'food', NULL, NULL, 'any_text', 'regex',
+   '咖啡|飲料|茶飲|手搖|cafe|coffee|starbucks|星巴克|路易莎|louisa',
+   101, 1, 1, 'system', '咖啡與飲料', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:dining-keywords', 'food', NULL, NULL, 'any_text', 'regex',
+   '餐|飯(?!店)|小吃|麵店|麵館|牛肉麵|拉麵|便當|火鍋|早餐|food|restaurant|mcdonald|麥當勞|uber\s*eats|foodpanda',
+   100, 1, 1, 'system', '外食', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:bank:investment-keywords', NULL, 'investment', 'bank_transaction', 'any_text', 'regex',
+   '投資|證券|股票|基金(?!會)|\betf\b|broker|tdcc|交割',
+   100, 1, 1, 'system', '投資相關關鍵字', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:transit-keywords', 'transport', NULL, NULL, 'any_text', 'regex',
+   '捷運|高鐵|台鐵|臺鐵|客運|悠遊卡|metro|rail|thsr',
+   100, 1, 1, 'system', '大眾運輸', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:ride-keywords', 'transport', NULL, NULL, 'any_text', 'regex',
+   '計程車|大車隊|taxi|uber(?!\s*\*?\s*eats)',
+   100, 1, 1, 'system', '叫車與計程車', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:car-keywords', 'transport', NULL, NULL, 'any_text', 'regex',
+   '加油|中油|台塑石油|停車|parking|fuel|etag',
+   100, 1, 1, 'system', '油資與停車', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:transport-keywords', 'transport', NULL, NULL, 'any_text', 'regex',
+   '交通|transport',
+   99, 1, 1, 'system', '其他交通', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:tax-keywords', 'misc', NULL, NULL, 'any_text', 'regex',
+   '稅費|稅款|國稅|稅務局|牌照稅|燃料稅|所得稅|地價稅|房屋稅',
+   96, 1, 1, 'system', '稅金', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'outflow'),
+  ('system:shared:insurance-keywords', 'health', NULL, NULL, 'any_text', 'regex',
+   '健保|勞保|保費|保險|人壽|insurance',
+   95, 1, 1, 'system', '保險', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:medical-keywords', 'health', NULL, NULL, 'any_text', 'regex',
+   '醫院|診所|牙醫|牙科|藥局|醫療',
+   95, 1, 1, 'system', '醫療', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:housing-keywords', 'housing', NULL, NULL, 'any_text', 'regex',
+   '房租|租金|房貸|管理費',
+   95, 1, 1, 'system', '房租、房貸與管理費', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:grocery-keywords', 'food', NULL, NULL, 'any_text', 'regex',
+   '全聯|家樂福|carrefour|好市多|costco|美廉社|超市|market',
+   91, 1, 1, 'system', '超市與量販', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:convenience-keywords', 'food', NULL, NULL, 'any_text', 'regex',
+   '超商|7-?eleven|seven|familymart|全家|萊爾富|hi-?life',
+   91, 1, 1, 'system', '便利商店（品項可再細分）', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:electronics-keywords', 'tech', NULL, NULL, 'any_text', 'regex',
+   '燦坤|全國電子|三創|順發3c|apple\s*store|studio\s*a',
+   91, 1, 1, 'system', '3C 與家電賣場', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:online-shopping-keywords', 'shopping', NULL, NULL, 'any_text', 'regex',
+   'momo|pchome|蝦皮|shopee|酷澎|coupang',
+   91, 1, 1, 'system', '網路購物', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:fee-keywords', 'misc', NULL, NULL, 'any_text', 'regex',
+   '手續|年費|fee|charge|利息|interest',
+   90, 1, 1, 'system', '手續費與利息支出', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any'),
+  ('system:shared:shopping-keywords', 'shopping', NULL, NULL, 'any_text', 'regex',
+   '購物|商店|百貨|store|shop',
+   90, 1, 1, 'system', '其他購物', '2026-09-26T00:00:00.000Z', '2026-09-26T00:00:00.000Z', 0, 'any');
 
 INSERT INTO classification_rules
   (id, category_id, target_type, field, operator, pattern, priority, enabled, is_system, source, description, created_at, updated_at) VALUES
-  ('system:bank:salary-keywords',      'salary',     'bank_transaction', 'any_text', 'regex', '薪|salary|payroll|工資|獎金|bonus',                                          110, 1, 1, 'system', '薪資相關關鍵字',   '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('system:bank:transfer-keywords',    'transfer',   'bank_transaction', 'any_text', 'regex', '轉帳|轉入|轉出|匯款|transfer|remit|atm|跨行',                                105, 1, 1, 'system', '轉帳相關關鍵字',   '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('system:bank:food-keywords',        'food',       'bank_transaction', 'any_text', 'regex', '餐|飯|咖啡|飲|food|restaurant|cafe|mcdonald|starbucks|ubereats|foodpanda', 100, 1, 1, 'system', '餐飲相關關鍵字',   '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('system:shared:transport-keywords', 'transport',  NULL,               'any_text', 'regex', '交通|捷運|高鐵|台鐵|加油|停車|uber|taxi|metro|rail|parking|fuel',            100, 1, 1, 'system', '交通相關關鍵字',   '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('system:bank:investment-keywords',  'investment', 'bank_transaction', 'any_text', 'regex', '投資|證券|股票|基金|etf|broker|tdcc|交割',                                    100, 1, 1, 'system', '投資相關關鍵字',   '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('system:shared:fee-keywords',       'fee',        NULL,               'any_text', 'regex', '手續|管理費|利息|fee|charge|interest',                                         90, 1, 1, 'system', '手續費相關關鍵字', '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('system:bank:shopping-keywords',    'shopping',   'bank_transaction', 'any_text', 'regex', '購物|商店|百貨|超商|market|store|shop|momo|pchome|costco|全聯|統一|seven|family', 90, 1, 1, 'system', '購物相關關鍵字', '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('system:shared:insurance-keywords', 'insurance',  NULL,               'any_text', 'regex', '健保|勞保|保費|保險|insurance',                                                95, 1, 1, 'system', '保險相關關鍵字',   '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('system:bank:creditcard-payment',   'transfer',   'bank_transaction', 'any_text', 'regex', '信用卡.*繳|繳卡費|credit.?card.*(pay|bill|repay)',                            106, 1, 1, 'system', '信用卡繳費',       '2026-06-22T00:00:00.000Z', '2026-06-22T00:00:00.000Z'),
-  ('demo:user:rent',                   'housing',    'bank_transaction', 'any_text', 'contains', '房租',                                                                      200, 1, 0, 'demo',   'Demo 自訂房租分類', '2026-06-24T09:00:00.000Z', '2026-06-24T09:00:00.000Z');
-
-INSERT OR IGNORE INTO classification_rules
-  (id, category_id, target_type, field, operator, pattern, priority, enabled, is_system, source, description, created_at, updated_at)
-SELECT 'system:bank:software-keywords', id, 'bank_transaction', 'description', 'regex',
-  '^(?!.*(?:手續費|交易服務費|\bforeign\s+transaction\s+fee\b)).*(?:\b(?:openai|cursor|cloudflare)(?:\b|o[0-9])|\bchatgpt\b|\banthropic\b|\bclaude(?:\.ai|\s+(?:pro|max|subscription))\b|\bgoogle\s*[* ]\s*(?:cloud|one|workspace)\b|\b(?:github|jetbrains|adobe|notion|dropbox)(?:\b|o[0-9])|\b(?:microsoft|office)\s*365\b|\bicloud\b)',
-  108, 1, 1, 'system', '軟體服務商家與產品名稱', '2026-09-06T00:00:00.000Z', '2026-09-06T00:00:00.000Z'
-FROM classification_categories
-WHERE label = '軟體服務' COLLATE NOCASE;
-
-INSERT OR IGNORE INTO classification_rules
-  (id, category_id, target_type, field, operator, pattern, priority, enabled, is_system, source, description, created_at, updated_at)
-SELECT 'system:bank:utilities-keywords', id, 'bank_transaction', 'description', 'regex',
-  '^(?!.*(?:手續費|交易服務費|購機|手機|設備|門市|商城|購物)).*(?:中華電信|遠傳電信|台灣大哥大|台灣之星|亞太電信|台灣電力|台灣自來水|臺北自來水|台北自來水|台電|台水|水費|電費|瓦斯費|天然氣費|電信費|電話費|網路費|寬頻費|\bhinet\b)',
-  108, 1, 1, 'system', '電信、水電、瓦斯與網路費用', '2026-09-06T00:00:00.000Z', '2026-09-06T00:00:00.000Z'
-FROM classification_categories
-WHERE label = '生活繳費' COLLATE NOCASE;
-
-INSERT OR IGNORE INTO classification_rules
-  (id, category_id, target_type, field, operator, pattern, priority, enabled, is_system, source, description, created_at, updated_at)
-SELECT 'system:bank:other-income-keywords', id, 'bank_transaction', 'description', 'regex',
-  '^(?!.*(?:退刷|退款|退貨|折抵|利息調整|利息退還|貸款|借款|融資|循環利息|手續費)).*(?:^利息$|利息存入|存款利息|活存利息|定存利息|股息|股利|配息|現金回饋|回饋金|現金回存|租金補貼|租屋補助|育兒津貼|生育補助|政府補助|稿費|稿酬|接案收入|退稅|^interest$|\binterest\s+(?:credit|income)\b|\bdividends?\b|\bcashback\b)',
-  108, 1, 1, 'system', '正金額的利息、股利、補助、稿費、退稅與現金回饋', '2026-09-06T00:00:00.000Z', '2026-09-06T00:00:00.000Z'
-FROM classification_categories
-WHERE label = '其他收入' COLLATE NOCASE;
+  ('demo:user:rent', 'housing', 'bank_transaction', 'any_text', 'contains', '房租', 200, 1, 0, 'demo', 'Demo 自訂房租分類', '2026-06-24T09:00:00.000Z', '2026-06-24T09:00:00.000Z');
 
 INSERT INTO connector_settings
   (id, connector_id, encrypted_config, sync_cursor, created_at, updated_at) VALUES

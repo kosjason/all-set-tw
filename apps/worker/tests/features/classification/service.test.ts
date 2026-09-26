@@ -11,16 +11,19 @@ const transaction = {
   counterparty: "Coffee Shop",
 };
 
+// raw() 依 select 欄位順序對應，物件鍵順序須與 repository 的 select 相同。
 const otherIncomeRule = {
   id: "system:bank:other-income-keywords",
-  category_id: "other-income",
+  category_id: "income.other",
   label: "其他收入",
+  economic_role: null,
   target_type: "bank_transaction",
   field: "any_text",
   operator: "contains",
   pattern: "利息",
   is_system: 1,
   excluded_from_calculation: 0,
+  amount_direction: "inflow",
 };
 
 function createClassificationDb(
@@ -126,14 +129,16 @@ describe("resolveClassifications", () => {
               results: [
                 {
                   id: "user:card-payment",
-                  category_id: "transfer",
-                  label: "轉帳",
+                  category_id: null,
+                  label: null,
+                  economic_role: "card_payment",
                   target_type: "bank_transaction",
                   field: "any_text",
                   operator: "contains",
                   pattern: "卡費",
                   is_system: 0,
                   excluded_from_calculation: 1,
+                  amount_direction: "any",
                 },
               ],
             };
@@ -151,7 +156,9 @@ describe("resolveClassifications", () => {
     ]);
 
     expect(result.get("tx-card-payment")).toMatchObject({
-      categoryId: "transfer",
+      categoryId: "other",
+      label: "繳卡費",
+      economicRole: "card_payment",
       excludedFromCalculation: true,
     });
     const overrideQuery = calls.find(({ sql }) =>
@@ -164,7 +171,7 @@ describe("resolveClassifications", () => {
     ]);
   });
 
-  it("applies the other-income system rule only to positive amounts", async () => {
+  it("applies an inflow-only rule only to positive amounts", async () => {
     const result = await resolveClassifications(createClassificationDb(), [
       {
         ...transaction,
@@ -175,7 +182,7 @@ describe("resolveClassifications", () => {
     ]);
 
     expect(result.get("tx-interest-positive")).toMatchObject({
-      categoryId: "other-income",
+      categoryId: "income.other",
       label: "其他收入",
       source: "system_rule",
       ruleId: "system:bank:other-income-keywords",
@@ -214,7 +221,7 @@ describe("resolveClassifications", () => {
         [
           {
             target_id: "tx-interest-negative",
-            category_id: "fee",
+            category_id: "misc",
             label: "手續費",
           },
         ],
@@ -230,7 +237,7 @@ describe("resolveClassifications", () => {
     );
 
     expect(result.get("tx-interest-negative")).toMatchObject({
-      categoryId: "fee",
+      categoryId: "misc",
       label: "手續費",
       source: "override",
     });

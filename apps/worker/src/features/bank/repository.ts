@@ -57,6 +57,12 @@ const bankTransactionColumns = {
   calculationPreference: sql<
     number | null
   >`${preference.excludedFromCalculation}`.as("calculationPreference"),
+  counterpartyBankCode: sql<string | null>`${txn.counterpartyBankCode}`.as(
+    "counterpartyBankCode",
+  ),
+  counterpartyAccountSuffix: sql<
+    string | null
+  >`${txn.counterpartyAccountSuffix}`.as("counterpartyAccountSuffix"),
 };
 
 const creditCardBillColumns = {
@@ -105,6 +111,8 @@ export type BankTransactionPageRow = {
   updatedAt: string;
   calculationPreference: number | null;
   transferPeerId?: string | null;
+  counterpartyBankCode?: string | null;
+  counterpartyAccountSuffix?: string | null;
 };
 
 export type CreditCardBillPageCursor = {

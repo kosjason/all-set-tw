@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { routeNavigationApi } from "./activity-api";
 
 const bankData = {
   accounts: [
@@ -156,6 +157,7 @@ test.beforeEach(async ({ page }) => {
       body = manualAssetHistory.get(assetId) ?? [];
     } else if (path === "/api/exchange-rates")
       body = [{ currency: "USD", rateTwd: 32, updatedAt: "2026-08-08" }];
+    else if (path === "/api/history/net-worth/chart") body = [];
     else throw new Error(`Unexpected assets E2E request: ${path}`);
 
     await route.fulfill({
@@ -164,6 +166,7 @@ test.beforeEach(async ({ page }) => {
       body: JSON.stringify(body),
     });
   });
+  await routeNavigationApi(page);
 });
 
 test("uses the desktop asset ledger without losing detail workflows", async ({
@@ -172,8 +175,9 @@ test("uses the desktop asset ledger without losing detail workflows", async ({
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/#/assets");
 
+  // 新導覽下頁面標題是「資產」，清冊區塊標題為「帳戶與資產」。
   await expect(
-    page.getByRole("heading", { name: "資產清冊", exact: true }),
+    page.getByRole("heading", { name: "帳戶與資產", exact: true }),
   ).toBeVisible();
 
   const ledger = page

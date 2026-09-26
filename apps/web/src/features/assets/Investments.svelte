@@ -17,6 +17,7 @@
     formatNumber,
     rateMap,
   } from "@/shared/format/financial";
+  import { investmentBrokerLabel } from "./model/investment-label";
   let { api }: { api: ApiClient } = $props();
   const investments = createQuery(investmentsQuery(() => api));
   const trades = createQuery(investmentTransactionsQuery(() => api));
@@ -127,6 +128,11 @@
                 <tr>
                   <td class="py-3 pr-4 font-semibold">
                     {p.symbol ? `${p.symbol} ` : ""}{p.name}
+                    {#if investmentBrokerLabel(p)}
+                      <span class="block text-caption font-normal text-subtle">
+                        {investmentBrokerLabel(p)}
+                      </span>
+                    {/if}
                   </td>
                   <td class="px-4 py-3">{p.assetType.toUpperCase()}</td>
                   <td class="px-4 py-3">
@@ -154,7 +160,8 @@
                   {p.symbol ? `${p.symbol} ` : ""}{p.name}
                 </p>
                 <p class="mt-1 text-caption text-subtle">
-                  {p.quantity ?? 0} 單位 · {p.assetType.toUpperCase()}
+                  {#if investmentBrokerLabel(p)}{investmentBrokerLabel(p)} ·
+                  {/if}{p.quantity ?? 0} 單位 · {p.assetType.toUpperCase()}
                 </p>
               </div>
               <p class="shrink-0 font-medium tabular-nums text-steel">

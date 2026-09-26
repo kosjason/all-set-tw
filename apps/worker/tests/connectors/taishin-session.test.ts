@@ -17,6 +17,7 @@ import {
   TaishinConnectionError,
   TaishinCredentialRejectedError,
   TaishinSyncStageError,
+  TAISHIN_REALTIME_UNAVAILABLE_WARNING,
 } from "../../src/connectors/taishin";
 
 const credentials = {
@@ -193,11 +194,11 @@ describe("Taishin browser session lifecycle", () => {
           DBSESSIONID: "database-session",
         }),
       })
-      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }))
       .mockResolvedValueOnce(
         response({ "001": { "OUT-DTE-LST-STMT": "20260720" } }),
       )
-      .mockResolvedValueOnce(response({}));
+      .mockResolvedValueOnce(response({}))
+      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }));
     const browserInstance = browser(browserPage);
     browserInstance.close.mockRejectedValueOnce(new Error(""));
     puppeteerMock.launch.mockResolvedValue(browserInstance);
@@ -264,7 +265,6 @@ describe("Taishin browser session lifecycle", () => {
     };
     browserPage.evaluate
       .mockResolvedValueOnce(activeSession)
-      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }))
       .mockResolvedValueOnce(
         response(
           {
@@ -285,7 +285,8 @@ describe("Taishin browser session lifecycle", () => {
           showCdue: "1200",
           newAcctDetailList: [],
         }),
-      );
+      )
+      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }));
     const browserInstance = browser(browserPage);
     puppeteerMock.launch.mockResolvedValue(browserInstance);
     const recognize = vi.fn();
@@ -368,13 +369,13 @@ describe("Taishin browser session lifecycle", () => {
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce("登入成功")
       .mockResolvedValueOnce(activeSession)
-      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }))
       .mockResolvedValueOnce(
         response({
           "001": { "OUT-DTE-LST-STMT": "20260720" },
         }),
       )
-      .mockResolvedValueOnce(response({}));
+      .mockResolvedValueOnce(response({}))
+      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }));
     const browserInstance = browser(browserPage);
     puppeteerMock.launch.mockResolvedValue(browserInstance);
     const recognize = vi.fn().mockResolvedValue("123456");
@@ -422,6 +423,17 @@ describe("Taishin browser session lifecycle", () => {
           DBSESSIONID: "database-session",
         }),
       })
+      .mockResolvedValueOnce(
+        response({
+          "001": { "OUT-DTE-LST-STMT": "20260720" },
+        }),
+      )
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 504,
+        contentType: "application/json",
+        text: "{}",
+      })
       .mockResolvedValueOnce(response({}, "系統忙碌中，無法取得資料。"))
       .mockResolvedValueOnce(response({}, "系統忙碌中，無法取得資料。"))
       .mockResolvedValueOnce(
@@ -435,18 +447,7 @@ describe("Taishin browser session lifecycle", () => {
             },
           ],
         }),
-      )
-      .mockResolvedValueOnce(
-        response({
-          "001": { "OUT-DTE-LST-STMT": "20260720" },
-        }),
-      )
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 504,
-        contentType: "application/json",
-        text: "{}",
-      });
+      );
     const browserInstance = browser(browserPage);
     puppeteerMock.launch.mockResolvedValue(browserInstance);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -508,6 +509,12 @@ describe("Taishin browser session lifecycle", () => {
           DBSESSIONID: "database-session",
         }),
       })
+      .mockResolvedValueOnce(
+        response({
+          "001": { "OUT-DTE-LST-STMT": "20260720" },
+        }),
+      )
+      .mockResolvedValueOnce(response({}))
       .mockResolvedValueOnce({
         ok: false,
         status: 0,
@@ -524,13 +531,7 @@ describe("Taishin browser session lifecycle", () => {
         contentType: "application/json",
         text: "{}",
       })
-      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }))
-      .mockResolvedValueOnce(
-        response({
-          "001": { "OUT-DTE-LST-STMT": "20260720" },
-        }),
-      )
-      .mockResolvedValueOnce(response({}));
+      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }));
     const browserInstance = browser(browserPage);
     puppeteerMock.launch.mockResolvedValue(browserInstance);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -615,7 +616,8 @@ describe("Taishin browser session lifecycle", () => {
       ]),
       sessionCreatedAt: expect.any(String),
     });
-    expect(warn).toHaveBeenCalledTimes(2);
+    // The optional summary call fails first, then two realtime retries.
+    expect(warn).toHaveBeenCalledTimes(3);
     expect(
       browserPage.evaluate.mock.calls.filter(
         ([, input]) =>
@@ -627,6 +629,173 @@ describe("Taishin browser session lifecycle", () => {
     ).toHaveLength(3);
     expect(browserInstance.close).toHaveBeenCalledOnce();
     warn.mockRestore();
+  });
+
+  describe("when realtime spending stays busy", () => {
+    const apiResponse = (value: unknown, error: unknown = null) => ({
+      ok: true,
+      status: 200,
+      contentType: "application/json",
+      text: JSON.stringify({ value, error }),
+    });
+
+    function routeApi(
+      browserPage: ReturnType<typeof page>,
+      unposted: ReturnType<typeof apiResponse>,
+    ) {
+      browserPage.evaluate.mockImplementation(
+        async (_callback: unknown, input: unknown) => {
+          const path =
+            typeof input === "object" && input !== null && "path" in input
+              ? String(input.path)
+              : "";
+          if (path.endsWith("/sessioncheck")) {
+            return {
+              ok: true,
+              status: 200,
+              contentType: "application/json",
+              text: JSON.stringify({
+                RESULT: "SUCCESS",
+                DBSESSIONID: "database-session",
+              }),
+            };
+          }
+          if (path.endsWith("/doXTPA")) {
+            return apiResponse({
+              "001": {
+                "OUT-AVAIL-CREDIT": "100000",
+                "OUT-STMT-BALANCE": "1200",
+                "OUT-CRLIMIT-PERM": "200000",
+                "OUT-DTE-LST-STMT": "20260720",
+              },
+            });
+          }
+          if (path.endsWith("/init")) {
+            return apiResponse({
+              showAccoutnYM: "2026/07",
+              showCbalance: "1200",
+              showCdue: "1200",
+              newAcctDetailList: [],
+            });
+          }
+          if (path.endsWith("/qryRealTime")) {
+            return apiResponse({}, "系統忙碌中，無法取得資料。");
+          }
+          if (path.endsWith("/qryUnposted")) return unposted;
+          return apiResponse({});
+        },
+      );
+    }
+
+    function apiPaths(browserPage: ReturnType<typeof page>) {
+      return browserPage.evaluate.mock.calls.flatMap(([, input]) =>
+        typeof input === "object" && input !== null && "path" in input
+          ? [String(input.path).split("/").at(-1)]
+          : [],
+      );
+    }
+
+    const session = {
+      ...credentials,
+      sessionCookies: JSON.stringify([
+        { name: "SESSION", value: "valid", domain: "my.taishinbank.com.tw" },
+      ]),
+    };
+
+    it("queries realtime after the summary and bill init, then reports a warning", async () => {
+      const browserPage = page();
+      routeApi(
+        browserPage,
+        apiResponse({ unpostedTx: [{ secret: "should-not-be-logged" }] }),
+      );
+      puppeteerMock.launch.mockResolvedValue(browser(browserPage));
+      const warn = vi
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+
+      const result = await createTaishinConnector({} as Fetcher).sync(session);
+
+      const paths = apiPaths(browserPage);
+      expect(paths.indexOf("qryRealTime")).toBeGreaterThan(
+        paths.indexOf("init"),
+      );
+      expect(paths.indexOf("init")).toBeGreaterThan(paths.indexOf("doXTPA"));
+      expect(paths.filter((path) => path === "qryRealTime")).toHaveLength(3);
+      expect(browserPage.evaluate).toHaveBeenCalledWith(expect.any(Function), {
+        path: "/TIBNetBank/svc/web4/rb0708rwd/qryUnposted",
+        body: {
+          org: "001",
+          byear: "2026",
+          bmonth: "07",
+          cardHolderFlagSelected: "1",
+          cardNo: "",
+        },
+        timeoutMs: 4_000,
+      });
+      expect(result.warnings).toEqual([TAISHIN_REALTIME_UNAVAILABLE_WARNING]);
+      expect(result.bankAccounts).toHaveLength(1);
+      const probeLog = warn.mock.calls
+        .map(([message]) => String(message))
+        .find((message) => message.includes("taishin_unposted_probe"));
+      expect(JSON.parse(String(probeLog))).toEqual({
+        event: "taishin_unposted_probe",
+        usable: false,
+        shape: { unpostedTx: "array(1)" },
+      });
+      expect(probeLog).not.toContain("should-not-be-logged");
+      warn.mockRestore();
+    });
+
+    it("uses qryUnposted when it returns the realtime list format", async () => {
+      const browserPage = page();
+      routeApi(
+        browserPage,
+        apiResponse({
+          fmtRealTxListMap: [
+            {
+              cardname: "信用卡 (卡號末四碼:3108)",
+              txlist: [
+                ["2026/09/17", "12:30:00", "測試商店", "90", "TW", "成功"],
+              ],
+            },
+          ],
+        }),
+      );
+      puppeteerMock.launch.mockResolvedValue(browser(browserPage));
+      const warn = vi
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+
+      const result = await createTaishinConnector({} as Fetcher).sync(session);
+
+      expect(result.warnings).toBeUndefined();
+      expect(result.bankTransactions).toMatchObject([
+        { description: "測試商店", amount: -90, status: "pending" },
+      ]);
+      warn.mockRestore();
+    });
+
+    it("keeps the warning when qryUnposted is also busy", async () => {
+      const browserPage = page();
+      routeApi(browserPage, apiResponse({}, "系統忙碌中，無法取得資料。"));
+      puppeteerMock.launch.mockResolvedValue(browser(browserPage));
+      const warn = vi
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+
+      const result = await createTaishinConnector({} as Fetcher).sync(session);
+
+      expect(result.warnings).toEqual([TAISHIN_REALTIME_UNAVAILABLE_WARNING]);
+      expect(warn).toHaveBeenCalledWith(
+        JSON.stringify({
+          event: "taishin_unposted_probe",
+          usable: false,
+          busy: true,
+          errorName: "TaishinConnectionError",
+        }),
+      );
+      warn.mockRestore();
+    });
   });
 
   it("reuses the same browser for manual CAPTCHA and disconnects it", async () => {
@@ -1013,7 +1182,6 @@ describe("Taishin browser session lifecycle", () => {
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce("登入成功")
       .mockResolvedValueOnce(activeSession)
-      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }))
       .mockResolvedValueOnce(
         response({
           "001": {
@@ -1031,7 +1199,8 @@ describe("Taishin browser session lifecycle", () => {
           showCdue: "1200",
           newAcctDetailList: [],
         }),
-      );
+      )
+      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }));
     const browserInstance = browser(browserPage);
     puppeteerMock.launch.mockResolvedValue(browserInstance);
     const recognize = vi.fn().mockResolvedValue("123456");

@@ -1160,6 +1160,8 @@ function toInvestmentPosition(
         : undefined,
     currency: holding.currency || "TWD",
     asOfDate,
+    brokerNo: holding.brokerNo,
+    brokerName: holding.brokerName,
     raw: holding.raw ?? holding,
   };
 }

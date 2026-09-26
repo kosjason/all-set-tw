@@ -8,6 +8,7 @@
     formatDate,
     formatNumber,
   } from "@/shared/format/financial";
+  import { investmentBrokerLabel } from "../model/investment-label";
 
   let {
     positions,
@@ -94,7 +95,11 @@
                   {position.symbol ? `${position.symbol} ` : ""}{position.name}
                 </p>
                 <p class="mt-1 text-caption text-subtle">
-                  {position.assetType.toUpperCase()} · {position.currency} ·
+                  {#if investmentBrokerLabel(position)}{investmentBrokerLabel(
+                      position,
+                    )} ·
+                  {/if}{position.assetType.toUpperCase()} · {position.currency}
+                  ·
                   {formatNumber(position.quantity ?? 0)} 單位
                 </p>
               </div>

@@ -5,15 +5,18 @@ import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
 import { jsonError } from "../../platform/http";
 import { validationHook } from "../../platform/validation";
+import { RULE_ECONOMIC_ROLES } from "@taiwan-fin-hub/core";
 import {
   ClassificationCategoryExistsError,
   ClassificationCategoryNotFoundError,
+  ClassificationRuleActionRequiredError,
   ClassificationRuleOrderError,
   ClassificationRuleNotFoundError,
   createClassificationCategory,
   createClassificationRule,
   editClassificationRule,
   getClassificationCategories,
+  getClassificationMigrationNotes,
   getClassificationRules,
   removeClassificationOverride,
   removeClassificationRule,
@@ -21,14 +24,18 @@ import {
   setClassificationOverride,
 } from "./service";
 
-const targetTypeSchema = z.enum(["bank_transaction"]);
+const targetTypeSchema = z.enum(["bank_transaction", "invoice"]);
+const economicRoleSchema = z.enum(RULE_ECONOMIC_ROLES);
+const amountDirectionSchema = z.enum(["any", "inflow", "outflow"]);
 const overrideParamSchema = z.object({ targetType: targetTypeSchema });
 const categorySchema = z.object({ categoryId: z.string().min(1).max(64) });
 const createCategorySchema = z.object({
   label: z.string().trim().min(1).max(24),
 });
 const createRuleSchema = z.object({
-  categoryId: z.string().min(1).max(64),
+  categoryId: z.string().min(1).max(64).nullable().optional(),
+  economicRole: economicRoleSchema.nullable().optional(),
+  amountDirection: amountDirectionSchema.optional(),
   targetType: targetTypeSchema.optional(),
   field: z.enum(["any_text", "description", "counterparty", "source_id"]),
   operator: z.enum(["contains", "equals", "starts_with", "regex"]),
@@ -39,7 +46,9 @@ const createRuleSchema = z.object({
 });
 const updateRuleSchema = z
   .object({
-    categoryId: z.string().min(1).max(64).optional(),
+    categoryId: z.string().min(1).max(64).nullable().optional(),
+    economicRole: economicRoleSchema.nullable().optional(),
+    amountDirection: amountDirectionSchema.optional(),
     operator: z.enum(["contains", "equals", "starts_with", "regex"]).optional(),
     pattern: z.string().min(1).max(300).optional(),
     priority: z.number().int().min(0).max(10_000).optional(),
@@ -100,6 +109,11 @@ function registerClassificationRoutes(api: Hono<AppBindings>) {
 
   api.get("/classification/rules", async (c) =>
     c.json(await getClassificationRules(c.env.DB)),
+  );
+
+  // 0055 遷移舊分類時 id 有變動的覆寫與規則（needsAttention 為對應不到、歸入「其他」者）。
+  api.get("/classification/migration-notes", async (c) =>
+    c.json(await getClassificationMigrationNotes(c.env.DB)),
   );
 
   api.put(
@@ -230,6 +244,13 @@ function classificationServiceError(error: unknown) {
   }
   if (error instanceof ClassificationRuleNotFoundError) {
     return jsonError("RULE_NOT_FOUND", "Editable rule was not found.", 404);
+  }
+  if (error instanceof ClassificationRuleActionRequiredError) {
+    return jsonError(
+      "INVALID_REQUEST",
+      "A rule must set a category or an economic role.",
+      400,
+    );
   }
   if (error instanceof ClassificationRuleOrderError) {
     return jsonError(

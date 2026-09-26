@@ -15,17 +15,21 @@ import {
   CathayVerificationRequiredError,
   appendCathayDepositTransactions,
   captureCathayTrustedState,
+  chooseCathayComboboxOption,
   completeCathayTrustedDeviceSetup,
   createCathaybkConnector,
   dismissCathaySystemMessageIfPresent,
   isCathayAuthenticatedUrl,
   loginCathay,
   normalizeCathayAuthorizedAt,
+  normalizeCathayCreditCards,
+  parseCathayCardOverview,
   restoreCathayTrustedState,
   sendCathayOtp,
   scrapeCreditCards,
   submitCathayLoginForm,
   submitCathayOtp,
+  type TradeItem,
 } from "../../src/connectors/cathaybk";
 
 const credentials = {
@@ -538,35 +542,379 @@ describe("Cathay additional verification", () => {
 
 describe("Cathay credit cards", () => {
   it("returns no card data when the overview has no card number", async () => {
-    vi.useFakeTimers();
     const page = {
-      evaluate: vi.fn().mockResolvedValue({
-        cardDetected: false,
-        last4: "",
-        cardName: "國泰信用卡",
-        creditLimit: 0,
-        availableCredit: 0,
-        unpaidAmount: 0,
-        paymentDueDate: null,
-        noPaymentNeeded: false,
-      }),
+      evaluate: vi.fn().mockResolvedValue("信用卡帳戶總覽 立即線上辦卡"),
       goto: vi.fn().mockResolvedValue(undefined),
+      // The card block never appears for a customer without a card.
+      waitForFunction: vi.fn().mockRejectedValue(new Error("timeout")),
+    };
+
+    await expect(
+      scrapeCreditCards(
+        page as unknown as Parameters<typeof scrapeCreditCards>[0],
+      ),
+    ).resolves.toEqual({
+      bankAccounts: [],
+      bankBalanceSnapshots: [],
+      bankTransactions: [],
+      creditCardBills: [],
+    });
+    expect(page.goto).toHaveBeenCalledOnce();
+    expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), {
+      timeout: 15000,
+    });
+    expect(page.evaluate).toHaveBeenCalledOnce();
+  });
+
+  const overview = (cardLast4s: string[]) => ({
+    cardDetected: cardLast4s.length > 0,
+    last4: cardLast4s[0] ?? "",
+    cardLast4s,
+    creditLimit: 200000,
+    availableCredit: 180000,
+    unpaidAmount: 20000,
+    paymentDueDate: "2026-08-06",
+    noPaymentNeeded: false,
+  });
+
+  const trade = (
+    cardNo: string | undefined,
+    amount: number,
+    desc: string,
+  ): TradeItem => ({
+    consumeDate: "2026-07-09T00:00:00",
+    transDesc: desc,
+    amount,
+    currency: "TWD",
+    ...(cardNo === undefined ? {} : { cardNo }),
+    cardType: "VISA",
+    cardHolderType: "Primary",
+    detailType: "PrimaryCardConsume",
+  });
+
+  // 實際帳單明細的繳款列：卡號為空字串、原始金額為負。
+  const payment = (amount: number): TradeItem => ({
+    consumeDate: "2026-07-15T00:00:00",
+    transDesc: "本行自動扣繳",
+    amount,
+    consumeAmount: 0,
+    currency: "TWD",
+    cardNo: "",
+    cardType: "00",
+    cardHolderType: "NoData",
+    detailType: "PaymentAmount",
+  });
+
+  const billData = (trades: TradeItem[], payments: TradeItem[] = []) => ({
+    allBills: [
+      {
+        billDate: "2026-07-23T00:00:00",
+        twdAmount: 20000,
+        usdAmount: null,
+        billStatus: "Unpaid",
+      },
+      {
+        billDate: "2026-06-23T00:00:00",
+        twdAmount: 5000,
+        usdAmount: null,
+        billStatus: "Paid",
+      },
+    ],
+    monthDetails: [
+      {
+        billDate: "2026-07-23T00:00:00",
+        twdAmount: 20000,
+        sections: [
+          {
+            detailType: "LastBillAmount",
+            tradeData: [trade(undefined, 5000, "上期")],
+          },
+          { detailType: "PaymentAmount", tradeData: payments },
+          { detailType: "PrimaryCardConsume", tradeData: trades },
+        ],
+      },
+    ],
+  });
+
+  it("splits multiple cards into card accounts and keeps pooled data on the summary account", () => {
+    const result = normalizeCathayCreditCards(
+      overview(["1234", "5678"]),
+      billData(
+        [
+          trade("4000123412341234", 320, "全家"),
+          trade("4000123456785678", 1200, "高鐵"),
+        ],
+        [payment(-10853)],
+      ),
+      "2026-07-10T01:00:00.000Z",
+    );
+
+    expect(result.bankAccounts).toEqual([
+      {
+        sourceId: "credit:cathaybk:1234",
+        institutionName: "國泰世華銀行",
+        accountName: "國泰信用卡 1234",
+        accountType: "credit",
+        currency: "TWD",
+      },
+      {
+        sourceId: "credit:cathaybk:5678",
+        institutionName: "國泰世華銀行",
+        accountName: "國泰信用卡 5678",
+        accountType: "credit",
+        currency: "TWD",
+      },
+      expect.objectContaining({
+        sourceId: "credit:cathaybk:main",
+        accountName: "國泰信用卡",
+        creditLimit: 200000,
+      }),
+    ]);
+    expect(
+      result.bankTransactions.map(({ accountId, description }) => [
+        accountId,
+        description,
+      ]),
+    ).toEqual([
+      ["credit:cathaybk:main", "本行自動扣繳"],
+      ["credit:cathaybk:1234", "全家"],
+      ["credit:cathaybk:5678", "高鐵"],
+    ]);
+    expect(result.bankBalanceSnapshots).toEqual([
+      expect.objectContaining({
+        accountId: "credit:cathaybk:main",
+        balance: -20000,
+        availableBalance: 180000,
+      }),
+    ]);
+    expect(
+      result.creditCardBills.map(({ accountId, sourceId }) => [
+        accountId,
+        sourceId,
+      ]),
+    ).toEqual([
+      ["credit:cathaybk:main", "credit:cathaybk:main:bill:2026-07"],
+      ["credit:cathaybk:main", "credit:cathaybk:main:bill:2026-06"],
+    ]);
+    expect(result.bankTransactions[1]?.raw).toMatchObject({
+      cardLast4: "1234",
+    });
+    expect(JSON.stringify(result)).not.toContain("4000123412341234");
+    expect(JSON.stringify(result)).not.toContain("4000123456785678");
+  });
+
+  it("puts the pooled balance and bills on the only physical card", () => {
+    const result = normalizeCathayCreditCards(
+      overview(["1234"]),
+      billData([trade("4000123412341234", 320, "全家")], [payment(-10853)]),
+      "2026-07-10T01:00:00.000Z",
+    );
+
+    expect(result.bankAccounts).toEqual([
+      expect.objectContaining({
+        sourceId: "credit:cathaybk:1234",
+        accountName: "國泰信用卡 1234",
+        creditLimit: 200000,
+      }),
+    ]);
+    expect(
+      new Set([
+        ...result.bankTransactions.map(({ accountId }) => accountId),
+        ...result.bankBalanceSnapshots.map(({ accountId }) => accountId),
+        ...result.creditCardBills.map(({ accountId }) => accountId),
+      ]),
+    ).toEqual(new Set(["credit:cathaybk:1234"]));
+  });
+
+  it("stores payments and credits as positive card entries without changing sourceId", () => {
+    const result = normalizeCathayCreditCards(
+      overview(["1234", "5678"]),
+      billData(
+        [
+          trade("4000123412341234", 115, "全家"),
+          trade("4000123412341234", -200, "退款 全家"),
+        ],
+        [payment(-10853)],
+      ),
+      "2026-07-10T01:00:00.000Z",
+    );
+
+    expect(
+      result.bankTransactions.map(
+        ({ accountId, sourceId, amount, description, counterparty }) => ({
+          accountId,
+          sourceId,
+          amount,
+          description,
+          counterparty,
+        }),
+      ),
+    ).toEqual([
+      {
+        accountId: "credit:cathaybk:main",
+        sourceId:
+          "2026-07-15T00:00:00:credit:cathaybk:main:-10853:本行自動扣繳:1",
+        amount: 10853,
+        description: "本行自動扣繳",
+        counterparty: "國泰世華信用卡繳款",
+      },
+      {
+        accountId: "credit:cathaybk:1234",
+        sourceId: "2026-07-09T00:00:00:credit:cathaybk:main:115:全家:1",
+        amount: -115,
+        description: "全家",
+        counterparty: undefined,
+      },
+      {
+        accountId: "credit:cathaybk:1234",
+        sourceId: "2026-07-09T00:00:00:credit:cathaybk:main:-200:退款 全家:1",
+        amount: 200,
+        description: "退款 全家",
+        counterparty: undefined,
+      },
+    ]);
+  });
+
+  it("adds cards found only in bill details", () => {
+    const result = normalizeCathayCreditCards(
+      overview(["1234"]),
+      billData([
+        trade("4000123412341234", 320, "全家"),
+        trade("4000-1234-5678-9999", 80, "悠遊卡加值"),
+      ]),
+      "2026-07-10T01:00:00.000Z",
+    );
+
+    expect(result.bankAccounts.map(({ sourceId }) => sourceId)).toEqual([
+      "credit:cathaybk:1234",
+      "credit:cathaybk:9999",
+      "credit:cathaybk:main",
+    ]);
+    expect(result.bankTransactions[1]?.accountId).toBe("credit:cathaybk:9999");
+  });
+
+  it("keeps date-only card transactions without fake midnight and preserves sourceId", () => {
+    const result = normalizeCathayCreditCards(
+      overview(["1234", "5678"]),
+      billData([
+        trade("4000123412341234", 320, "全家"),
+        trade("4000123412341234", 320, "全家"),
+        { ...trade("4000123412341234", 50, "7-11"), consumeDate: "2026/07/08" },
+      ]),
+      "2026-07-10T01:00:00.000Z",
+    );
+
+    expect(
+      result.bankTransactions.map(
+        ({ sourceId, postedDate, authorizedAt, amount }) => ({
+          sourceId,
+          postedDate,
+          authorizedAt,
+          amount,
+        }),
+      ),
+    ).toEqual([
+      {
+        sourceId: "2026-07-09T00:00:00:credit:cathaybk:main:320:全家:1",
+        postedDate: "2026-07-09",
+        authorizedAt: "2026-07-09",
+        amount: -320,
+      },
+      {
+        sourceId: "2026-07-09T00:00:00:credit:cathaybk:main:320:全家:2",
+        postedDate: "2026-07-09",
+        authorizedAt: "2026-07-09",
+        amount: -320,
+      },
+      {
+        sourceId: "2026-07-08T00:00:00.000Z:credit:cathaybk:main:50:7-11:1",
+        postedDate: "2026-07-08",
+        authorizedAt: "2026-07-08",
+        amount: -50,
+      },
+    ]);
+  });
+
+  it("parses every card on the overview page before reading bill details", async () => {
+    vi.useFakeTimers();
+    const overviewText = [
+      "CUBE COMBO悠遊白金卡 (原KOKO卡)Visa 正卡 卡片末四碼：1234",
+      "世界卡 Mastercard 正卡 卡片末四碼：5678",
+      "永久信用額度 TWD 200,000",
+      "剩餘可用額度 TWD 180,000",
+      "本期應繳金額 TWD 20,000",
+      "繳款截止日 2026/08/06",
+    ].join("\n");
+    const page = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce(overviewText)
+        .mockResolvedValueOnce(
+          billData(
+            [
+              trade("4000123412341234", 320, "全家"),
+              trade("4000123456785678", 1200, "高鐵"),
+            ],
+            [payment(-10853)],
+          ),
+        ),
+      goto: vi.fn().mockResolvedValue(undefined),
+      waitForFunction: vi.fn().mockResolvedValue(undefined),
     };
 
     try {
       const pending = scrapeCreditCards(
         page as unknown as Parameters<typeof scrapeCreditCards>[0],
       );
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(4_000);
+      const result = await pending;
 
-      await expect(pending).resolves.toEqual({
-        bankAccounts: [],
-        bankBalanceSnapshots: [],
-        bankTransactions: [],
-        creditCardBills: [],
+      expect(result.bankAccounts.map(({ sourceId }) => sourceId)).toEqual([
+        "credit:cathaybk:1234",
+        "credit:cathaybk:5678",
+        "credit:cathaybk:main",
+      ]);
+      expect(result.bankBalanceSnapshots[0]).toMatchObject({
+        accountId: "credit:cathaybk:main",
+        balance: -20000,
+        availableBalance: 180000,
+        paymentDueDate: "2026-08-06",
       });
-      expect(page.goto).toHaveBeenCalledOnce();
-      expect(page.evaluate).toHaveBeenCalledOnce();
+      expect(
+        result.bankTransactions.map(
+          ({ accountId, sourceId, authorizedAt, postedDate, amount }) => ({
+            accountId,
+            sourceId,
+            authorizedAt,
+            postedDate,
+            amount,
+          }),
+        ),
+      ).toEqual([
+        {
+          accountId: "credit:cathaybk:main",
+          sourceId:
+            "2026-07-15T00:00:00:credit:cathaybk:main:-10853:本行自動扣繳:1",
+          authorizedAt: "2026-07-15",
+          postedDate: "2026-07-15",
+          amount: 10853,
+        },
+        {
+          accountId: "credit:cathaybk:1234",
+          // 與拆卡前的 sourceId 相同，重新同步不會新增重複交易。
+          sourceId: "2026-07-09T00:00:00:credit:cathaybk:main:320:全家:1",
+          authorizedAt: "2026-07-09",
+          postedDate: "2026-07-09",
+          amount: -320,
+        },
+        {
+          accountId: "credit:cathaybk:5678",
+          sourceId: "2026-07-09T00:00:00:credit:cathaybk:main:1200:高鐵:1",
+          authorizedAt: "2026-07-09",
+          postedDate: "2026-07-09",
+          amount: -1200,
+        },
+      ]);
     } finally {
       vi.useRealTimers();
     }
@@ -708,5 +1056,161 @@ describe("Cathay trusted device state", () => {
 
     await expect(completeCathayTrustedDeviceSetup(page)).resolves.toBe(false);
     expect(page.click).not.toHaveBeenCalled();
+  });
+});
+
+describe("Cathay transaction page comboboxes", () => {
+  function combobox(label: string) {
+    const input = {
+      dataset: {} as Record<string, string>,
+      parentElement: null as unknown,
+    };
+    input.parentElement = { innerText: label, parentElement: null };
+    return input;
+  }
+
+  it.each([
+    ["period", "近 90 天", 0],
+    ["account", "123456789012", 1],
+  ] as const)(
+    "finds the %s selector by its react-select label and picks the option",
+    async (kind, match, expectedIndex) => {
+      const inputs = [
+        combobox("近 30 天"),
+        combobox("123456789012 活期儲蓄薪資轉帳存款"),
+      ];
+      const option = { textContent: "", click: vi.fn() };
+      option.textContent =
+        kind === "period" ? "近 90 天" : "123456789012 證券活期儲蓄存款";
+      vi.stubGlobal("document", {
+        querySelectorAll: (selector: string) =>
+          selector.includes("combobox") ? inputs : [option],
+      });
+      const page = {
+        evaluate: vi.fn(
+          async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
+            fn(...args),
+        ),
+        focus: vi.fn().mockResolvedValue(undefined),
+        keyboard: { press: vi.fn().mockResolvedValue(undefined) },
+        waitForFunction: vi.fn().mockResolvedValue(undefined),
+      };
+
+      await expect(
+        chooseCathayComboboxOption(page as never, kind, match),
+      ).resolves.toBe(true);
+      expect(inputs[expectedIndex]!.dataset.cathayCombobox).toBe(kind);
+      expect(page.focus).toHaveBeenCalledWith(
+        `[data-cathay-combobox="${kind}"]`,
+      );
+      expect(page.keyboard.press).toHaveBeenCalledWith("ArrowDown");
+      expect(option.click).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("matches account options by the whole account number", async () => {
+    const input = combobox("123456789012 活期儲蓄薪資轉帳存款");
+    const longer = { textContent: "1234567890123 其他帳戶", click: vi.fn() };
+    const exact = { textContent: "123456789012 子帳戶", click: vi.fn() };
+    vi.stubGlobal("document", {
+      querySelectorAll: (selector: string) =>
+        selector.includes("combobox") ? [input] : [longer, exact],
+    });
+    const page = {
+      evaluate: vi.fn(
+        async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
+          fn(...args),
+      ),
+      focus: vi.fn().mockResolvedValue(undefined),
+      keyboard: { press: vi.fn().mockResolvedValue(undefined) },
+      waitForFunction: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await expect(
+      chooseCathayComboboxOption(page as never, "account", "123456789012"),
+    ).resolves.toBe(true);
+    expect(longer.click).not.toHaveBeenCalled();
+    expect(exact.click).toHaveBeenCalledOnce();
+  });
+
+  it("reports a missing selector without touching the page", async () => {
+    vi.stubGlobal("document", {
+      querySelectorAll: () => [combobox("其他欄位")],
+    });
+    const page = {
+      evaluate: vi.fn(
+        async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
+          fn(...args),
+      ),
+      focus: vi.fn(),
+      keyboard: { press: vi.fn() },
+      waitForFunction: vi.fn(),
+    };
+
+    await expect(
+      chooseCathayComboboxOption(page as never, "period", "近 90 天"),
+    ).resolves.toBe(false);
+    expect(page.focus).not.toHaveBeenCalled();
+  });
+});
+
+describe("Cathay credit card overview", () => {
+  const overview = [
+    "信用卡 > 信用卡帳戶總覽",
+    "最近一期帳單",
+    "繳款截止日",
+    "2026/10/06",
+    "2026年09月",
+    "臺幣帳單",
+    "TWD",
+    "12,345",
+    "我要繳費",
+    "下期帳單",
+    "未出帳明細",
+    "TWD",
+    "0",
+    "我的額度",
+    "剩餘可用額度",
+    "TWD",
+    "180,000",
+    "永久信用額度",
+    "TWD",
+    "200,000",
+    "CUBE卡Visa 正卡 卡片末四碼：1234",
+  ].join("\n");
+
+  it("reads the unpaid statement from the current 臺幣帳單 layout", () => {
+    expect(parseCathayCardOverview(overview)).toMatchObject({
+      cardDetected: true,
+      last4: "1234",
+      unpaidAmount: 12345,
+      paymentDueDate: "2026-10-06",
+      creditLimit: 200000,
+      availableCredit: 180000,
+      noPaymentNeeded: false,
+    });
+  });
+
+  it("lists every card's last four digits", () => {
+    expect(
+      parseCathayCardOverview(
+        `${overview}\n世界卡 Mastercard 正卡 卡片末四碼：5678\nCUBE卡Visa 正卡 卡片末四碼：1234`,
+      ).cardLast4s,
+    ).toEqual(["1234", "5678"]);
+  });
+
+  it("keeps the older 應繳金額 wording", () => {
+    expect(
+      parseCathayCardOverview(
+        "應繳金額 TWD 5,678 繳款截止日 2026/10/06 卡片末四碼：1234",
+      ).unpaidAmount,
+    ).toBe(5678);
+  });
+
+  it("reports no amount due when the bank says no payment is needed", () => {
+    expect(parseCathayCardOverview(`${overview}\n無需繳費`)).toMatchObject({
+      unpaidAmount: 0,
+      noPaymentNeeded: true,
+    });
   });
 });

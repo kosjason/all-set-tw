@@ -4,6 +4,7 @@ import {
   activityDateKey,
   buildActivityItems,
   deduplicateBankTransactions,
+  expandInvoiceMatchingDays,
   isActivityDateTime,
   matchInvoicesToTransactions,
   type ActivityTransaction,
@@ -96,8 +97,9 @@ export async function materializeActivityReport(
       dates.add(activityDateKey({ date: item.invoiceDate, source: "invoice" }));
     const bank = new Map<string, ActivityTransaction>();
     const invoices = new Map<string, ActivityInvoice>();
-    // Bounded day groups preserve full matching context, including older transactions.
-    const days = [...dates].filter(Boolean).sort();
+    // Bounded day groups preserve full matching context, including older transactions
+    // and the neighbouring days that invoice matching may pair across.
+    const days = expandInvoiceMatchingDays([...dates].filter(Boolean));
     for (let offset = 0; offset < days.length; offset += 16) {
       const slice = days.slice(offset, offset + 16);
       const range = { from: slice[0]!, to: slice.at(-1)! };

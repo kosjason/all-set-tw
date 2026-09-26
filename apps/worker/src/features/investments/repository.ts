@@ -52,6 +52,8 @@ export type InvestmentPositionRow = {
   cashBalance: number | null;
   currency: string;
   asOfDate: string;
+  brokerNo: string | null;
+  brokerName: string | null;
 };
 
 export async function listLatestInvestmentPositions(
@@ -70,6 +72,8 @@ export async function listLatestInvestmentPositions(
       cashBalance: investmentPositions.cashBalance,
       currency: investmentPositions.currency,
       asOfDate: investmentPositions.asOfDate,
+      brokerNo: investmentPositions.brokerNo,
+      brokerName: investmentPositions.brokerName,
     })
     .from(investmentPositions)
     .where(

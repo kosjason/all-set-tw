@@ -10,6 +10,9 @@ export interface InvestmentRow {
   cashBalance?: number;
   currency: string;
   asOfDate: string;
+  /** 券商代碼；同一標的分屬不同券商帳戶時用來區分。 */
+  brokerNo?: string | null;
+  brokerName?: string | null;
 }
 
 export interface InvestmentTransactionRow {

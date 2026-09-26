@@ -13,6 +13,7 @@ import {
   getNetWorthChartHistory,
   getNetWorthPage,
   rebuildBankDepositHistoryRange,
+  refreshBankDepositHistory,
 } from "./service";
 
 const netWorthPageCursorSchema = z.object({
@@ -78,4 +79,18 @@ function registerNetWorthRoutes(api: Hono<AppBindings>) {
       });
     },
   );
+
+  // 由交易明細推算第一筆真實快照之前的每日存款餘額，並把存款歷史重算到今天。
+  // 回應只含帳戶末四碼、日期、天數與方法，不含金額。
+  api.post("/history/net-worth/backfill", async (c) => {
+    const { backfill, history } = await refreshBankDepositHistory(c.env.DB);
+    return c.json({
+      success: backfill !== null,
+      history,
+      derivedSnapshots: backfill?.derivedSnapshots ?? 0,
+      accounts: (backfill?.accounts ?? []).map(
+        ({ accountId: _accountId, ...report }) => report,
+      ),
+    });
+  });
 }

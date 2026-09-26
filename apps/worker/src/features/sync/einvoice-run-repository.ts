@@ -842,7 +842,8 @@ export async function promoteEinvoiceRunRecords(
       .prepare(
         `INSERT INTO invoices (
            id, connector_id, source_id, invoice_number, invoice_date,
-           seller_name, amount, raw_payload, created_at, updated_at
+           seller_name, amount, carrier_type, carrier_suffix, raw_payload,
+           created_at, updated_at
          )
          SELECT
            'einvoice:' || source.invoice_source_id,
@@ -852,6 +853,8 @@ export async function promoteEinvoiceRunRecords(
            json_extract(source.normalized_invoice_json, '$.invoiceDate'),
            json_extract(source.normalized_invoice_json, '$.sellerName'),
            CAST(json_extract(source.normalized_invoice_json, '$.amount') AS INTEGER),
+           NULLIF(substr(COALESCE(json_extract(source.normalized_invoice_json, '$.carrierType'), ''), 1, 16), ''),
+           NULLIF(substr(COALESCE(json_extract(source.normalized_invoice_json, '$.carrierSuffix'), ''), -4), ''),
            ${invoiceRaw},
            ?,
            ?
@@ -865,6 +868,8 @@ export async function promoteEinvoiceRunRecords(
              THEN invoices.invoice_date ELSE excluded.invoice_date END,
            seller_name = excluded.seller_name,
            amount = excluded.amount,
+           carrier_type = COALESCE(excluded.carrier_type, invoices.carrier_type),
+           carrier_suffix = COALESCE(excluded.carrier_suffix, invoices.carrier_suffix),
            raw_payload = excluded.raw_payload,
            updated_at = excluded.updated_at`,
       )

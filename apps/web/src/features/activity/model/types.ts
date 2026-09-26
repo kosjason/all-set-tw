@@ -1,22 +1,6 @@
 import type { ActivityItem } from "@taiwan-fin-hub/core";
 export type { ActivityItem } from "@taiwan-fin-hub/core";
 
-export interface PendingCategoryUpdate {
-  item: ActivityItem;
-  categoryId: string;
-  addRule: boolean;
-  pattern: string;
-  operator: "contains" | "equals";
-}
-
-export interface CategoryUpdateInput {
-  transactionId: string;
-  categoryId: string;
-  addRule: boolean;
-  pattern: string;
-  operator: "contains" | "equals";
-}
-
 export interface PendingCalculationUpdate {
   item: ActivityItem;
   categoryId: string;
