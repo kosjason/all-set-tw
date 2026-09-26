@@ -1,9 +1,8 @@
 -- 使用者回饋「分類沒有捐款？」：系統分類「捐款」（donation）排在「其他」之前。
--- 全新套用時 0067 已建立 donation 並把舊的 social.donations 對到它，這裡是冪等的補齊，
--- 讓「已套用舊版 0067（捐款先併入 misc）」與「全新套用」得到相同的分類表：
+-- 0067 已建立 donation 並把舊的 social.donations 對到它，這裡只是冪等的補齊：
 -- 1. 與「捐款」撞名（NOCASE）的自訂分類先加註「（自訂）」並留下紀錄；
--- 2. 建立或更新 donation、把 misc 排到最後；
--- 3. 已記住的慈善機構商家規則若歸在「其他」，改為「捐款」（使用者改過的其他分類不動）。
+-- 2. 建立或更新 donation、把 misc 排到最後。
+-- 不改動任何商家規則或覆寫：使用者刻意設為「其他」的商家（包括慈善機構）維持不變。
 
 CREATE TABLE _0069_renamed_categories (
   id TEXT NOT NULL PRIMARY KEY,
@@ -59,11 +58,3 @@ UPDATE classification_categories
 SET sort_order = 9, updated_at = '2026-09-27T00:00:00.000Z'
 WHERE id = 'misc';
 
--- 已記住的慈善機構商家規則原本歸在「其他」，改為「捐款」；使用者改過的其他分類不動。
-UPDATE merchant_aliases
-SET category_id = 'donation', updated_at = '2026-09-27T00:00:00.000Z'
-WHERE category_id = 'misc'
-  AND (merchant_key LIKE '%基金會%' OR merchant_key LIKE '%捐款%'
-    OR merchant_key LIKE '%慈濟%' OR merchant_key LIKE '%家扶%'
-    OR merchant_key LIKE '%世界展望會%' OR merchant_key LIKE '%紅十字%'
-    OR merchant_key LIKE '%donation%');

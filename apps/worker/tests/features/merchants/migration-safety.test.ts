@@ -5,17 +5,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 // 分類遷移（0055、0067、0069）不得遺失使用者資料：自訂分類、系統規則的使用者調整、
 // 舊捐款分類的引用。全部為合成資料。
+// 支援的升級路徑是從已發布的 0048 起全新套用；0049–0069 未曾發布，只有維護者本機跑過
+// 舊版 0055／0067／0069（另行手動修補），因此不測試「舊版 0067 已套用」的路徑。
 const migrationsDirectory = fileURLToPath(
   new URL("../../../../../packages/db/migrations/", import.meta.url),
-);
-const legacy0067 = readFileSync(
-  fileURLToPath(
-    new URL(
-      "./fixtures/legacy-0067-simplify-spending-categories.sql",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
 );
 const migrationFiles = readdirSync(migrationsDirectory)
   .filter((name) => name.endsWith(".sql"))
@@ -157,13 +150,13 @@ describe("0055–0069 keep user categories", () => {
     expect(all(database, "PRAGMA foreign_key_check")).toEqual([]);
   });
 
-  it("renames a custom 捐款 created after the legacy 0067 in 0069", () => {
+  it("renames a custom 捐款 in 0069 when the name is not held by donation", () => {
+    // 全新路徑下 0067 已建立 donation，自訂分類不可能叫「捐款」；這裡人為讓出名稱，
+    // 驗證 0069 的防禦性撞名處理。
     const database = createDatabase();
-    migrate(database, (name) => name < "0067");
-    // 維護者本機的路徑：已套用舊版 0067（捐款併入 misc、沒有 donation 分類）。
-    database.exec(legacy0067);
-    migrate(database, (name) => name === "0068" || name.startsWith("0068_"));
+    migrate(database, (name) => name < "0069");
     database.exec(`
+      UPDATE classification_categories SET label = '捐款（暫）' WHERE id = 'donation';
       INSERT INTO classification_categories (id, label, sort_order, is_system, created_at, updated_at)
         VALUES ('user:gift', '捐款', 300, 0, '${now}', '${now}');
     `);
@@ -300,6 +293,68 @@ describe("0055 keeps user adjustments to system rules", () => {
   });
 });
 
+describe("0055 system rule defaults", () => {
+  it("covers every system rule id that existed before 0055", () => {
+    const database = createDatabase();
+    migrate(database, (name) => name < "0055");
+    const legacyIds = all(
+      database,
+      "SELECT id FROM classification_rules WHERE is_system = 1 ORDER BY id",
+    ).map((row) => String(row.id));
+    const sql = readFileSync(
+      `${migrationsDirectory}/0055_spending_categories.sql`,
+      "utf8",
+    );
+    const start = sql.indexOf("INSERT INTO _0055_rule_defaults");
+    const block = sql.slice(start, sql.indexOf(";", start));
+    const defaultIds = new Set(
+      [...block.matchAll(/\('(system:[^']+)',/g)].map((match) => match[1]),
+    );
+    expect(legacyIds.length).toBeGreaterThan(0);
+    expect(legacyIds.filter((id) => !defaultIds.has(id))).toEqual([]);
+  });
+
+  it("carries a priority-only change of a split or removed rule to every successor", () => {
+    const database = legacyDatabase();
+    database.exec(`
+      -- 被拆分（同 id 仍存在）：同 id 與拆出的規則都沿用。
+      UPDATE classification_rules SET priority = 42 WHERE id = 'system:shared:transport-keywords';
+      -- 被移除：所有接替規則沿用。
+      UPDATE classification_rules SET priority = 130 WHERE id = 'system:bank:food-keywords';
+    `);
+    migrate(database, (name) => name >= "0055");
+    const priorities = Object.fromEntries(
+      all(
+        database,
+        "SELECT id, priority FROM classification_rules WHERE is_system = 1",
+      ).map((row) => [row.id, row.priority]),
+    );
+    expect(priorities).toMatchObject({
+      "system:shared:transport-keywords": 42,
+      "system:shared:transit-keywords": 42,
+      "system:shared:ride-keywords": 42,
+      "system:shared:car-keywords": 42,
+      "system:shared:drinks-keywords": 130,
+      "system:shared:dining-keywords": 130,
+      // 沒有調整的規則維持新版預設。
+      "system:shared:grocery-keywords": 91,
+    });
+    // pattern 沒改過：不轉成使用者規則、不留 pattern 紀錄。
+    expect(
+      all(
+        database,
+        "SELECT id FROM classification_rules WHERE id LIKE 'user:legacy-%'",
+      ),
+    ).toEqual([]);
+    expect(
+      all(
+        database,
+        "SELECT id FROM classification_migration_notes WHERE subject_type = 'rule'",
+      ),
+    ).toEqual([]);
+  });
+});
+
 describe("0067 moves the legacy donation category to donation", () => {
   it("lands overrides, rules, aliases and notes of social.donations on donation", () => {
     const database = legacyDatabase();
@@ -343,65 +398,59 @@ describe("0067 moves the legacy donation category to donation", () => {
     expect(all(database, "PRAGMA foreign_key_check")).toEqual([]);
   });
 
-  it("produces the same result whether the legacy 0067 already ran or not", () => {
-    // 兩條路徑共用 0067 之前的資料：自訂分類、慈善商家規則（歸在其他與紅包禮金）等。
-    // 不含 social.donations 的引用：舊版 0067 已把它們併入 misc，無從辨識。
-    const build = (use0067: (database: DatabaseSync) => void) => {
-      const database = legacyDatabase();
-      migrate(database, (name) => name >= "0055" && name < "0067");
-      database.exec(`
-        INSERT INTO classification_categories (id, label, sort_order, is_system, created_at, updated_at)
-          VALUES ('user:care', '醫療保險', 300, 0, '${now}', '${now}');
-        INSERT INTO merchant_aliases (merchant_key, category_id, created_at, updated_at) VALUES
-          ('name:家扶基金會', 'misc', '${now}', '${now}'),
-          ('name:慈濟', 'social.gifts', '${now}', '${now}'),
-          ('name:紅包店', 'social.gifts', '${now}', '${now}'),
-          ('name:測試基金會', 'health.medical', '${now}', '${now}');
-      `);
-      insertTransaction(database, "t-gift");
-      insertOverride(database, "t-gift", "social.gifts");
-      use0067(database);
-      migrate(database, (name) => name >= "0068");
-      return database;
-    };
-    const legacyPath = build((database) => database.exec(legacy0067));
-    const freshPath = build((database) =>
-      migrate(database, (name) => name.startsWith("0067_")),
-    );
+  it("0069 is idempotent after 0067 and keeps merchant rules set to 其他", () => {
+    // 只驗證全新路徑：舊版 0067 已套用的路徑不是支援情境（見檔案開頭說明）。
+    const database = legacyDatabase();
+    migrate(database, (name) => name >= "0055" && name < "0067");
+    database.exec(`
+      INSERT INTO classification_categories (id, label, sort_order, is_system, created_at, updated_at)
+        VALUES ('user:care', '醫療保險', 300, 0, '${now}', '${now}');
+      INSERT INTO merchant_aliases (merchant_key, category_id, created_at, updated_at) VALUES
+        ('name:家扶基金會', 'misc', '${now}', '${now}'),
+        ('name:慈濟', 'social.gifts', '${now}', '${now}'),
+        ('name:紅包店', 'social.gifts', '${now}', '${now}'),
+        ('name:測試基金會', 'health.medical', '${now}', '${now}');
+    `);
+    insertTransaction(database, "t-gift");
+    insertOverride(database, "t-gift", "social.gifts");
+    migrate(database, (name) => name >= "0067" && name < "0069");
 
-    for (const sql of [
+    const snapshots = [
       "SELECT id, label, sort_order, is_system, parent_id, created_at, updated_at FROM classification_categories ORDER BY id",
-      "SELECT merchant_key, category_id, economic_role FROM merchant_aliases ORDER BY merchant_key",
+      "SELECT merchant_key, category_id, economic_role, updated_at FROM merchant_aliases ORDER BY merchant_key",
       "SELECT id, target_id, category_id FROM classification_overrides ORDER BY id",
-      "SELECT id, category_id, economic_role, pattern, priority, enabled, is_system FROM classification_rules ORDER BY id",
-    ])
-      expect(all(freshPath, sql)).toEqual(all(legacyPath, sql));
+      "SELECT id, category_id, economic_role, pattern, priority, enabled FROM classification_rules ORDER BY id",
+      "SELECT * FROM classification_migration_notes ORDER BY id",
+    ];
+    const before = snapshots.map((sql) => all(database, sql));
+    migrate(database, (name) => name.startsWith("0069_"));
+    // 0067 已完成 0069 的所有工作，0069 不改變任何資料。
+    expect(snapshots.map((sql) => all(database, sql))).toEqual(before);
 
+    // 使用者設為「其他」的慈善商家規則不被改動。
     expect(
       all(
-        freshPath,
+        database,
         "SELECT merchant_key, category_id FROM merchant_aliases ORDER BY merchant_key",
       ),
     ).toEqual([
-      { merchant_key: "name:家扶基金會", category_id: "donation" },
-      { merchant_key: "name:慈濟", category_id: "donation" },
+      { merchant_key: "name:家扶基金會", category_id: "misc" },
+      { merchant_key: "name:慈濟", category_id: "misc" },
       { merchant_key: "name:測試基金會", category_id: "health" },
       { merchant_key: "name:紅包店", category_id: "misc" },
     ]);
     expect(
       all(
-        freshPath,
+        database,
         "SELECT id, label FROM classification_categories WHERE id = 'user:care'",
       ),
     ).toEqual([{ id: "user:care", label: "醫療保險（自訂）" }]);
-    // 新版 0067 為改名留下紀錄（舊版 0067 沒有）。
     expect(
       all(
-        freshPath,
+        database,
         "SELECT id FROM classification_migration_notes WHERE subject_id = 'user:care'",
       ),
     ).toEqual([{ id: "category:0067:user:care" }]);
-    expect(all(freshPath, "PRAGMA foreign_key_check")).toEqual([]);
-    expect(all(legacyPath, "PRAGMA foreign_key_check")).toEqual([]);
+    expect(all(database, "PRAGMA foreign_key_check")).toEqual([]);
   });
 });

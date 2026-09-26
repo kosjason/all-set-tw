@@ -22,7 +22,7 @@ function migrate(database: DatabaseSync, include: (name: string) => boolean) {
 }
 
 describe("0069 donation category", () => {
-  it("adds 捐款 before 其他 and moves charity merchant rules only", () => {
+  it("keeps 捐款 before 其他 without touching merchant rules", () => {
     const database = new DatabaseSync(":memory:");
     databases.push(database);
     migrate(database, (name) => name < migrationFile);
@@ -51,8 +51,8 @@ describe("0069 donation category", () => {
         )
         .all(),
     ).toEqual([
-      { merchant_key: "name:家扶基金會qaichu", category_id: "donation" },
-      // 使用者改成其他分類的不動。
+      // 使用者選「其他」的慈善商家規則不被改成捐款。
+      { merchant_key: "name:家扶基金會qaichu", category_id: "misc" },
       { merchant_key: "name:測試基金會", category_id: "health" },
       { merchant_key: "name:紅包店", category_id: "misc" },
     ]);

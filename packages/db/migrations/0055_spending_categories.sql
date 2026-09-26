@@ -481,6 +481,33 @@ WHERE is_system = 1
     )
   );
 
+-- 被拆分或移除的舊規則只改了優先序（pattern 仍是上游預設）時，使用者的優先序沿用到
+-- 所有接替規則（同 id 者已在上面處理）。pattern 被改過者轉成使用者規則並帶原優先序，
+-- 接替規則維持新版預設。
+UPDATE classification_rules
+SET priority = (
+  SELECT old.priority
+  FROM _0055_rule_successors successor
+  JOIN _0055_old_system_rules old ON old.id = successor.old_id
+  WHERE successor.new_id = classification_rules.id
+    AND successor.old_id <> successor.new_id
+)
+WHERE is_system = 1
+  AND id IN (
+    SELECT successor.new_id
+    FROM _0055_rule_successors successor
+    JOIN _0055_old_system_rules old ON old.id = successor.old_id
+    WHERE successor.old_id <> successor.new_id
+      AND EXISTS (
+        SELECT 1 FROM _0055_rule_defaults d
+        WHERE d.id = old.id AND d.pattern = old.pattern
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM _0055_rule_defaults d
+        WHERE d.id = old.id AND d.priority = old.priority
+      )
+  );
+
 -- pattern：同 id 且使用者改過者保留使用者的 pattern（連同 field／operator），
 -- 並記錄未套用的新版預設，使用者可自行決定是否改用。
 CREATE TABLE _0055_custom_patterns AS

@@ -610,8 +610,8 @@ id → 消費淨額，未分類為 `other`、使用者自訂分類歸入 `misc`�
   `entertainment`、`lifestyle.education`→`misc`、`health.*`→`health`、`social.donations`→`donation`、
   `social`／`social.gifts`、`fees*`、`misc.*`→`misc`，
   0055 以前遺留的 `education`／`fee`／`tax`→`misc`、`software`→`tech`、`insurance`→`health`、`utilities`→`housing`。
-  `donation` 在 0067 建立（舊捐款引用直接落在 `donation`）；0069 為冪等補齊（撞名處理、`misc` 排序、
-  慈善機構商家規則由 `misc` 改為 `donation`），因此已套用舊版 0067 的資料庫與全新套用得到相同的分類表。
+  `donation` 在 0067 建立（舊捐款引用直接落在 `donation`）；0069 只做冪等補齊（與「捐款」撞名的自訂分類
+  改名並留紀錄、`donation` upsert、`misc` 排序），不改動任何商家規則或覆寫，使用者選「其他」的商家維持不變。
   涵蓋 `classification_overrides`、`classification_rules`（含系統規則）、`merchant_aliases` 與
   `classification_migration_notes.new_category_id`，再刪除舊分類列。
   summary 的 `spendingBySubcategory` 保留（指定的分類 id → 消費淨額），系統分類沒有子類後與
@@ -731,7 +731,8 @@ TradingView、Trend Micro／趨勢科技 → `tech`；LINE禮物 → `misc`（�
 中信帳單的已繳金額取自「下一期」摘要的 `pmtAmt`（本期間繳掉的上期帳單），應繳以 `currPmtAmt` 優先；
 0064 把舊版解析器寫入的資料位移成相同結果（每期 `paid_amount` ＝ 同帳戶同幣別下一期的舊值，
 最新一期為 NULL，`statement_amount` 以 raw 的 `currPmtAmt` 修正），0061 拆分帳戶時把指向舊
-`credit:ctbc:<幣別>` 的 `canonical_account_id` 改指同幣別摘要帳戶。
+`credit:ctbc:<幣別>` 的 `canonical_account_id` 改指同幣別摘要帳戶（防禦性退回台幣摘要帳戶，
+都不存在時維持原值並保留舊帳戶）。
 
 `is_paid = 0` 不視為未繳證據（國泰最新一期以「本期不需繳款」表示）。未出帳為上期結帳日隔天起、
 信用卡帳戶上 `economicRole = spending` 的交易淨額（退款沖減、含待入帳），已入帳交易以入帳日

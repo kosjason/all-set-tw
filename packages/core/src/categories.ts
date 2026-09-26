@@ -7,8 +7,8 @@
  * transport.*、lifestyle.*、social.*、fees.* 等）併成下列 8 類：
  * 餐飲、交通、居住、購物、3C 數位、娛樂、醫療保險、其他（人情、稅、手續費、學習等），
  * 並依使用者要求另加「捐款」（定期捐款不再混在其他）。「捐款」在 0067 建立，舊的
- * social.donations 直接對到 donation；0069 為冪等補齊（撞名的自訂分類加註、慈善機構
- * 商家規則由「其他」改為「捐款」）。使用者自訂分類（user:*）保留，不併入系統分類。
+ * social.donations 直接對到 donation；0069 為冪等補齊（撞名的自訂分類加註、donation
+ * upsert、misc 排序），不改動商家規則。使用者自訂分類（user:*）保留，不併入系統分類。
  *
  * id 是穩定契約：資料庫 `classification_categories`、覆寫、規則與商家規則都以
  * 這些 id 參照，改名只改 label，不改 id。
