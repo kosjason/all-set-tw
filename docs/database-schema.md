@@ -11,7 +11,7 @@
 - Tables：36
 - Explicit indexes：45
 - Other objects：0
-- Migrations：62
+- Migrations：63
 
 ## Tables
 
@@ -1979,6 +1979,7 @@ Migration 是 schema 演進的 source of truth；若要了解某欄位的變更�
 - [`0047_sync_activity_details.sql`](../packages/db/migrations/0047_sync_activity_details.sql)
 - [`0048_kgibank_sync_job.sql`](../packages/db/migrations/0048_kgibank_sync_job.sql)
 - [`0049_cathay_credit_card_repairs.sql`](../packages/db/migrations/0049_cathay_credit_card_repairs.sql)
+- [`0049_megabank_sync_job.sql`](../packages/db/migrations/0049_megabank_sync_job.sql)
 - [`0050_ewallet_topup_transfer_rule.sql`](../packages/db/migrations/0050_ewallet_topup_transfer_rule.sql)
 - [`0051_bank_transaction_counterparty_account.sql`](../packages/db/migrations/0051_bank_transaction_counterparty_account.sql)
 - [`0052_own_accounts.sql`](../packages/db/migrations/0052_own_accounts.sql)

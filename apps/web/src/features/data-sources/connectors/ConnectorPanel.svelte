@@ -38,6 +38,7 @@
   import { formatDateTime } from "@/shared/format/financial";
   import { getSyncWarning } from "@/data/connectors/sync-status";
   import { browserCaptchaFailure } from "./browser-captcha";
+  import { shouldEnableScheduleAfterFirstSync } from "./schedule-after-sync";
 
   let {
     api,
@@ -100,7 +101,8 @@
       connectorId === "obank" ||
       connectorId === "firstbank" ||
       connectorId === "hncb" ||
-      connectorId === "kgibank",
+      connectorId === "kgibank" ||
+      connectorId === "megabank",
   );
   const browserBankSessionAvailable = $derived(
     browserBank && Boolean($settings.data?.sessionAvailable),
@@ -213,6 +215,9 @@
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.syncJobs }),
   });
   const sync = createMutation({
+    onMutate: () => ({
+      enableSchedule: shouldEnableScheduleAfterFirstSync(connectorId, job),
+    }),
     mutationFn: async (target: SyncTarget) => {
       if (demoMode) throw new Error("Demo site 已停用連接器同步。");
       const path =
@@ -237,7 +242,7 @@
         throw errorValue;
       }
     },
-    onSuccess: () => {
+    onSuccess: (_data, _target, context) => {
       error = "";
       if (connectorId === "cathaybk") {
         resetCathayVerification();
@@ -260,7 +265,7 @@
       invalidateLatestSyncReport();
       qc.invalidateQueries({ queryKey: queryKeys.syncJobs });
       qc.invalidateQueries({ queryKey: queryKeys.summary });
-      enableScheduleAfterSuccessfulSync();
+      enableScheduleAfterSuccessfulSync(context.enableSchedule);
       if (
         connectorId === "esun" ||
         connectorId === "cathaybk" ||
@@ -345,6 +350,9 @@
     onError: (e) => (error = e instanceof Error ? e.message : "取得驗證碼失敗"),
   });
   const verifyBrowserBank = createMutation({
+    onMutate: () => ({
+      enableSchedule: shouldEnableScheduleAfterFirstSync(connectorId, job),
+    }),
     mutationFn: () => {
       if (demoMode) throw new Error("Demo site 已停用連接器同步。");
       const pattern =
@@ -359,7 +367,7 @@
         captcha: bankCaptcha.trim(),
       });
     },
-    onSuccess: () => {
+    onSuccess: (_data, _variables, context) => {
       error = "";
       bankCaptcha = "";
       bankCaptchaImage = "";
@@ -371,7 +379,7 @@
       invalidateLatestSyncReport();
       qc.invalidateQueries({ queryKey: queryKeys.bank });
       qc.invalidateQueries({ queryKey: queryKeys.bills });
-      enableScheduleAfterSuccessfulSync();
+      enableScheduleAfterSuccessfulSync(context.enableSchedule);
     },
     onError: (e) => {
       const failure = browserCaptchaFailure(e);
@@ -550,14 +558,8 @@
     $sync.mutate("default");
   }
 
-  function enableScheduleAfterSuccessfulSync() {
-    if (
-      (connectorId === "sinopac" ||
-        connectorId === "taishin" ||
-        connectorId === "obank") &&
-      job &&
-      !job.enabled
-    ) {
+  function enableScheduleAfterSuccessfulSync(eligible: boolean) {
+    if (eligible && job && !job.enabled) {
       $updateJob.mutate({ enabled: true });
     }
   }
@@ -872,7 +874,9 @@
               ? "第一銀行"
               : connectorId === "kgibank"
                 ? "凱基"
-                : "永豐"}
+                : connectorId === "megabank"
+                  ? "兆豐"
+                  : "永豐"}
       bind:captcha={bankCaptcha}
       captchaImage={bankCaptchaImage}
       digitCount={bankCaptchaDigitCount}
@@ -1370,6 +1374,8 @@
               ? "排程同步不會在背景寄送驗證碼；登入失效時會標記為需要重新驗證。"
               : connectorId === "cathaybk"
                 ? "首次驗證會加入信任裝置；信任失效時需在手動同步中重新取得驗證碼。"
-                : "輸入完帳號密碼後，請先按「儲存設定」，再按「同步」。"}
+                : connectorId === "megabank"
+                  ? "兆豐同步直接使用 App API，以一般帳密登入並辨識五位數圖形驗證碼；也可改用人工輸入。"
+                  : "輸入完帳號密碼後，請先按「儲存設定」，再按「同步」。"}
   </p>
 </Card>

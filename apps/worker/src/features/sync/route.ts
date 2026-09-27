@@ -7,6 +7,9 @@ import {
   SkbankProtocolError,
   TdccConnectionError,
   TdccVerificationRequiredError,
+  MegabankConnectionError,
+  MegabankProtocolError,
+  MegabankVerificationRequiredError,
 } from "@taiwan-fin-hub/connectors";
 import { zValidator } from "@hono/zod-validator";
 import { type Context, type Hono } from "hono";
@@ -131,6 +134,13 @@ const ctbcImportBodySchema = z
 const cathaySyncBodySchema = z.object({
   otp: z.string().min(1).optional(),
   otpChannel: z.enum(["email", "sms"]).optional(),
+});
+
+const megabankSyncBodySchema = z.object({
+  captcha: z
+    .string()
+    .regex(/^\d{5}$/)
+    .optional(),
 });
 
 export const syncRoutes = honoFactory.createApp();
@@ -602,6 +612,57 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       );
     },
   );
+
+  api.post("/connectors/megabank/captcha", async (c) => {
+    try {
+      return c.json(await prepareConnectorChallenge(c.env, "megabank"));
+    } catch (error) {
+      if (error instanceof SyncAlreadyRunningError) {
+        return jsonError(
+          "SYNC_ALREADY_RUNNING",
+          "兆豐銀行已有驗證或同步作業正在進行。",
+          409,
+        );
+      }
+      if (
+        error instanceof NeedsUserActionError ||
+        error instanceof MegabankVerificationRequiredError
+      ) {
+        return jsonError("USER_ACTION_REQUIRED", error.message, 400);
+      }
+      if (
+        error instanceof MegabankConnectionError ||
+        error instanceof MegabankProtocolError
+      ) {
+        return jsonError("MEGABANK_CONNECTION_FAILED", error.message, 502);
+      }
+      return jsonError("MEGABANK_CAPTCHA_FAILED", safeErrorMessage(error), 502);
+    }
+  });
+
+  api.post(
+    "/connectors/megabank/sync",
+    zValidator(
+      "json",
+      megabankSyncBodySchema,
+      validationHook("INVALID_REQUEST", "兆豐銀行同步選項格式錯誤。"),
+    ),
+    async (c) => {
+      const overrides = c.req.valid("json");
+      return syncRouteResponse(
+        c,
+        withManualSyncLock(c.env, "megabank", SYNC_SCOPE_ALL, () =>
+          runConnectorSync(
+            c.env,
+            "megabank",
+            "manual",
+            SYNC_SCOPE_ALL,
+            overrides,
+          ),
+        ),
+      );
+    },
+  );
 }
 
 async function queuedTdccSyncResponse(
@@ -786,6 +847,16 @@ async function syncRouteResponse(
       const response = jsonError("BROWSER_BUSY", safeErrorMessage(error), 429);
       response.headers.set("Retry-After", String(error.retryAfterSeconds));
       return response;
+    }
+    if (
+      error instanceof MegabankConnectionError ||
+      error instanceof MegabankProtocolError
+    ) {
+      return jsonError(
+        "MEGABANK_CONNECTION_FAILED",
+        safeErrorMessage(error),
+        502,
+      );
     }
     return jsonError("SYNC_FAILED", safeErrorMessage(error), 500);
   }
