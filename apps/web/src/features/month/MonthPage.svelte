@@ -5,6 +5,7 @@
   收支數字一律來自 summary API。
 -->
 <script lang="ts">
+  import Card from "@/shared/ui/Card.svelte";
   import { ChevronLeft, ChevronRight, CreditCard, Inbox } from "@lucide/svelte";
   import { currentActivityMonthKey } from "@taiwan-fin-hub/core";
   import { createQuery, keepPreviousData } from "@tanstack/svelte-query";
@@ -177,7 +178,7 @@
   }
 </script>
 
-<div class="grid min-w-0 gap-6 pt-3 md:gap-8 md:pt-0">
+<div class="grid min-w-0 gap-4 pt-3 md:pt-0 xl:gap-5">
   <div class="flex min-w-0 flex-wrap items-center justify-between gap-3">
     <div class="flex items-center gap-1" role="group" aria-label="切換月份">
       <button
@@ -238,100 +239,145 @@
     </button>
   {/if}
 
-  <CashFlowSummary
-    size="lg"
-    title={`${monthLabel(selectedMonth)}收支`}
-    note={summaryUnavailable
-      ? $summaries.isError
-        ? "月收支摘要無法載入"
-        : "正在計算收支"
-      : undefined}
-    equation={activitySummaryEquation(summary)}
-    unavailable={summaryUnavailable}
-    excluded={activitySummaryExcludedParts(summary)}
-    incompleteReasons={activitySummaryIncompleteLabels(summary)}
-  />
+  <!-- 上：本月收支（左）＋淨資產、卡費提醒（右） -->
+  <section class="grid min-w-0 gap-4 xl:grid-cols-12 xl:gap-5">
+    <Card class="min-w-0 p-4 md:p-5 xl:col-span-8">
+      <CashFlowSummary
+        size="lg"
+        title={`${monthLabel(selectedMonth)}收支`}
+        note={summaryUnavailable
+          ? $summaries.isError
+            ? "月收支摘要無法載入"
+            : "正在計算收支"
+          : undefined}
+        equation={activitySummaryEquation(summary)}
+        unavailable={summaryUnavailable}
+        excluded={activitySummaryExcludedParts(summary)}
+        incompleteReasons={activitySummaryIncompleteLabels(summary)}
+      />
+    </Card>
 
-  {#if reminder}
-    <button
-      type="button"
-      data-testid="month-card-due"
-      class="flex min-h-14 min-w-0 items-center gap-3 rounded-xl border border-coral/30 bg-coral/5 px-4 text-left text-sm transition hover:bg-coral/10"
-      onclick={() => navigate("cards")}
-    >
-      <CreditCard class="size-5 shrink-0 text-coral" />
-      <span class="min-w-0 flex-1">
-        <span class="block font-semibold"
-          >{reminder.name} 卡費{cardDueLabel(reminder.daysUntilDue)}</span
-        >
-        <span class="block text-caption text-subtle"
-          >截止日 {reminder.paymentDueDate}{reminder.remainingAmount != null
-            ? ` · 尚未繳 ${formatCurrency(reminder.remainingAmount)}`
-            : ""}</span
-        >
-      </span>
-      <ChevronRight class="size-4 shrink-0 text-subtle" />
-    </button>
-  {/if}
-
-  <div
-    class="grid min-w-0 gap-6 border-t border-ink/10 pt-5 lg:grid-cols-2 lg:gap-10"
-  >
-    <SpendingCategoryRanking
-      {ranking}
-      total={summary?.spending ?? 0}
-      unavailable={summaryUnavailable}
-      onSelect={openCategory}
-    />
-    <MonthTrend
-      points={trend}
-      {selectedMonth}
-      unavailable={!$summaries.data}
-      onSelectMonth={(month) => (selectedMonth = month)}
-    />
-  </div>
-
-  <div class="min-w-0 border-t border-ink/10 pt-5">
-    <RecentTransactions
-      items={recent}
-      loading={$monthItems.isPending}
-      failed={$monthItems.isError}
-      onOpenAll={() => openTransactions()}
-    />
-  </div>
-
-  <div class="grid min-w-0 gap-2 border-t border-ink/10 pt-5">
-    <button
-      type="button"
-      data-testid="month-net-worth"
-      class="group flex min-h-11 min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1 rounded-sm text-left hover:bg-ink/3"
-      onclick={() => navigate("assets")}
-    >
-      <span class="text-sm font-semibold">淨資產</span>
-      <span class="text-lg font-semibold tabular-nums">
-        {netWorthReady ? formatCurrency(assetSummary.netWorth) : "—"}
-      </span>
-      {#if netWorthChange}
-        <span
-          class={`text-caption tabular-nums ${netWorthChange.changeValue < 0 ? "text-coral" : "text-moss"}`}
-          >較上月 {netWorthChange.changeValue >= 0 ? "+" : ""}{formatCurrency(
-            netWorthChange.changeValue,
-          )}</span
-        >
-      {/if}
-      <span class="ml-auto text-sm font-semibold text-steel">查看資產 →</span>
-    </button>
-    {#if dedupe}
-      <p class="text-caption text-subtle" data-testid="month-dedupe">
-        {dedupe.merged} 張發票已併入刷卡、{dedupe.unmatched} 張未對應{dedupe.awaitingCard
-          ? `、${dedupe.awaitingCard} 張等待刷卡入帳`
-          : ""}{dedupe.ambiguous ? `、${dedupe.ambiguous} 張待確認` : ""}
+    <div class="grid min-w-0 content-start gap-4 xl:col-span-4 xl:gap-5">
+      <Card class="min-w-0 border-steel/20 bg-steel/5">
         <button
           type="button"
-          class="ml-1 font-semibold text-steel"
-          onclick={() => openTransactions({ tab: "invoice" })}>查看發票</button
+          data-testid="month-net-worth"
+          class="grid w-full min-w-0 gap-1 rounded-xl p-4 text-left transition hover:bg-steel/5 md:p-5"
+          onclick={() => navigate("assets")}
         >
-      </p>
+          <span class="flex items-center justify-between gap-3">
+            <span class="text-caption font-medium text-subtle">淨資產</span>
+            <span class="text-caption font-semibold text-steel">查看資產 →</span
+            >
+          </span>
+          <span
+            class="break-all text-[clamp(1.5rem,4vw,2rem)] leading-tight font-semibold tracking-tight tabular-nums"
+          >
+            {netWorthReady ? formatCurrency(assetSummary.netWorth) : "—"}
+          </span>
+          {#if netWorthChange}
+            <span
+              class={`text-caption tabular-nums ${netWorthChange.changeValue < 0 ? "text-coral" : "text-moss"}`}
+              >較上月 {netWorthChange.changeValue >= 0
+                ? "+"
+                : ""}{formatCurrency(netWorthChange.changeValue)}</span
+            >
+          {/if}
+        </button>
+      </Card>
+
+      {#if reminder}
+        <button
+          type="button"
+          data-testid="month-card-due"
+          class="flex min-h-14 min-w-0 items-center gap-3 rounded-xl border border-coral/30 bg-coral/5 px-4 py-3 text-left text-sm shadow-xs transition hover:bg-coral/10"
+          onclick={() => navigate("cards")}
+        >
+          <CreditCard class="size-5 shrink-0 text-coral" />
+          <span class="min-w-0 flex-1">
+            <span class="block font-semibold"
+              >{reminder.name} 卡費{cardDueLabel(reminder.daysUntilDue)}</span
+            >
+            <span class="block text-caption text-subtle"
+              >截止日 {reminder.paymentDueDate}{reminder.remainingAmount != null
+                ? ` · 尚未繳 ${formatCurrency(reminder.remainingAmount)}`
+                : ""}</span
+            >
+          </span>
+          <ChevronRight class="size-4 shrink-0 text-subtle" />
+        </button>
+      {/if}
+    </div>
+  </section>
+
+  <!-- 中：消費分類（左）＋近 6 個月趨勢（右） -->
+  <section class="grid min-w-0 gap-4 xl:grid-cols-12 xl:gap-5">
+    <Card class="min-w-0 p-4 md:p-5 xl:col-span-5">
+      <SpendingCategoryRanking
+        {ranking}
+        total={summary?.spending ?? 0}
+        unavailable={summaryUnavailable}
+        onSelect={openCategory}
+      />
+    </Card>
+    <Card class="min-w-0 p-4 md:p-5 xl:col-span-7">
+      <MonthTrend
+        points={trend}
+        {selectedMonth}
+        unavailable={!$summaries.data}
+        onSelectMonth={(month) => (selectedMonth = month)}
+      />
+    </Card>
+  </section>
+
+  <!-- 下：最近交易（左）＋發票對應（右） -->
+  <section class="grid min-w-0 gap-4 xl:grid-cols-12 xl:gap-5">
+    <Card
+      class={`min-w-0 p-4 md:p-5 ${dedupe ? "xl:col-span-8" : "xl:col-span-12"}`}
+    >
+      <RecentTransactions
+        items={recent}
+        loading={$monthItems.isPending}
+        failed={$monthItems.isError}
+        onOpenAll={() => openTransactions()}
+      />
+    </Card>
+    {#if dedupe}
+      <Card class="min-w-0 content-start p-4 md:p-5 xl:col-span-4">
+        <div data-testid="month-dedupe">
+          <h2 class="font-semibold">發票對應</h2>
+          <div class="mt-3 grid gap-2 text-sm">
+            <p class="flex justify-between gap-3">
+              <span class="text-subtle">已併入刷卡</span>
+              <strong class="tabular-nums">{dedupe.merged} 張</strong>
+            </p>
+            <p class="flex justify-between gap-3">
+              <span class="text-subtle">未對應</span>
+              <strong class="tabular-nums">{dedupe.unmatched} 張</strong>
+            </p>
+            {#if dedupe.awaitingCard}
+              <p class="flex justify-between gap-3">
+                <span class="text-subtle">等待刷卡入帳</span>
+                <strong class="tabular-nums">{dedupe.awaitingCard} 張</strong>
+              </p>
+            {/if}
+            {#if dedupe.ambiguous}
+              <p class="flex justify-between gap-3">
+                <span class="text-subtle">待確認</span>
+                <strong class="tabular-nums text-coral"
+                  >{dedupe.ambiguous} 張</strong
+                >
+              </p>
+            {/if}
+          </div>
+          <button
+            type="button"
+            class="mt-4 text-sm font-semibold text-steel"
+            onclick={() => openTransactions({ tab: "invoice" })}
+            >查看發票 →</button
+          >
+        </div>
+      </Card>
     {/if}
-  </div>
+  </section>
 </div>
