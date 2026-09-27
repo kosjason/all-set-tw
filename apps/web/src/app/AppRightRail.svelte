@@ -21,17 +21,23 @@
   let {
     inboxItems,
     inboxLoading = false,
+    inboxError = false,
     dues,
     duesLoading = false,
+    duesError = false,
     sync,
+    syncError = false,
     navigate,
     onClose,
   }: {
     inboxItems: InboxItem[];
     inboxLoading?: boolean;
+    inboxError?: boolean;
     dues: UpcomingCardDue[];
     duesLoading?: boolean;
+    duesError?: boolean;
     sync?: SyncOverview;
+    syncError?: boolean;
     navigate: Navigate;
     /** 抽屜模式才有關閉鈕。 */
     onClose?: () => void;
@@ -90,11 +96,12 @@
 <div class="grid content-start gap-4 p-4" data-testid="right-rail">
   {#if onClose}
     <div class="flex items-center justify-between">
-      <p class="text-sm font-semibold">概況</p>
+      <h2 id="right-rail-title" class="text-sm font-semibold">概況</h2>
       <button
         type="button"
         class="flex size-9 items-center justify-center rounded-full hover:bg-ink/5"
         aria-label="關閉概況欄"
+        data-drawer-close
         onclick={onClose}><X class="size-4" /></button
       >
     </div>
@@ -105,7 +112,9 @@
     aria-label="待處理概況"
   >
     {@render sectionHeader("待處理", Inbox, () => go("inbox"))}
-    {#if inboxLoading}
+    {#if inboxError}
+      <p class="mt-3 text-caption text-coral">無法讀取待處理事項。</p>
+    {:else if inboxLoading}
       <p class="mt-3 text-caption text-subtle">讀取中…</p>
     {:else if shownInbox.length === 0}
       <p class="mt-3 text-caption text-subtle">目前沒有待處理的事項。</p>
@@ -148,10 +157,14 @@
     aria-label="近期卡費"
   >
     {@render sectionHeader("近期卡費", CreditCard, () => go("cards"))}
-    {#if duesLoading}
+    {#if duesError}
+      <p class="mt-3 text-caption text-coral">無法讀取卡費資料。</p>
+    {:else if duesLoading}
       <p class="mt-3 text-caption text-subtle">讀取中…</p>
     {:else if dues.length === 0}
-      <p class="mt-3 text-caption text-subtle">本期帳單都已繳清。</p>
+      <p class="mt-3 text-caption text-subtle">
+        目前沒有截止日已知的未繳帳單。
+      </p>
     {:else}
       <ul class="mt-3 grid gap-2.5">
         {#each dues as due (due.issuer)}
@@ -179,7 +192,9 @@
     aria-label="資料來源狀態"
   >
     {@render sectionHeader("資料來源", PlugZap, () => go("data-sources"))}
-    {#if !sync}
+    {#if syncError}
+      <p class="mt-3 text-caption text-coral">無法讀取同步狀態。</p>
+    {:else if !sync}
       <p class="mt-3 text-caption text-subtle">讀取中…</p>
     {:else if sync.sources.length === 0}
       <p class="mt-3 text-caption text-subtle">尚未設定資料來源。</p>

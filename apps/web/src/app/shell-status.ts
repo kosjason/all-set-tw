@@ -36,8 +36,9 @@ function latest(a: string | null, b: string | null) {
 }
 
 /**
- * 依連接器彙總同步工作（一個連接器可能有多個 scope），只計已設定的工作；已設定但排程全部關閉的
- * 來源標為 unscheduled（只能手動同步或匯入）。
+ * 依連接器彙總同步工作（一個連接器可能有多個 scope），只計已設定的工作。優先序：
+ * 執行中 > 上次失敗或需使用者處理 > 排程全部關閉（unscheduled，只能手動同步或匯入）>
+ * 從未成功 > 正常。
  */
 export function summarizeSyncJobs(jobs: SyncJobRow[]): SyncOverview {
   const byConnector = new Map<SyncJobRow["connectorId"], SyncJobRow[]>();
@@ -52,18 +53,20 @@ export function summarizeSyncJobs(jobs: SyncJobRow[]): SyncOverview {
       (value, job) => latest(value, job.lastSuccessAt),
       null,
     );
-    const health: SourceHealth = list.some(
-      (job) =>
-        job.lastStatus === "failed" || job.lastStatus === "needs_user_action",
-    )
-      ? "attention"
-      : list.some((job) => job.running)
-        ? "running"
-        : !lastSuccessAt
-          ? "never"
-          : list.some((job) => job.enabled)
+    const scheduled = list.some((job) => job.enabled);
+    const health: SourceHealth = list.some((job) => job.running)
+      ? "running"
+      : list.some(
+            (job) =>
+              job.lastStatus === "failed" ||
+              job.lastStatus === "needs_user_action",
+          )
+        ? "attention"
+        : !scheduled
+          ? "unscheduled"
+          : lastSuccessAt
             ? "ok"
-            : "unscheduled";
+            : "never";
     return {
       connectorId,
       name: connectorCatalog[connectorId]?.title ?? connectorId,
@@ -85,7 +88,7 @@ export function summarizeSyncJobs(jobs: SyncJobRow[]): SyncOverview {
     attention: sources.filter((source) => source.health === "attention").length,
     unscheduled: sources.filter((source) => source.health === "unscheduled")
       .length,
-    running: sources.some((source) => source.health === "running"),
+    running: jobs.some((job) => job.configured && job.running),
   };
 }
 

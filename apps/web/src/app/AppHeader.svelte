@@ -1,6 +1,6 @@
 <!--
-  頁首：頁面標題與說明（子頁顯示「← 返回…」）；md 以上有全域搜尋（Enter 開啟交易頁搜尋）與
-  同步狀態；xl 以上有待處理與右側概況欄開關。手機保留待處理與隱藏金額。
+  頁首：頁面標題與說明（子頁顯示「← 返回…」）；md 以上有全域搜尋（Enter 開啟交易頁搜尋），
+  lg 以上有同步狀態，xl 以上有右側概況欄開關；待處理與隱藏金額在所有寬度都顯示。
 -->
 <script lang="ts">
   import {
@@ -26,7 +26,9 @@
     onBack,
     inboxCounts,
     sync,
+    syncError = false,
     panelOpen,
+    panelIsDrawer = false,
     onTogglePanel,
     onToggleMoney,
     navigate,
@@ -39,7 +41,10 @@
     onBack?: () => void;
     inboxCounts: InboxCounts;
     sync?: SyncOverview;
+    syncError?: boolean;
     panelOpen: boolean;
+    /** 概況欄以抽屜呈現（非常駐）時，開關按鈕帶 aria-expanded。 */
+    panelIsDrawer?: boolean;
     onTogglePanel: () => void;
     onToggleMoney: () => void;
     navigate: Navigate;
@@ -59,6 +64,7 @@
   }
 
   const syncLabel = $derived.by(() => {
+    if (syncError) return "同步狀態無法讀取";
     if (!sync) return "讀取同步狀態…";
     if (sync.running) return "同步中";
     if (sync.attention) return `${sync.attention} 個來源需處理`;
@@ -67,7 +73,7 @@
       : "尚未同步";
   });
   const syncTone = $derived(
-    sync?.attention
+    syncError || sync?.attention
       ? "border-coral/30 bg-coral/5 text-coral"
       : "border-ink/10 bg-card text-subtle",
   );
@@ -139,8 +145,11 @@
       <button
         type="button"
         class={`hidden size-10 items-center justify-center rounded-full xl:flex ${panelOpen ? "bg-ink text-white" : "bg-secondary text-ink hover:bg-ink/10"}`}
+        data-panel-toggle
         aria-label={panelOpen ? "收起概況欄" : "開啟概況欄"}
-        aria-pressed={panelOpen}
+        aria-pressed={panelIsDrawer ? undefined : panelOpen}
+        aria-expanded={panelIsDrawer ? panelOpen : undefined}
+        aria-controls={panelIsDrawer ? "right-rail-drawer" : undefined}
         onclick={onTogglePanel}><PanelRight class="size-5" /></button
       >
 

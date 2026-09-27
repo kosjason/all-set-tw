@@ -65,6 +65,20 @@ describe("summarizeSyncJobs", () => {
     expect(overview.running).toBe(false);
   });
 
+  it("重試中的失敗來源顯示執行中；排程全關且從未成功的標為未排程", () => {
+    const overview = summarizeSyncJobs([
+      job({ connectorId: "esun", running: true, lastStatus: "failed" }),
+      job({ connectorId: "taishin", enabled: false }),
+    ]);
+    expect(
+      Object.fromEntries(
+        overview.sources.map((source) => [source.connectorId, source.health]),
+      ),
+    ).toEqual({ esun: "running", taishin: "unscheduled" });
+    expect(overview.running).toBe(true);
+    expect(overview.attention).toBe(0);
+  });
+
   it("執行中與從未成功分別標示", () => {
     const overview = summarizeSyncJobs([
       job({ connectorId: "esun", running: true }),

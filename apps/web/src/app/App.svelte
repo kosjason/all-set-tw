@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { createQuery, QueryClientProvider } from "@tanstack/svelte-query";
   import MonthPage from "@/features/month/MonthPage.svelte";
   import type { ConnectorId } from "@/data/connectors/types";
@@ -84,9 +84,14 @@
     queryClient,
   );
   const inboxCounts = $derived($inbox.data?.counts ?? EMPTY_INBOX_COUNTS);
-  // 頁首同步狀態與右側概況欄。失敗時各區塊顯示讀取中或空狀態，不擋頁面。
+  // 頁首同步狀態與右側概況欄。失敗時各區塊顯示「無法讀取」，不擋頁面。
+  // 同步由 Queue 非同步執行：有來源執行中時每 10 秒、平常每分鐘重新讀取。
   const jobs = createQuery(
-    syncJobsQuery(() => api),
+    {
+      ...syncJobsQuery(() => api),
+      refetchInterval: (query) =>
+        query.state.data?.some((job) => job.running) ? 10_000 : 60_000,
+    },
     queryClient,
   );
   const cardsSummary = createQuery(
@@ -101,14 +106,57 @@
   // 右側概況欄：寬螢幕（≥ 1680px）常駐並記住開關；較窄時以抽屜開啟。
   const PANEL_STORAGE_KEY = "taiwan-fin-hub-right-panel";
   const WIDE_QUERY = "(min-width: 1680px)";
-  let panelPinned = $state(true);
+  function readPanelPinned() {
+    try {
+      return localStorage.getItem(PANEL_STORAGE_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  }
+  // 首次渲染前就決定寬度與開關，避免寬螢幕第一幀沒有概況欄而跳版。
+  let panelPinned = $state(readPanelPinned());
   let drawerOpen = $state(false);
-  let wide = $state(false);
+  let wide = $state(window.matchMedia(WIDE_QUERY).matches);
+  let drawerReturnFocus: HTMLElement | null = null;
   const panelOpen = $derived(wide ? panelPinned : drawerOpen);
+
+  function openDrawer() {
+    drawerReturnFocus =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    drawerOpen = true;
+  }
+  function closeDrawer() {
+    if (!drawerOpen) return;
+    drawerOpen = false;
+    const target =
+      drawerReturnFocus ??
+      document.querySelector<HTMLElement>("[data-panel-toggle]");
+    drawerReturnFocus = null;
+    // 等背景解除 inert 後再還原焦點。
+    void tick().then(() => target?.focus());
+  }
+  // 抽屜開啟時把焦點移到關閉鈕；背景以 inert 排除在 Tab 順序外。
+  let drawerElement = $state<HTMLElement>();
+  $effect(() => {
+    if (!drawerOpen) return;
+    const root = document.documentElement;
+    const previous = root.style.overflow;
+    root.style.overflow = "hidden";
+    return () => {
+      root.style.overflow = previous;
+    };
+  });
+  $effect(() => {
+    if (!drawerOpen || !drawerElement) return;
+    drawerElement.querySelector<HTMLElement>("[data-drawer-close]")?.focus();
+  });
 
   function togglePanel() {
     if (!wide) {
-      drawerOpen = !drawerOpen;
+      if (drawerOpen) closeDrawer();
+      else openDrawer();
       return;
     }
     panelPinned = !panelPinned;
@@ -124,7 +172,7 @@
   );
   let connectorTarget = $state<ConnectorId | null>(null);
   let runtime = $state<RuntimeInfo>({ demoMode: false });
-  // 窄螢幕的 sticky 頁首高度，供頁面內的 sticky 工具列接在頁首下方。
+  // sticky 頁首高度（所有寬度），供頁面內的 sticky 工具列接在頁首下方。
   let headerHeight = $state(0);
   const activeView = $derived(activeNavigationView(view));
   const detail = $derived(isDetailView(view) ? detailLabels[view] : undefined);
@@ -174,11 +222,6 @@
   }
 
   onMount(() => {
-    try {
-      panelPinned = localStorage.getItem(PANEL_STORAGE_KEY) !== "false";
-    } catch {
-      panelPinned = true;
-    }
     const wideMedia = window.matchMedia(WIDE_QUERY);
     const updateWide = () => {
       wide = wideMedia.matches;
@@ -187,7 +230,7 @@
     updateWide();
     wideMedia.addEventListener("change", updateWide);
     const closeDrawerOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") drawerOpen = false;
+      if (event.key === "Escape") closeDrawer();
     };
     window.addEventListener("keydown", closeDrawerOnEscape);
     syncFromLocation();
@@ -219,8 +262,14 @@
     if (window.location.hash !== nextHash) {
       // 帶 query 的導覽（例如本月 → 交易篩選）在頁面掛載前換好網址，讓頁面
       // 由網址還原狀態；PWA 不留上一頁紀錄。
-      // 已在同一頁時（例如在交易頁用頁首搜尋）改網址會觸發 popstate，讓頁面由網址重新還原。
-      if ((isStandalone() || options.query) && !samePage) replaceHash(nextHash);
+      if (samePage && options.query) {
+        // 已在同一頁（例如在交易頁用頁首搜尋）：取代網址後送出 popstate，讓頁面由網址
+        // 重新還原，不增加上一頁紀錄。
+        replaceHash(nextHash);
+        window.dispatchEvent(
+          new PopStateEvent("popstate", { state: window.history.state }),
+        );
+      } else if (isStandalone() || options.query) replaceHash(nextHash);
       else window.location.hash = nextHash;
     }
     scrollToTop();
@@ -240,6 +289,7 @@
 <QueryClientProvider client={queryClient}>
   <div
     class="min-h-screen bg-paper text-ink xl:grid xl:grid-cols-[240px_minmax(0,1fr)]"
+    inert={drawerOpen && !wide}
     use:swipeBack={{
       enabled: isStandalone() && Boolean(detail),
       onBack: navigateBack,
@@ -281,7 +331,9 @@
         onBack={detail ? () => navigate(detail.parent) : undefined}
         {inboxCounts}
         sync={syncOverview}
+        syncError={$jobs.isError}
         {panelOpen}
+        panelIsDrawer={!wide}
         onTogglePanel={togglePanel}
         onToggleMoney={toggleMoneyVisibility}
         {navigate}
@@ -365,9 +417,12 @@
             <AppRightRail
               inboxItems={$inbox.data?.items ?? []}
               inboxLoading={$inbox.isPending}
+              inboxError={$inbox.isError}
               dues={cardDues}
               duesLoading={$cardsSummary.isPending}
+              duesError={$cardsSummary.isError}
               sync={syncOverview}
+              syncError={$jobs.isError}
               {navigate}
             />
           </aside>
@@ -378,30 +433,36 @@
     </div>
 
     <MobileTabBar {activeView} {inboxCounts} {navigate} />
-
-    {#if drawerOpen && !wide}
-      <div class="fixed inset-0 z-40 flex justify-end">
-        <button
-          type="button"
-          class="absolute inset-0 bg-ink/30"
-          aria-label="關閉概況欄"
-          onclick={() => (drawerOpen = false)}
-        ></button>
-        <aside
-          aria-label="概況"
-          class="relative h-full w-[340px] max-w-[90vw] overflow-y-auto bg-paper shadow-xl"
-        >
-          <AppRightRail
-            inboxItems={$inbox.data?.items ?? []}
-            inboxLoading={$inbox.isPending}
-            dues={cardDues}
-            duesLoading={$cardsSummary.isPending}
-            sync={syncOverview}
-            {navigate}
-            onClose={() => (drawerOpen = false)}
-          />
-        </aside>
-      </div>
-    {/if}
   </div>
+
+  {#if drawerOpen && !wide}
+    <div class="fixed inset-0 z-40 flex justify-end">
+      <div
+        class="absolute inset-0 bg-ink/30"
+        aria-hidden="true"
+        onclick={closeDrawer}
+      ></div>
+      <div
+        bind:this={drawerElement}
+        id="right-rail-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="right-rail-title"
+        class="relative h-full w-[340px] max-w-[90vw] overflow-y-auto overscroll-contain bg-paper shadow-xl"
+      >
+        <AppRightRail
+          inboxItems={$inbox.data?.items ?? []}
+          inboxLoading={$inbox.isPending}
+          inboxError={$inbox.isError}
+          dues={cardDues}
+          duesLoading={$cardsSummary.isPending}
+          duesError={$cardsSummary.isError}
+          sync={syncOverview}
+          syncError={$jobs.isError}
+          {navigate}
+          onClose={closeDrawer}
+        />
+      </div>
+    </div>
+  {/if}
 </QueryClientProvider>

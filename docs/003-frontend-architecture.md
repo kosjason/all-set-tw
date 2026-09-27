@@ -70,12 +70,14 @@ npm run verify:web
 - 手機底部列（`MobileTabBar`）：本月｜交易｜信用卡｜資產｜更多；「更多」（`MoreMenu`，`#/more`）
   列出資料來源、待處理與設定。頁首右上另有待處理按鈕。
 - 頁首（`AppHeader`，所有寬度皆 sticky）：頁面標題與說明；md 以上有全域搜尋（Enter 開啟
-  `#/transactions?q=`，已在交易頁時改 `location.hash` 觸發 popstate 讓交易頁重新還原），lg 以上有同步
+  `#/transactions?q=`；已在交易頁時以 `replaceState` 換網址並送出 popstate，讓交易頁重新還原且不增加上一頁紀錄），lg 以上有同步
   狀態（`app/shell-status.ts` 的 `summarizeSyncJobs`，點選開資料來源頁）；另有待處理、概況欄開關（xl
   以上）與隱藏金額。
 - 右側概況欄（`AppRightRail`）：待處理前 4 項（需要處理排前）、近期卡費（`upcomingCardDues`：未繳清且
-  截止日已知，依截止日排序）、資料來源狀態（已設定的來源；排程全關的標「未排程」）。寬度 ≥ 1680px
-  時常駐於內容右側、開關記在 `localStorage`；較窄時由頁首按鈕以抽屜開啟，Esc 或點背景關閉。
+  截止日已知，依截止日排序）、資料來源狀態（已設定的來源；優先序為執行中 > 需處理 > 排程全關的「未排程」> 從未成功 > 正常）。寬度 ≥ 1680px
+  時常駐於內容右側、開關記在 `localStorage`；1280–1679px 由頁首按鈕以抽屜（`role="dialog"`，背景 inert、
+  焦點移入並於關閉後還原）開啟，Esc 或點背景關閉；xl 以下不提供概況欄。各區塊讀取失敗時顯示「無法讀取」。
+  同步工作有來源執行中時每 10 秒、平常每分鐘重新讀取。
 - 頁尾（`AppFooter`，md 以上）：免責聲明摘要（可展開全文）與最近一次同步成功時間。
 - 待處理 badge 來自 `GET /api/inbox`（`data/inbox`）：`counts.blocking > 0` 顯示紅點、
   `counts.tidy` 顯示數字（`InboxBadge`）；載入失敗時不顯示。App 本身在
