@@ -52,6 +52,8 @@ export async function routeNavigationApi(page: Page) {
       },
     }),
   );
+  // 頁首同步狀態與右側概況欄。
+  await page.route("**/api/sync-jobs", (route) => route.fulfill({ json: [] }));
 }
 
 export async function routeActivityApi(page: Page) {
