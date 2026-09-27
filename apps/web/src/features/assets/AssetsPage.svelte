@@ -13,7 +13,12 @@
     investmentTransactionsQuery,
   } from "@/data/investments/queries";
   import type { ApiClient } from "@/shared/api/client";
-  import { formatCompactTwd, formatCurrency } from "@/shared/format/financial";
+  import {
+    formatCompactTwd,
+    formatCurrency,
+    formatDate,
+  } from "@/shared/format/financial";
+  import Card from "@/shared/ui/Card.svelte";
   import EmptyState from "@/shared/ui/EmptyState.svelte";
   import InstitutionDetails from "./components/InstitutionDetails.svelte";
   import InvestmentWorkspace from "./components/InvestmentWorkspace.svelte";
@@ -93,10 +98,160 @@
   );
   const mobileExpandedKey = $derived(expandedKey);
 
+  const ASSET_COLORS = {
+    bank: "#3e6f7c",
+    investment: "#6574cd",
+    manual: "#b5853f",
+  } as const;
+
+  const allocation = $derived(
+    [
+      {
+        key: "bank",
+        label: "銀行與現金",
+        value: summary.bankTotal,
+        color: ASSET_COLORS.bank,
+      },
+      {
+        key: "investment",
+        label: "投資",
+        value: summary.investmentTotal,
+        color: ASSET_COLORS.investment,
+      },
+      {
+        key: "manual",
+        label: "其他資產",
+        value: summary.manualTotal,
+        color: ASSET_COLORS.manual,
+      },
+    ].filter((item) => item.value > 0),
+  );
+  const largestCurrency = $derived(summary.currencyBreakdown[0]?.totalTwd ?? 0);
+
+  const STALE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+  const freshness = $derived(
+    [
+      ...summary.institutionGroups.map((group) => ({
+        key: group.key,
+        label: group.institution,
+        latest: [...group.accounts, ...group.cards]
+          .map((account) => account.asOfAt)
+          .filter((value): value is string => Boolean(value))
+          .sort()
+          .at(-1),
+      })),
+      ...(($investments.data?.length ?? 0) > 0
+        ? [
+            {
+              key: "investments",
+              label: "投資",
+              latest: ($investments.data ?? [])
+                .map((item) => item.asOfDate)
+                .filter((value): value is string => Boolean(value))
+                .sort()
+                .at(-1),
+            },
+          ]
+        : []),
+    ].map((item) => ({
+      ...item,
+      stale:
+        !item.latest ||
+        Date.now() - new Date(item.latest).getTime() > STALE_AFTER_MS,
+    })),
+  );
+
+  function share(value: number) {
+    return summary.grossAssets > 0 ? (value / summary.grossAssets) * 100 : 0;
+  }
+
+  function formatShare(value: number) {
+    const percent = share(value);
+    return percent > 0 && percent < 1 ? "<1%" : `${Math.round(percent)}%`;
+  }
+
   function toggleMobile(key: string) {
     expandedKey = mobileExpandedKey === key ? null : key;
   }
 </script>
+
+{#snippet kpi(
+  label: string,
+  value: number,
+  caption: string,
+  color: string,
+  tone: string = "text-ink",
+)}
+  <Card class="min-w-0 p-4">
+    <p class="flex items-center gap-1.5 text-caption text-subtle">
+      <span class="size-2 shrink-0 rounded-full" style={`background:${color}`}
+      ></span>
+      {label}
+    </p>
+    <p
+      class={`mt-2 text-lg font-semibold tracking-tight tabular-nums md:hidden ${tone}`}
+    >
+      {formatCompactTwd(value)}
+    </p>
+    <p
+      class={`mt-2 hidden break-all text-xl font-semibold tracking-tight tabular-nums md:block ${tone}`}
+    >
+      {formatCurrency(value)}
+    </p>
+    <p class="mt-1 truncate text-caption text-subtle">{caption}</p>
+  </Card>
+{/snippet}
+
+{#snippet shareBar(value: number, color: string)}
+  <span
+    class="block h-1.5 w-full overflow-hidden rounded-full bg-ink/6"
+    aria-hidden="true"
+  >
+    <span
+      class="block h-full rounded-full"
+      style={`width:${Math.max(share(value), value > 0 ? 2 : 0)}%;background:${color}`}
+    ></span>
+  </span>
+{/snippet}
+
+{#snippet ledgerRow(
+  key: string,
+  title: string,
+  subtitle: string,
+  value: number | null,
+  debt: string | null,
+  color: string,
+)}
+  <button
+    class={`grid min-h-[64px] w-full grid-cols-[minmax(0,1fr)_7rem_minmax(7.5rem,auto)] items-center gap-4 border-b border-ink/6 px-4 py-2 text-left transition last:border-b-0 hover:bg-ink/3 ${activeKey === key ? "bg-steel/6 shadow-[inset_3px_0_0_var(--color-steel)]" : ""}`}
+    type="button"
+    aria-pressed={activeKey === key}
+    onclick={() => (selectedKey = key)}
+  >
+    <span class="min-w-0">
+      <strong class="block truncate text-sm">{title}</strong>
+      <small class="mt-0.5 block truncate text-caption text-subtle">
+        {subtitle}
+      </small>
+    </span>
+    <span class="grid gap-1">
+      {@render shareBar(value ?? 0, color)}
+      <small class="text-right text-caption tabular-nums text-subtle">
+        {value ? formatShare(value) : "—"}
+      </small>
+    </span>
+    <span class="text-right">
+      <strong class="block text-sm tabular-nums">
+        {value != null ? formatCurrency(value) : "—"}
+      </strong>
+      {#if debt}
+        <small class="mt-0.5 block text-caption tabular-nums text-coral">
+          {debt}
+        </small>
+      {/if}
+    </span>
+  </button>
+{/snippet}
 
 {#if loading}
   <EmptyState
@@ -110,7 +265,7 @@
     body="部分必要資料目前無法取得，請稍後再試。"
   />
 {:else}
-  <div class="grid min-w-0 max-w-full gap-6">
+  <div class="grid min-w-0 max-w-full gap-4 xl:gap-5">
     {#if summary.missingCurrencies.length > 0}
       <div
         class="rounded-xl border border-coral/25 bg-coral/5 px-4 py-3 text-sm text-ink"
@@ -123,79 +278,56 @@
       </div>
     {/if}
 
-    <section class="min-w-0 pt-3 md:pt-2" aria-label="淨資產">
-      <div>
-        <p class="text-sm text-subtle">淨資產</p>
+    <!-- 上：KPI -->
+    <section
+      class="grid min-w-0 grid-cols-2 gap-3 lg:grid-cols-6 xl:gap-4"
+      aria-label="資產摘要"
+    >
+      <Card
+        class="col-span-2 min-w-0 border-steel/20 bg-steel/5 p-4 lg:col-span-2"
+      >
+        <p class="text-caption font-medium text-subtle">淨資產</p>
         <p
-          class="mt-3 break-all text-[clamp(2rem,7vw,2.75rem)] leading-tight font-semibold tracking-tight tabular-nums"
+          class="mt-2 break-all text-[clamp(1.75rem,5vw,2.25rem)] leading-tight font-semibold tracking-tight tabular-nums"
         >
           {formatCurrency(summary.netWorth)}
         </p>
-        <p class="mt-3 text-caption text-subtle">
+        <p class="mt-1 text-caption text-subtle">
           {summary.hasUnknownCardBalance
-            ? "信用卡負債資料不完整"
-            : `已扣除 ${formatCurrency(summary.cardDebt)} 信用卡負債`}
+            ? `總資產 ${formatCurrency(summary.grossAssets)} · 信用卡負債資料不完整`
+            : `總資產 ${formatCurrency(summary.grossAssets)} − 卡債 ${formatCurrency(summary.cardDebt)}`}
         </p>
-      </div>
-      <div class="mt-6 grid grid-cols-3 gap-3 md:gap-6">
-        <div class="min-w-0">
-          <p class="text-caption text-subtle">銀行與現金</p>
-          <p
-            class="mt-2 text-lg font-medium tracking-tight tabular-nums md:hidden"
-          >
-            {formatCompactTwd(summary.bankTotal)}
-          </p>
-          <p
-            class="mt-2 hidden break-all text-2xl font-semibold tracking-tight tabular-nums md:block"
-          >
-            {formatCurrency(summary.bankTotal)}
-          </p>
-          <p class="mt-1 text-caption text-subtle">
-            {summary.deposits.length} 個帳戶
-          </p>
-        </div>
-        <div class="min-w-0">
-          <p class="text-caption text-subtle">投資</p>
-          <p
-            class="mt-2 text-lg font-medium tracking-tight tabular-nums md:hidden"
-          >
-            {formatCompactTwd(summary.investmentTotal)}
-          </p>
-          <p
-            class="mt-2 hidden break-all text-2xl font-semibold tracking-tight tabular-nums md:block"
-          >
-            {formatCurrency(summary.investmentTotal)}
-          </p>
-          <p class="mt-1 text-caption text-subtle">
-            {$investments.data?.length ?? 0} 個持倉
-          </p>
-        </div>
-        <div class="min-w-0">
-          <p class="text-caption text-subtle">其他資產</p>
-          <p
-            class="mt-2 text-lg font-medium tracking-tight tabular-nums md:hidden"
-          >
-            {formatCompactTwd(summary.manualTotal)}
-          </p>
-          <p
-            class="mt-2 hidden break-all text-2xl font-semibold tracking-tight tabular-nums md:block"
-          >
-            {formatCurrency(summary.manualTotal)}
-          </p>
-          <p class="mt-1 text-caption text-subtle">
-            {$manual.data?.length ?? 0} 筆
-          </p>
-        </div>
-      </div>
+      </Card>
+      {@render kpi(
+        "銀行與現金",
+        summary.bankTotal,
+        `${summary.deposits.length} 個帳戶 · ${formatShare(summary.bankTotal)}`,
+        ASSET_COLORS.bank,
+      )}
+      {@render kpi(
+        "投資",
+        summary.investmentTotal,
+        `${$investments.data?.length ?? 0} 個持倉 · ${formatShare(summary.investmentTotal)}`,
+        ASSET_COLORS.investment,
+      )}
+      {@render kpi(
+        "其他資產",
+        summary.manualTotal,
+        `${$manual.data?.length ?? 0} 筆 · ${formatShare(summary.manualTotal)}`,
+        ASSET_COLORS.manual,
+      )}
+      {@render kpi(
+        "信用卡負債",
+        -summary.cardDebt,
+        summary.hasUnknownCardBalance
+          ? "部分卡片資料不完整"
+          : `${summary.cards.length} 張卡`,
+        "var(--color-coral)",
+        "text-coral",
+      )}
     </section>
 
-    <div class="min-w-0 border-t border-ink/10 pt-6">
-      <NetWorthHistoryChart
-        data={$history.data ?? []}
-        loading={$history.isPending}
-      />
-    </div>
-
+    <!-- 中：資產總表（左）＋明細（右） -->
     {#if ledgerItems.length === 0}
       <EmptyState
         title="尚無資產資料"
@@ -203,109 +335,79 @@
       />
     {:else}
       <section
-        class="hidden h-[620px] min-w-0 grid-cols-[minmax(320px,0.9fr)_minmax(360px,1.1fr)] border-t border-ink/10 xl:grid"
-        aria-label="資產清冊"
+        class="hidden min-w-0 grid-cols-12 gap-4 xl:grid xl:gap-5"
+        aria-label="資產總表"
       >
-        <div
-          class="flex min-h-0 flex-col overflow-hidden border-r border-ink/10"
+        <Card
+          class="col-span-7 flex h-[540px] min-h-0 flex-col overflow-hidden"
         >
           <header
-            class="flex items-center justify-between gap-3 border-b border-ink/10 px-3 py-4"
+            class="flex items-center justify-between gap-3 border-b border-ink/10 px-4 py-3"
           >
             <div>
-              <h2 class="font-semibold">帳戶與資產</h2>
-              <p class="mt-1 text-caption text-subtle">
-                同一金融機構的帳戶與信用卡合併顯示
+              <h2 class="font-semibold">資產總表</h2>
+              <p class="mt-0.5 text-caption text-subtle">
+                同一金融機構的帳戶與信用卡合併顯示；點選查看明細
               </p>
             </div>
             <span class="text-caption text-subtle">
               {ledgerItems.length} 項
             </span>
           </header>
+          <div
+            class="grid grid-cols-[minmax(0,1fr)_7rem_minmax(7.5rem,auto)] gap-4 border-b border-ink/6 bg-ink/2 px-4 py-1.5 text-caption font-medium text-subtle"
+          >
+            <span>名稱</span>
+            <span class="text-right">佔總資產</span>
+            <span class="text-right">金額／卡債</span>
+          </div>
           <div class="min-h-0 flex-1 overflow-y-auto">
-            {#if summary.institutionGroups.length > 0}
-              <p class="px-3 py-2 text-caption font-medium text-subtle">
-                金融機構
-              </p>
-              {#each summary.institutionGroups as group (group.key)}
-                <button
-                  class={`grid min-h-[68px] w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-ink/8 px-3 py-2 text-left transition hover:bg-ink/3 ${activeKey === group.key ? "bg-ink/4 shadow-[inset_3px_0_0_var(--color-steel)]" : ""}`}
-                  type="button"
-                  aria-pressed={activeKey === group.key}
-                  onclick={() => (selectedKey = group.key)}
-                >
-                  <span class="min-w-0">
-                    <strong class="block truncate text-sm">
-                      {group.institution}
-                    </strong>
-                    <small class="mt-1 block truncate text-caption text-subtle">
-                      {group.accounts.length} 帳戶 · {group.cards.length} 卡片{group
-                        .foreignCurrencies.length
-                        ? ` · 含 ${group.foreignCurrencies.join("、")}`
-                        : ""}
-                    </small>
-                  </span>
-                  <span class="text-right">
-                    <strong class="block text-sm tabular-nums text-steel">
-                      {group.accounts.length
-                        ? formatCurrency(group.assetTotalTwd)
-                        : "—"}
-                    </strong>
-                    <small
-                      class={`mt-1 block text-caption tabular-nums ${group.cards.length ? "text-coral" : "text-subtle"}`}
-                    >
-                      {group.cards.length
-                        ? group.hasUnknownCardBalance
-                          ? "負債資料不完整"
-                          : `負債 ${formatCurrency(-group.debtTotalTwd)}`
-                        : "無信用卡"}
-                    </small>
-                  </span>
-                </button>
-              {/each}
-            {/if}
-
+            {#each summary.institutionGroups as group (group.key)}
+              {@render ledgerRow(
+                group.key,
+                group.institution,
+                `${group.accounts.length} 帳戶 · ${group.cards.length} 卡片${group.foreignCurrencies.length ? ` · 含 ${group.foreignCurrencies.join("、")}` : ""}`,
+                group.accounts.length ? group.assetTotalTwd : null,
+                group.cards.length
+                  ? group.hasUnknownCardBalance
+                    ? "負債資料不完整"
+                    : `負債 ${formatCurrency(-group.debtTotalTwd)}`
+                  : null,
+                ASSET_COLORS.bank,
+              )}
+            {/each}
             {#if ($investments.data?.length ?? 0) > 0}
-              <button
-                class={`grid min-h-[68px] w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-ink/8 px-3 py-2 text-left transition hover:bg-ink/3 ${activeKey === "investments" ? "bg-ink/4 shadow-[inset_3px_0_0_var(--color-steel)]" : ""}`}
-                type="button"
-                aria-pressed={activeKey === "investments"}
-                onclick={() => (selectedKey = "investments")}
-              >
-                <span class="min-w-0">
-                  <strong class="block text-sm">投資</strong>
-                  <small class="mt-1 block text-caption text-subtle">
-                    {$investments.data?.length ?? 0} 個持倉 · 持倉與交易紀錄
-                  </small>
-                </span>
-                <strong class="text-sm tabular-nums text-steel">
-                  {formatCurrency(summary.investmentTotal)}
-                </strong>
-              </button>
+              {@render ledgerRow(
+                "investments",
+                "投資",
+                `${$investments.data?.length ?? 0} 個持倉 · 持倉與交易紀錄`,
+                summary.investmentTotal,
+                null,
+                ASSET_COLORS.investment,
+              )}
             {/if}
-
             {#if ($manual.data?.length ?? 0) > 0}
-              <button
-                class={`grid min-h-[68px] w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-ink/8 px-3 py-2 text-left transition hover:bg-ink/3 ${activeKey === "manual-assets" ? "bg-ink/4 shadow-[inset_3px_0_0_var(--color-steel)]" : ""}`}
-                type="button"
-                aria-pressed={activeKey === "manual-assets"}
-                onclick={() => (selectedKey = "manual-assets")}
-              >
-                <span class="min-w-0">
-                  <strong class="block text-sm">其他資產</strong>
-                  <small class="mt-1 block text-caption text-subtle">
-                    {$manual.data?.length ?? 0} 筆 · 手動維護估值
-                  </small>
-                </span>
-                <strong class="text-sm tabular-nums text-moss">
-                  {formatCurrency(summary.manualTotal)}
-                </strong>
-              </button>
+              {@render ledgerRow(
+                "manual-assets",
+                "其他資產",
+                `${$manual.data?.length ?? 0} 筆 · 手動維護估值`,
+                summary.manualTotal,
+                null,
+                ASSET_COLORS.manual,
+              )}
             {/if}
           </div>
-        </div>
+          <footer
+            class="flex items-center justify-between gap-3 border-t border-ink/10 bg-ink/2 px-4 py-2.5 text-sm"
+          >
+            <span class="font-medium text-subtle">總資產</span>
+            <strong class="tabular-nums">
+              {formatCurrency(summary.grossAssets)}
+            </strong>
+          </footer>
+        </Card>
 
-        <div class="min-h-0 overflow-y-auto">
+        <Card class="col-span-5 h-[540px] min-h-0 overflow-y-auto">
           {#if activeItem?.kind === "institution"}
             <InstitutionDetails
               group={activeItem.group}
@@ -324,11 +426,11 @@
           {:else if activeItem?.kind === "manual-assets"}
             <ManualAssets {api} variant="embedded" />
           {/if}
-        </div>
+        </Card>
       </section>
 
       <section
-        class="grid border-t border-ink/10 pt-5 xl:hidden"
+        class="grid rounded-xl border border-border bg-card px-4 pt-4 pb-2 shadow-xs xl:hidden"
         aria-label="資產清冊"
       >
         {#if summary.institutionGroups.length > 0}
@@ -461,6 +563,143 @@
         </div>
       </section>
     {/if}
+
+    <!-- 下：走勢（左）＋配置、幣別（右） -->
+    <section
+      class="grid min-w-0 gap-4 xl:grid-cols-12 xl:gap-5"
+      aria-label="資產走勢與配置"
+    >
+      <Card class="min-w-0 p-4 md:p-5 xl:col-span-8">
+        <NetWorthHistoryChart
+          data={$history.data ?? []}
+          loading={$history.isPending}
+        />
+      </Card>
+
+      <div
+        class="grid min-w-0 content-start gap-4 md:grid-cols-2 xl:col-span-4 xl:grid-cols-1 xl:gap-5"
+      >
+        <Card class="min-w-0 p-4 md:p-5">
+          <div class="flex items-baseline justify-between gap-3">
+            <h2 class="font-semibold">資產配置</h2>
+            <span class="text-caption tabular-nums text-subtle">
+              總資產 {formatCompactTwd(summary.grossAssets)}
+            </span>
+          </div>
+          <div
+            class="mt-4 flex h-3 w-full gap-0.5 overflow-hidden rounded-full bg-ink/6"
+            role="img"
+            aria-label={allocation
+              .map((item) => `${item.label} ${formatShare(item.value)}`)
+              .join("、")}
+          >
+            {#each allocation as item (item.key)}
+              <span
+                class="h-full first:rounded-l-full last:rounded-r-full"
+                style={`width:${share(item.value)}%;background:${item.color}`}
+                title={`${item.label} ${formatShare(item.value)}`}
+              ></span>
+            {/each}
+          </div>
+          <ul class="mt-4 grid gap-2.5 text-sm">
+            {#each allocation as item (item.key)}
+              <li
+                class="grid grid-cols-[minmax(0,1fr)_auto_3rem] items-center gap-3"
+              >
+                <span class="flex min-w-0 items-center gap-2">
+                  <span
+                    class="size-2.5 shrink-0 rounded-full"
+                    style={`background:${item.color}`}
+                  ></span>
+                  <span class="truncate">{item.label}</span>
+                </span>
+                <span class="tabular-nums">{formatCurrency(item.value)}</span>
+                <span class="text-right tabular-nums text-subtle">
+                  {formatShare(item.value)}
+                </span>
+              </li>
+            {/each}
+            <li
+              class="grid grid-cols-[minmax(0,1fr)_auto_3rem] items-center gap-3 border-t border-ink/8 pt-2.5"
+            >
+              <span class="text-subtle">信用卡負債</span>
+              <span class="tabular-nums text-coral">
+                {summary.hasUnknownCardBalance
+                  ? "資料不完整"
+                  : formatCurrency(-summary.cardDebt)}
+              </span>
+              <span></span>
+            </li>
+            <li
+              class="grid grid-cols-[minmax(0,1fr)_auto_3rem] items-center gap-3"
+            >
+              <span class="font-semibold">淨資產</span>
+              <strong class="tabular-nums">
+                {formatCurrency(summary.netWorth)}
+              </strong>
+              <span></span>
+            </li>
+          </ul>
+        </Card>
+
+        <Card class="min-w-0 p-4 md:p-5">
+          <div class="flex items-baseline justify-between gap-3">
+            <h2 class="font-semibold">資料更新</h2>
+            <span class="text-caption text-subtle">超過 3 天標示</span>
+          </div>
+          <ul class="mt-3 grid gap-2 text-sm">
+            {#each freshness as item (item.key)}
+              <li class="flex items-center justify-between gap-3">
+                <span class="flex min-w-0 items-center gap-2">
+                  <span
+                    class={`size-2 shrink-0 rounded-full ${item.stale ? "bg-coral" : "bg-moss"}`}
+                  ></span>
+                  <span class="truncate">{item.label}</span>
+                </span>
+                <span
+                  class={`shrink-0 text-caption tabular-nums ${item.stale ? "font-medium text-coral" : "text-subtle"}`}
+                >
+                  {item.latest ? formatDate(item.latest) : "尚未同步"}
+                </span>
+              </li>
+            {/each}
+          </ul>
+        </Card>
+
+        {#if summary.currencyBreakdown.length > 1}
+          <Card class="min-w-0 p-4 md:p-5">
+            <div class="flex items-baseline justify-between gap-3">
+              <h2 class="font-semibold">幣別分布</h2>
+              <span class="text-caption text-subtle">折合新台幣</span>
+            </div>
+            <ul class="mt-4 grid gap-3 text-sm">
+              {#each summary.currencyBreakdown as item (item.currency)}
+                <li
+                  class="grid grid-cols-[3rem_minmax(0,1fr)_auto_3rem] items-center gap-3"
+                >
+                  <span class="font-medium">{item.currency}</span>
+                  <span
+                    class="block h-2 overflow-hidden rounded-full bg-ink/6"
+                    aria-hidden="true"
+                  >
+                    <span
+                      class="block h-full rounded-full bg-steel"
+                      style={`width:${largestCurrency > 0 ? Math.max((item.totalTwd / largestCurrency) * 100, 2) : 0}%`}
+                    ></span>
+                  </span>
+                  <span class="tabular-nums">
+                    {formatCompactTwd(item.totalTwd)}
+                  </span>
+                  <span class="text-right tabular-nums text-subtle">
+                    {formatShare(item.totalTwd)}
+                  </span>
+                </li>
+              {/each}
+            </ul>
+          </Card>
+        {/if}
+      </div>
+    </section>
 
     <button
       type="button"

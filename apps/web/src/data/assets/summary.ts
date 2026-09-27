@@ -38,6 +38,8 @@ export interface AssetSummary {
   grossAssets: number;
   netWorth: number;
   institutionGroups: InstitutionAssetGroup[];
+  /** 資產（不含信用卡負債）依原始幣別折合新台幣，缺匯率的幣別不列入。 */
+  currencyBreakdown: Array<{ currency: string; totalTwd: number }>;
   missingCurrencies: string[];
 }
 
@@ -110,6 +112,31 @@ export function calculateAssetSummary({
     0,
   );
   const grossAssets = bankTotal + investmentTotal + manualTotal;
+  const currencyTotals = new Map<string, number>();
+  for (const { currency, amount } of [
+    ...deposits.map((account) => ({
+      currency: account.currency,
+      amount: account.balance ?? 0,
+    })),
+    ...investments.map((item) => ({
+      currency: item.currency,
+      amount: (item.marketValue ?? 0) + (item.cashBalance ?? 0),
+    })),
+    ...manualAssets.map((item) => ({
+      currency: item.currency,
+      amount: item.value ?? 0,
+    })),
+  ]) {
+    if (currency !== "TWD" && rateValues[currency] == null) continue;
+    currencyTotals.set(
+      currency,
+      (currencyTotals.get(currency) ?? 0) + toTwd(amount, currency),
+    );
+  }
+  const currencyBreakdown = [...currencyTotals]
+    .map(([currency, totalTwd]) => ({ currency, totalTwd }))
+    .filter((item) => item.totalTwd > 0)
+    .sort((a, b) => b.totalTwd - a.totalTwd);
 
   const groups = bank.accounts.reduce<Record<string, BankAccountRow[]>>(
     (result, account) => {
@@ -180,6 +207,7 @@ export function calculateAssetSummary({
     grossAssets,
     netWorth: grossAssets - cardDebt,
     institutionGroups,
+    currencyBreakdown,
     missingCurrencies,
   };
 }

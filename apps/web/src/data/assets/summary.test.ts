@@ -56,6 +56,10 @@ describe("calculateAssetSummary", () => {
     expect(summary.bankTotal).toBe(3_000);
     expect(summary.cardDebt).toBe(2_000);
     expect(summary.netWorth).toBe(17_000);
+    expect(summary.currencyBreakdown).toEqual([
+      { currency: "TWD", totalTwd: 10_000 },
+      { currency: "USD", totalTwd: 9_000 },
+    ]);
     expect(summary.institutionGroups).toHaveLength(1);
     expect(summary.institutionGroups[0]).toMatchObject({
       key: "bank:808",
