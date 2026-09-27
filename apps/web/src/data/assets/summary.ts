@@ -36,6 +36,8 @@ export interface AssetSummary {
   cardDebt: number;
   hasUnknownCardBalance: boolean;
   grossAssets: number;
+  /** 佔比分母：各機構存款、投資、其他資產各自取正值後加總，透支不會拉低分母。 */
+  positiveAssetTotal: number;
   netWorth: number;
   institutionGroups: InstitutionAssetGroup[];
   /** 資產（不含信用卡負債）依原始幣別折合新台幣，缺匯率的幣別不列入。 */
@@ -196,6 +198,14 @@ export function calculateAssetSummary({
         a.institution.localeCompare(b.institution, "zh-TW"),
     );
 
+  const positiveAssetTotal =
+    institutionGroups.reduce(
+      (sum, group) => sum + Math.max(group.assetTotalTwd, 0),
+      0,
+    ) +
+    Math.max(investmentTotal, 0) +
+    Math.max(manualTotal, 0);
+
   return {
     deposits,
     cards,
@@ -205,6 +215,7 @@ export function calculateAssetSummary({
     cardDebt,
     hasUnknownCardBalance: cards.some((card) => card.balance == null),
     grossAssets,
+    positiveAssetTotal,
     netWorth: grossAssets - cardDebt,
     institutionGroups,
     currencyBreakdown,

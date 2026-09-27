@@ -129,12 +129,8 @@
   );
   const largestCurrency = $derived(summary.currencyBreakdown[0]?.totalTwd ?? 0);
 
-  // 佔比以「正值資產」為分母：透支等負值不應把分母拉低而讓佔比超過 100%。
-  const positiveAssets = $derived(
-    Math.max(summary.bankTotal, 0) +
-      Math.max(summary.investmentTotal, 0) +
-      Math.max(summary.manualTotal, 0),
-  );
+  // 佔比分母見 AssetSummary.positiveAssetTotal。
+  const positiveAssets = $derived(summary.positiveAssetTotal);
   const currencyTotal = $derived(
     summary.currencyBreakdown.reduce((sum, item) => sum + item.totalTwd, 0),
   );
@@ -374,7 +370,7 @@
             class="grid grid-cols-[minmax(0,1fr)_7rem_minmax(7.5rem,auto)] gap-4 border-b border-ink/6 bg-ink/2 px-4 py-1.5 text-caption font-medium text-subtle"
           >
             <span>名稱</span>
-            <span class="text-right">佔總資產</span>
+            <span class="text-right">佔比</span>
             <span class="text-right">金額／卡債</span>
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto">
@@ -599,7 +595,7 @@
           <div class="flex items-baseline justify-between gap-3">
             <h2 class="font-semibold">資產配置</h2>
             <span class="text-caption tabular-nums text-subtle">
-              總資產 {formatCompactTwd(summary.grossAssets)}
+              合計 {formatCompactTwd(positiveAssets)}
             </span>
           </div>
           {#if allocation.length > 0}
@@ -682,7 +678,7 @@
                   {item.latest !== undefined
                     ? formatDate(new Date(item.latest).toISOString())
                     : "尚未同步"}
-                  {#if item.stale}
+                  {#if item.latest !== undefined && item.stale}
                     <span class="ml-1">· 已過期</span>
                   {/if}
                 </span>

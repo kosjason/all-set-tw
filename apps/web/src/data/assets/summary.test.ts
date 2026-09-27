@@ -172,4 +172,28 @@ describe("calculateAssetSummary", () => {
 
     expect(summary.missingCurrencies).toEqual(["SGD"]);
   });
+
+  it("佔比分母只計各機構的正值資產，透支不拉低分母", () => {
+    const account = (id: string, bankCode: string, balance: number) => ({
+      id,
+      connectorId: "esun" as const,
+      sourceId: id,
+      institutionName: `銀行 ${bankCode}`,
+      bankCode,
+      accountType: "savings",
+      balance,
+      currency: "TWD",
+    });
+    const summary = calculateAssetSummary({
+      bank: {
+        accounts: [account("a", "808", 100), account("b", "812", -40)],
+        transactions: [],
+      },
+      investments: [],
+      manualAssets: [],
+    });
+
+    expect(summary.grossAssets).toBe(60);
+    expect(summary.positiveAssetTotal).toBe(100);
+  });
 });
