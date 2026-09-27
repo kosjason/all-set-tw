@@ -70,6 +70,8 @@ function runWrangler(args) {
       env,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      // wrangler 套用 migration 時會輸出整張表格，migration 多時超過預設 1 MB。
+      maxBuffer: 64 * 1024 * 1024,
     });
   } catch (error) {
     const stderr = error?.stderr?.toString().trim();
