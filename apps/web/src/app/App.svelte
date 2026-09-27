@@ -134,18 +134,31 @@
       drawerReturnFocus ??
       document.querySelector<HTMLElement>("[data-panel-toggle]");
     drawerReturnFocus = null;
-    // 等背景解除 inert 後再還原焦點。
-    void tick().then(() => target?.focus());
+    // 等背景解除 inert 後再還原焦點；原按鈕已隱藏（跨過斷點）時改聚焦主內容。
+    void tick().then(() => {
+      if (target?.isConnected && target.getClientRects().length > 0) {
+        target.focus();
+        return;
+      }
+      const main = document.querySelector<HTMLElement>("main");
+      if (!main) return;
+      main.tabIndex = -1;
+      main.focus({ preventScroll: true });
+    });
   }
   // 抽屜開啟時把焦點移到關閉鈕；背景以 inert 排除在 Tab 順序外。
   let drawerElement = $state<HTMLElement>();
   $effect(() => {
     if (!drawerOpen) return;
-    const root = document.documentElement;
-    const previous = root.style.overflow;
-    root.style.overflow = "hidden";
+    // 一般瀏覽器捲動 html；PWA（standalone）捲動的是 #root。
+    const scroller = isStandalone()
+      ? document.getElementById("root")
+      : document.documentElement;
+    if (!scroller) return;
+    const previous = scroller.style.overflow;
+    scroller.style.overflow = "hidden";
     return () => {
-      root.style.overflow = previous;
+      scroller.style.overflow = previous;
     };
   });
   $effect(() => {
@@ -222,13 +235,16 @@
   }
 
   onMount(() => {
+    // 抽屜只在 xl（1280px）到 1679px 之間提供；跨出這個區間時走統一的關閉流程。
     const wideMedia = window.matchMedia(WIDE_QUERY);
+    const drawerMedia = window.matchMedia("(min-width: 1280px)");
     const updateWide = () => {
       wide = wideMedia.matches;
-      if (wide) drawerOpen = false;
+      if (wide || !drawerMedia.matches) closeDrawer();
     };
     updateWide();
     wideMedia.addEventListener("change", updateWide);
+    drawerMedia.addEventListener("change", updateWide);
     const closeDrawerOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeDrawer();
     };
@@ -250,6 +266,7 @@
       window.removeEventListener("hashchange", handleHashChange);
       window.removeEventListener("keydown", closeDrawerOnEscape);
       wideMedia.removeEventListener("change", updateWide);
+      drawerMedia.removeEventListener("change", updateWide);
     };
   });
 
