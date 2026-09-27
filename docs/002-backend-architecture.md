@@ -703,7 +703,7 @@ TradingView、Trend Micro／趨勢科技 → `tech`；LINE禮物 → `misc`（�
   每組回傳本期帳單 `currentBill`（`billingPeriod`、`statementBalance`、`minimumPayment`、
   `paymentDueDate`、`statementClosingDate`、`paidAmount`、`remainingAmount`、`paymentStatus`、
   `minimumPaid`、`payments`、`daysUntilDue`）、未出帳 `unbilled`（`since`、`amount`、
-  `pendingAmount`、`transactionCount`、`missingCurrencies`）、本期刷卡區間 `statementPeriod`、各卡 `cards`
+  `pendingAmount`、`transactionCount`、`missingCurrencies`）、本期刷卡區間 `statementPeriod`、本期缺匯率外幣 `statementMissingCurrencies`、各卡 `cards`
   （含未出帳與本期帳單 `statementAmount`／`statementTransactionCount`）、資料來源 `source`
   （`mode = sync | manual_import`、最近成功時間與狀態）、`lastUpdatedAt`，以及
   `estimated`／`estimatedReasons`。頂層另有 `totals`（TWD 本期應繳、尚未繳、未出帳）與最近一個

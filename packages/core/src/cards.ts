@@ -130,7 +130,10 @@ export interface CardIssuerSummary {
   /** 多張卡共用同一張帳單（例如國泰）。 */
   combinedStatement: boolean;
   currentBill: CurrentCardBill | null;
-  /** 本期帳單的刷卡區間（上期結帳日隔天～本期結帳日，YYYY-MM-DD）；結帳日不明時為 null。 */
+  /**
+   * 本期帳單的刷卡區間（YYYY-MM-DD）：緊鄰上一期帳單的結帳日隔天～本期結帳日；上一期沒有帳單或
+   * 結帳日時由本期結帳日往前一個月推算（月底夾限）。本期結帳日不明時為 null。
+   */
   statementPeriod: { from: string; to: string } | null;
   /** 本期帳單區間內缺匯率而未計入各卡 `statementAmount` 的外幣。 */
   statementMissingCurrencies: string[];
