@@ -56,6 +56,10 @@ describe("calculateAssetSummary", () => {
     expect(summary.bankTotal).toBe(3_000);
     expect(summary.cardDebt).toBe(2_000);
     expect(summary.netWorth).toBe(17_000);
+    expect(summary.currencyBreakdown).toEqual([
+      { currency: "TWD", totalTwd: 10_000 },
+      { currency: "USD", totalTwd: 9_000 },
+    ]);
     expect(summary.institutionGroups).toHaveLength(1);
     expect(summary.institutionGroups[0]).toMatchObject({
       key: "bank:808",
@@ -167,5 +171,29 @@ describe("calculateAssetSummary", () => {
     });
 
     expect(summary.missingCurrencies).toEqual(["SGD"]);
+  });
+
+  it("佔比分母只計各機構的正值資產，透支不拉低分母", () => {
+    const account = (id: string, bankCode: string, balance: number) => ({
+      id,
+      connectorId: "esun" as const,
+      sourceId: id,
+      institutionName: `銀行 ${bankCode}`,
+      bankCode,
+      accountType: "savings",
+      balance,
+      currency: "TWD",
+    });
+    const summary = calculateAssetSummary({
+      bank: {
+        accounts: [account("a", "808", 100), account("b", "812", -40)],
+        transactions: [],
+      },
+      investments: [],
+      manualAssets: [],
+    });
+
+    expect(summary.grossAssets).toBe(60);
+    expect(summary.positiveAssetTotal).toBe(100);
   });
 });

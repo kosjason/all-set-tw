@@ -36,8 +36,12 @@ export interface AssetSummary {
   cardDebt: number;
   hasUnknownCardBalance: boolean;
   grossAssets: number;
+  /** 佔比分母：各機構存款、投資、其他資產各自取正值後加總，透支不會拉低分母。 */
+  positiveAssetTotal: number;
   netWorth: number;
   institutionGroups: InstitutionAssetGroup[];
+  /** 資產（不含信用卡負債）依原始幣別折合新台幣，缺匯率的幣別不列入。 */
+  currencyBreakdown: Array<{ currency: string; totalTwd: number }>;
   missingCurrencies: string[];
 }
 
@@ -110,6 +114,31 @@ export function calculateAssetSummary({
     0,
   );
   const grossAssets = bankTotal + investmentTotal + manualTotal;
+  const currencyTotals = new Map<string, number>();
+  for (const { currency, amount } of [
+    ...deposits.map((account) => ({
+      currency: account.currency,
+      amount: account.balance ?? 0,
+    })),
+    ...investments.map((item) => ({
+      currency: item.currency,
+      amount: (item.marketValue ?? 0) + (item.cashBalance ?? 0),
+    })),
+    ...manualAssets.map((item) => ({
+      currency: item.currency,
+      amount: item.value ?? 0,
+    })),
+  ]) {
+    if (currency !== "TWD" && rateValues[currency] == null) continue;
+    currencyTotals.set(
+      currency,
+      (currencyTotals.get(currency) ?? 0) + toTwd(amount, currency),
+    );
+  }
+  const currencyBreakdown = [...currencyTotals]
+    .map(([currency, totalTwd]) => ({ currency, totalTwd }))
+    .filter((item) => item.totalTwd > 0)
+    .sort((a, b) => b.totalTwd - a.totalTwd);
 
   const groups = bank.accounts.reduce<Record<string, BankAccountRow[]>>(
     (result, account) => {
@@ -169,6 +198,14 @@ export function calculateAssetSummary({
         a.institution.localeCompare(b.institution, "zh-TW"),
     );
 
+  const positiveAssetTotal =
+    institutionGroups.reduce(
+      (sum, group) => sum + Math.max(group.assetTotalTwd, 0),
+      0,
+    ) +
+    Math.max(investmentTotal, 0) +
+    Math.max(manualTotal, 0);
+
   return {
     deposits,
     cards,
@@ -178,8 +215,10 @@ export function calculateAssetSummary({
     cardDebt,
     hasUnknownCardBalance: cards.some((card) => card.balance == null),
     grossAssets,
+    positiveAssetTotal,
     netWorth: grossAssets - cardDebt,
     institutionGroups,
+    currencyBreakdown,
     missingCurrencies,
   };
 }
