@@ -333,7 +333,7 @@
         -summary.cardDebt,
         summary.hasUnknownCardBalance
           ? "部分卡片資料不完整"
-          : `${summary.cards.length} 張卡`,
+          : `${new Set(summary.cards.map((card) => card.connectorId)).size} 家發卡行`,
         "var(--color-coral)",
         "text-coral",
       )}

@@ -23,6 +23,7 @@ function issuer(
     bankCode: null,
     combinedStatement: false,
     currentBill: null,
+    statementPeriod: null,
     unbilled: {
       since: "2026-09-07",
       amount: 0,
@@ -68,6 +69,7 @@ const cathay = issuer({
   issuer: "cathaybk",
   name: "國泰世華銀行",
   combinedStatement: true,
+  statementPeriod: { from: "2026-08-07", to: "2026-09-06" },
   currentBill: bill({
     paidAmount: 10000,
     remainingAmount: 20000,
@@ -99,6 +101,8 @@ const cathay = issuer({
       unbilledAmount: 1000,
       pendingAmount: 0,
       transactionCount: 2,
+      statementAmount: 18000,
+      statementTransactionCount: 12,
       activityFilter: {
         q: "國泰信用卡 1111",
         source: "card",
@@ -114,6 +118,8 @@ const cathay = issuer({
       unbilledAmount: 800,
       pendingAmount: 800,
       transactionCount: 1,
+      statementAmount: 0,
+      statementTransactionCount: 0,
       activityFilter: {
         q: "國泰信用卡 2222",
         source: "card",

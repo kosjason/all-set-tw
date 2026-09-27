@@ -48,6 +48,8 @@ export interface BankTransactionRow extends Partial<EconomicRoleFields> {
   counterpartyBankCode?: string | null;
   /** 對方帳號末五碼；不含完整帳號。 */
   counterpartyAccountSuffix?: string | null;
+  /** 刷卡的卡片末四碼（原始資料可辨識時）；多卡共用帳戶以此分辨是哪張卡。 */
+  cardLast4?: string | null;
   status: "pending" | "posted";
   /** 對方帳戶符合「我的其他帳戶」。 */
   ownAccount?: {

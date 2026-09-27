@@ -101,8 +101,14 @@ export interface CardSummaryCard {
   pendingAmount: number;
   transactionCount: number;
   /**
-   * 只有一張卡對應一個帳戶時可以精準篩到該卡；多張卡共用帳戶（台新、中信）
-   * 時交易頁只能篩到整個發卡行帳戶。
+   * 本期帳單中這張卡的刷卡淨額（`statementPeriod` 內的消費加總，不含前期餘額、利息與費用）；
+   * 本期結帳日不明時為 null。
+   */
+  statementAmount: number | null;
+  statementTransactionCount: number;
+  /**
+   * 交易頁能否精準篩到這張卡：一張卡一個帳戶，或多卡共用帳戶但已知末四碼（交易 API
+   * 帶有逐筆 `cardLast4`）時為 true。
    */
   activityFilter: CardActivityFilter;
   activityFilterExact: boolean;
@@ -124,6 +130,8 @@ export interface CardIssuerSummary {
   /** 多張卡共用同一張帳單（例如國泰）。 */
   combinedStatement: boolean;
   currentBill: CurrentCardBill | null;
+  /** 本期帳單的刷卡區間（上期結帳日隔天～本期結帳日，YYYY-MM-DD）；結帳日不明時為 null。 */
+  statementPeriod: { from: string; to: string } | null;
   unbilled: CardUnbilledSummary;
   cards: CardSummaryCard[];
   source: CardDataSource;

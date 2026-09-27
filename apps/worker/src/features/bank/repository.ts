@@ -63,6 +63,17 @@ const bankTransactionColumns = {
   counterpartyAccountSuffix: sql<
     string | null
   >`${txn.counterpartyAccountSuffix}`.as("counterpartyAccountSuffix"),
+  // 刷卡的卡片末四碼：多卡共用帳戶（台新、中信）以 raw `cardLast4`，國泰以 raw `cardNo`
+  // 的末四碼辨識；只輸出 4 位數字，不回傳完整卡號。
+  cardLast4: sql<string | null>`CASE
+    WHEN ${account.accountType} = 'credit' AND json_valid(${txn.rawPayload}) THEN (
+      SELECT value FROM (
+        SELECT json_extract(${txn.rawPayload}, '$.cardLast4') AS value
+        UNION ALL
+        SELECT substr(replace(replace(json_extract(${txn.rawPayload}, '$.cardNo'), '-', ''), ' ', ''), -4)
+      ) WHERE value GLOB '[0-9][0-9][0-9][0-9]' LIMIT 1
+    )
+  END`.as("cardLast4"),
 };
 
 const creditCardBillColumns = {
@@ -113,6 +124,7 @@ export type BankTransactionPageRow = {
   transferPeerId?: string | null;
   counterpartyBankCode?: string | null;
   counterpartyAccountSuffix?: string | null;
+  cardLast4?: string | null;
 };
 
 export type CreditCardBillPageCursor = {

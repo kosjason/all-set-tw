@@ -192,6 +192,8 @@ export const transactions: Tx[] = [
     day: "2026-09-10",
     amount: -1200,
     description: "咖啡豆專賣",
+    // 國泰刷卡明細只有遮罩後的卡號；交易 API 只取末四碼。
+    raw: { cardNo: "4000-12** ****-1111" },
   },
   {
     id: "c1111-refund",

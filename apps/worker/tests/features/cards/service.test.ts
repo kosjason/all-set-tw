@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { CardIssuerSummary } from "@taiwan-fin-hub/core";
 import { cardRoutes } from "../../../src/features/cards/route";
+import { loadBankRange } from "../../../src/features/bank/service";
 import {
   getCardIssuerBills,
   getCardsSummary,
@@ -121,12 +122,61 @@ describe("credit card summary", () => {
       name: "台新信用卡 5555",
       unbilledAmount: 600,
       activityFilter: { q: "台新信用卡" },
-      activityFilterExact: false,
+      // 交易 API 帶逐筆 cardLast4，多卡共用帳戶也能精準篩到該卡。
+      activityFilterExact: true,
     });
     expect(taishinCards.get("6666")).toMatchObject({
       unbilledAmount: 400,
       pendingAmount: 400,
     });
+  });
+
+  it("sums each card's spending within the current statement period", async () => {
+    const { byIssuer } = await issuers();
+    const cathay = byIssuer.get("cathaybk")!;
+    // 上期結帳 08-06、本期結帳 09-06。
+    expect(cathay.statementPeriod).toEqual({
+      from: "2026-08-07",
+      to: "2026-09-06",
+    });
+    const cards = new Map(cathay.cards.map((card) => [card.last4, card]));
+    // 3333 在結帳日前刷卡入帳，屬於本期；4444 結帳日後才入帳，屬於下一期。
+    expect(cards.get("3333")).toMatchObject({
+      statementAmount: 500,
+      statementTransactionCount: 1,
+      unbilledAmount: 0,
+    });
+    expect(cards.get("4444")).toMatchObject({
+      statementAmount: 0,
+      unbilledAmount: 300,
+    });
+    expect(cards.get("1111")).toMatchObject({ statementAmount: 0 });
+
+    // 玉山沒有上期帳單紀錄時仍以結帳日往前一個月推算：08-16～09-15。
+    const esun = byIssuer.get("esun")!;
+    expect(esun.statementPeriod).toEqual({
+      from: "2026-08-16",
+      to: "2026-09-15",
+    });
+    expect(
+      esun.cards.reduce((sum, card) => sum + (card.statementAmount ?? 0), 0),
+    ).toBe(2000);
+  });
+
+  it("exposes each card transaction's last four digits without the full number", async () => {
+    const bank = await loadBankRange(db, {
+      from: "2026-09-01",
+      to: "2026-09-30",
+    });
+    const byId = new Map(
+      bank.transactions.map((transaction) => [transaction.id, transaction]),
+    );
+    expect(byId.get("t5555-shop")?.cardLast4).toBe("5555");
+    expect(byId.get("t6666-pending")?.cardLast4).toBe("6666");
+    expect(byId.get("c1111-shop")?.cardLast4).toBe("1111");
+    // 沒有卡號的刷卡與存款交易不帶 cardLast4。
+    expect(byId.get("c3333-billed")?.cardLast4 ?? null).toBeNull();
+    expect(byId.get("cathay-pay-bank")?.cardLast4 ?? null).toBeNull();
   });
 
   it("derives paid, unpaid, unknown and estimated statuses", async () => {

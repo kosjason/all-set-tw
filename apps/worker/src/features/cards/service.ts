@@ -471,24 +471,38 @@ function estimatedReasons(
   return reasons;
 }
 
-/** 未出帳消費：上期結帳日之後、spending 角色的刷卡（含待入帳），依卡片分組。 */
-async function summarizeUnbilled(
+/**
+ * 依卡片分組的刷卡消費（spending 角色、未被判為重複）：
+ * - 未出帳：上期結帳日隔天（`since`）起，含待入帳。
+ * - 本期帳單：`statement.from`～`statement.to`（本期結帳日）之間的刷卡；結帳日不明時不計。
+ *   銀行只開合併帳單，各卡在帳單中的金額由刷卡明細加總，不含前期餘額、利息與費用。
+ */
+async function summarizeCards(
   db: D1Database,
   issuer: Issuer,
   since: string,
+  statement: { from: string; to: string } | null,
   loaded: LoadedTransactions,
 ) {
   const { definitions, multiCardAccounts } = cardDefinitions(issuer.accounts);
-  const unbilled = loaded.transactions.filter(
+  const spending = loaded.transactions.filter(
     (transaction) =>
       issuer.identity.accountIds.has(transaction.accountId) &&
       transaction.economicRole === "spending" &&
-      !transaction.duplicateOf &&
-      billingDay(transaction) >= since,
+      !transaction.duplicateOf,
   );
+  const unbilled = spending.filter(
+    (transaction) => billingDay(transaction) >= since,
+  );
+  const statementTransactions = statement
+    ? spending.filter((transaction) => {
+        const day = billingDay(transaction);
+        return day >= statement.from && day <= statement.to;
+      })
+    : [];
   const cardLast4 = await listTransactionCardLast4(
     db,
-    unbilled
+    [...unbilled, ...statementTransactions]
       .filter((transaction) => multiCardAccounts.has(transaction.accountId))
       .map((transaction) => transaction.id),
   );
@@ -507,31 +521,22 @@ async function summarizeUnbilled(
       unbilledAmount: 0,
       pendingAmount: 0,
       transactionCount: 0,
+      statementAmount: statement ? 0 : null,
+      statementTransactionCount: 0,
       activityFilter: {
         q: accountDisplayName(definition.account),
         source: "card",
         from: since,
       },
-      activityFilterExact: definition.exact,
+      // 交易 API 帶有逐筆 cardLast4，多卡共用帳戶只要知道末四碼也能精準篩選。
+      activityFilterExact: definition.exact || Boolean(definition.last4),
     };
     cards.set(definition.key, card);
     return card;
   };
   for (const definition of definitions) cardFor(definition);
 
-  let amount = 0;
-  let pendingAmount = 0;
-  const missingCurrencies = new Set<string>();
-  for (const transaction of unbilled) {
-    const value = toTwd(
-      -transaction.amount,
-      transaction.currency,
-      loaded.rates,
-    );
-    if (value == null) {
-      missingCurrencies.add(transaction.currency);
-      continue;
-    }
+  const cardOf = (transaction: CardTransaction) => {
     const account = accountById.get(transaction.accountId)!;
     const last4 = multiCardAccounts.has(account.id)
       ? (cardLast4.get(transaction.id) ?? null)
@@ -551,7 +556,23 @@ async function summarizeUnbilled(
           : accountDisplayName(account),
         exact: !multiCardAccounts.has(account.id),
       } satisfies CardDefinition);
-    const card = cardFor(definition);
+    return cardFor(definition);
+  };
+
+  let amount = 0;
+  let pendingAmount = 0;
+  const missingCurrencies = new Set<string>();
+  for (const transaction of unbilled) {
+    const value = toTwd(
+      -transaction.amount,
+      transaction.currency,
+      loaded.rates,
+    );
+    if (value == null) {
+      missingCurrencies.add(transaction.currency);
+      continue;
+    }
+    const card = cardOf(transaction);
     card.unbilledAmount += value;
     card.transactionCount += 1;
     amount += value;
@@ -559,6 +580,20 @@ async function summarizeUnbilled(
       card.pendingAmount += value;
       pendingAmount += value;
     }
+  }
+  for (const transaction of statementTransactions) {
+    const value = toTwd(
+      -transaction.amount,
+      transaction.currency,
+      loaded.rates,
+    );
+    if (value == null) {
+      missingCurrencies.add(transaction.currency);
+      continue;
+    }
+    const card = cardOf(transaction);
+    card.statementAmount = (card.statementAmount ?? 0) + value;
+    card.statementTransactionCount += 1;
   }
   return {
     unbilled: {
@@ -573,14 +608,35 @@ async function summarizeUnbilled(
         ...card,
         unbilledAmount: round(card.unbilledAmount),
         pendingAmount: round(card.pendingAmount),
+        statementAmount:
+          card.statementAmount == null ? null : round(card.statementAmount),
       }))
       .sort(
         (left, right) =>
-          right.unbilledAmount - left.unbilledAmount ||
+          (right.statementAmount ?? 0) +
+            right.unbilledAmount -
+            ((left.statementAmount ?? 0) + left.unbilledAmount) ||
           left.name.localeCompare(right.name, "zh-Hant"),
       ),
     physicalCardCount: definitions.length,
   };
+}
+
+/** 本期帳單的刷卡區間：上期結帳日隔天～本期結帳日；上期不明時以本期結帳日往前一個月推算。 */
+function statementWindow(
+  issuer: Issuer,
+  closing: string | null,
+): { from: string; to: string } | null {
+  if (!closing) return null;
+  const previous = issuer.bills
+    .map((bill) => normalizeDay(bill.statementClosingDate))
+    .filter((day): day is string => Boolean(day) && day! < closing)
+    .sort()
+    .at(-1);
+  if (previous) return { from: shiftDate(previous, 1), to: closing };
+  const date = new Date(`${closing}T00:00:00.000Z`);
+  date.setUTCMonth(date.getUTCMonth() - 1);
+  return { from: shiftDate(date.toISOString().slice(0, 10), 1), to: closing };
 }
 
 function issuerWindowStart(issuer: Issuer, monthStart: string) {
@@ -622,10 +678,14 @@ export async function getCardsSummary(
         .find(Boolean) ??
       null;
     const since = closing ? shiftDate(closing, 1) : monthStart;
-    const { unbilled, cards, physicalCardCount } = await summarizeUnbilled(
+    const statementPeriod = currentBill
+      ? statementWindow(issuer, currentBill.statementClosingDate ?? null)
+      : null;
+    const { unbilled, cards, physicalCardCount } = await summarizeCards(
       db,
       issuer,
       since,
+      statementPeriod,
       loaded,
     );
     const reasons = estimatedReasons(issuer, currentBill, closing != null);
@@ -635,6 +695,7 @@ export async function getCardsSummary(
       bankCode: issuer.bankCode,
       combinedStatement: physicalCardCount > 1,
       currentBill,
+      statementPeriod,
       unbilled,
       cards,
       source: sourceOf(issuer),

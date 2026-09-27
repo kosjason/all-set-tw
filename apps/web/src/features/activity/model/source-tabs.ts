@@ -67,8 +67,6 @@ export interface CardIdentity {
   last4?: string;
 }
 
-type TransactionWithCard = BankTransactionRow & { cardLast4?: string | null };
-
 /**
  * 交易的卡片末四碼：後端若提供交易層級的 `cardLast4`（多卡共用帳戶，例如台新）
  * 優先使用，否則用帳戶末四碼。
@@ -77,8 +75,7 @@ export function transactionCardLast4(
   transaction: BankTransactionRow | undefined,
 ): string | undefined {
   if (!transaction) return undefined;
-  const raw =
-    (transaction as TransactionWithCard).cardLast4 ?? transaction.accountLast4;
+  const raw = transaction.cardLast4 ?? transaction.accountLast4;
   return raw && /^\d{4}$/.test(raw) ? raw : undefined;
 }
 

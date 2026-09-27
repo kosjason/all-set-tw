@@ -214,10 +214,25 @@
             缺少 {issuer.unbilled.missingCurrencies.join("、")} 匯率，未計入。
           </p>
         {/if}
-        <ul class="mt-2 divide-y divide-border">
+      </div>
+
+      <div>
+        <div
+          class="grid grid-cols-[minmax(0,1fr)_6.5rem_6.5rem] items-baseline gap-3 border-b border-border pb-1.5 text-caption font-semibold text-subtle"
+        >
+          <h4>各卡消費</h4>
+          <span
+            class="text-right"
+            title={issuer.statementPeriod
+              ? `${formatDate(issuer.statementPeriod.from)}～${formatDate(issuer.statementPeriod.to)}`
+              : undefined}>本期帳單</span
+          >
+          <span class="text-right">未出帳</span>
+        </div>
+        <ul class="divide-y divide-border">
           {#each issuer.cards as card (card.key)}
             <li
-              class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-2"
+              class="grid grid-cols-[minmax(0,1fr)_6.5rem_6.5rem] items-center gap-3 py-2"
               data-testid={`card-${card.key}`}
             >
               <div class="min-w-0">
@@ -230,8 +245,24 @@
                     : `查看${issuer.name}明細`}</a
                 >
               </div>
-              <div class="text-right">
-                <p class="text-sm font-semibold tabular-nums">
+              <div class="text-right" data-testid="card-statement">
+                {#if card.statementAmount == null}
+                  <p class="text-sm text-subtle">—</p>
+                {:else}
+                  <p
+                    class={`text-sm font-semibold tabular-nums ${card.statementAmount === 0 ? "text-subtle" : ""}`}
+                  >
+                    {formatCurrency(card.statementAmount)}
+                  </p>
+                  <p class="text-caption text-subtle">
+                    {card.statementTransactionCount} 筆
+                  </p>
+                {/if}
+              </div>
+              <div class="text-right" data-testid="card-unbilled">
+                <p
+                  class={`text-sm font-semibold tabular-nums ${card.unbilledAmount === 0 ? "text-subtle" : ""}`}
+                >
                   {formatCurrency(card.unbilledAmount)}
                 </p>
                 <p class="text-caption text-subtle">
@@ -245,6 +276,13 @@
             <li class="py-2 text-sm text-subtle">沒有卡片資料。</li>
           {/each}
         </ul>
+        {#if issuer.combinedStatement && issuer.statementPeriod}
+          <p class="mt-2 text-caption text-subtle">
+            本期帳單為 {formatDate(issuer.statementPeriod.from)}～{formatDate(
+              issuer.statementPeriod.to,
+            )} 各卡刷卡加總；合併帳單的應繳金額另含前期餘額、利息與費用，可能與加總不同。
+          </p>
+        {/if}
       </div>
 
       <footer class="text-caption text-subtle" data-testid="issuer-source">

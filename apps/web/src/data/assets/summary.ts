@@ -25,6 +25,11 @@ export interface InstitutionAssetGroup {
   assetTotalTwd: number;
   debtTotalTwd: number;
   hasUnknownCardBalance: boolean;
+  /**
+   * 沒有自己餘額、欠款併入同一資料來源合併帳單帳戶的卡片 id。銀行每期只開一張合併帳單，
+   * 共用額度與欠款只記在合併帳單帳戶，各卡本來就沒有餘額，不算資料不完整。
+   */
+  combinedBillCardIds: string[];
   foreignCurrencies: string[];
 }
 
@@ -50,6 +55,21 @@ function institutionKey(account: BankAccountRow) {
   const bankCode =
     account.bankCode ?? CONNECTOR_BANK_CODES[account.connectorId];
   return bankCode ? `bank:${bankCode}` : `connector:${account.connectorId}`;
+}
+
+/** 同一資料來源已有帳戶記錄餘額（合併帳單）時，沒有餘額的其他卡視為併入該帳單。 */
+function combinedBillCardIds(cards: BankAccountRow[]) {
+  const connectorsWithBalance = new Set(
+    cards
+      .filter((card) => card.balance != null)
+      .map((card) => card.connectorId),
+  );
+  return cards
+    .filter(
+      (card) =>
+        card.balance == null && connectorsWithBalance.has(card.connectorId),
+    )
+    .map((card) => card.id);
 }
 
 export function calculateAssetSummary({
@@ -177,7 +197,12 @@ export function calculateAssetSummary({
           (sum, account) => sum + toTwd(account.balance ?? 0, account.currency),
           0,
         ),
-        hasUnknownCardBalance: cards.some((card) => card.balance == null),
+        combinedBillCardIds: combinedBillCardIds(cards),
+        hasUnknownCardBalance: cards.some(
+          (card) =>
+            card.balance == null &&
+            !combinedBillCardIds(cards).includes(card.id),
+        ),
         debtTotalTwd: cards.reduce(
           (sum, account) =>
             sum + Math.abs(toTwd(account.balance ?? 0, account.currency)),
@@ -214,7 +239,9 @@ export function calculateAssetSummary({
     investmentTotal,
     manualTotal,
     cardDebt,
-    hasUnknownCardBalance: cards.some((card) => card.balance == null),
+    hasUnknownCardBalance: institutionGroups.some(
+      (group) => group.hasUnknownCardBalance,
+    ),
     grossAssets,
     positiveAssetTotal,
     netWorth: grossAssets - cardDebt,

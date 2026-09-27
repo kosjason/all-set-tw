@@ -703,7 +703,8 @@ TradingView、Trend Micro／趨勢科技 → `tech`；LINE禮物 → `misc`（�
   每組回傳本期帳單 `currentBill`（`billingPeriod`、`statementBalance`、`minimumPayment`、
   `paymentDueDate`、`statementClosingDate`、`paidAmount`、`remainingAmount`、`paymentStatus`、
   `minimumPaid`、`payments`、`daysUntilDue`）、未出帳 `unbilled`（`since`、`amount`、
-  `pendingAmount`、`transactionCount`、`missingCurrencies`）、各卡 `cards`、資料來源 `source`
+  `pendingAmount`、`transactionCount`、`missingCurrencies`）、本期刷卡區間 `statementPeriod`、各卡 `cards`
+  （含未出帳與本期帳單 `statementAmount`／`statementTransactionCount`）、資料來源 `source`
   （`mode = sync | manual_import`、最近成功時間與狀態）、`lastUpdatedAt`，以及
   `estimated`／`estimatedReasons`。頂層另有 `totals`（TWD 本期應繳、尚未繳、未出帳）與最近一個
   未繳清的截止日 `nextDue`。
@@ -739,7 +740,15 @@ TradingView、Trend Micro／趨勢科技 → `tech`；LINE禮物 → `misc`（�
 歸期；不知道結帳日時自本月 1 日起算（`closing_date_unknown`）。中信只能半自動匯入，一律標示
 `manual_import` 推估。`excluded` 角色的交易不計入未出帳、推估帳單與繳款（這些計算只看 `spending`／
 `card_payment`）。各卡 `activityFilter`（帳戶名稱、`source=card`、未出帳起日）供前端組成
-交易頁連結；多卡共用帳戶時只能篩到整個帳戶（`activityFilterExact = false`）。
+交易頁連結；一張卡一個帳戶，或多卡共用帳戶但已知末四碼時 `activityFilterExact = true`。
+
+各卡本期帳單：銀行只開合併帳單，應繳與額度只記在合併帳單帳戶，各卡在帳單中的金額由刷卡明細推得。
+`statementPeriod` 為上期結帳日隔天～本期結帳日（沒有上期帳單時以本期結帳日往前一個月推算；
+本期結帳日不明時為 null），各卡 `statementAmount` 為區間內 `spending` 交易淨額（退款沖減、以入帳日
+歸期），不含前期餘額、利息與費用，因此加總不一定等於應繳。
+
+交易 API 的 `cardLast4`：信用卡交易由 raw `cardLast4`（台新、中信），或 raw `cardNo` 的末四碼（國泰，
+來源已遮罩）取得，只輸出 4 位數字；多卡共用帳戶的交易頁以此篩到單張卡。
 
 ### 待處理收件匣
 
