@@ -22,6 +22,7 @@ import {
   evaluateBill,
   mergeIssuerBills,
   normalizeDay,
+  oneMonthBefore,
   shiftDate,
   taipeiDate,
   transactionDay,
@@ -581,6 +582,7 @@ async function summarizeCards(
       pendingAmount += value;
     }
   }
+  const statementMissingCurrencies = new Set<string>();
   for (const transaction of statementTransactions) {
     const value = toTwd(
       -transaction.amount,
@@ -588,7 +590,7 @@ async function summarizeCards(
       loaded.rates,
     );
     if (value == null) {
-      missingCurrencies.add(transaction.currency);
+      statementMissingCurrencies.add(transaction.currency);
       continue;
     }
     const card = cardOf(transaction);
@@ -603,6 +605,7 @@ async function summarizeCards(
       transactionCount: unbilled.length,
       missingCurrencies: [...missingCurrencies].sort(),
     },
+    statementMissingCurrencies: [...statementMissingCurrencies].sort(),
     cards: [...cards.values()]
       .map((card) => ({
         ...card,
@@ -622,21 +625,27 @@ async function summarizeCards(
   };
 }
 
-/** 本期帳單的刷卡區間：上期結帳日隔天～本期結帳日；上期不明時以本期結帳日往前一個月推算。 */
+/**
+ * 本期帳單的刷卡區間：緊鄰上一期帳單的結帳日隔天～本期結帳日；上一期沒有帳單或沒有結帳日時，
+ * 以本期結帳日往前一個月推算。
+ */
 function statementWindow(
   issuer: Issuer,
-  closing: string | null,
+  currentBill: Pick<CardBill, "billingPeriod" | "statementClosingDate"> | null,
 ): { from: string; to: string } | null {
-  if (!closing) return null;
-  const previous = issuer.bills
-    .map((bill) => normalizeDay(bill.statementClosingDate))
-    .filter((day): day is string => Boolean(day) && day! < closing)
-    .sort()
-    .at(-1);
-  if (previous) return { from: shiftDate(previous, 1), to: closing };
-  const date = new Date(`${closing}T00:00:00.000Z`);
-  date.setUTCMonth(date.getUTCMonth() - 1);
-  return { from: shiftDate(date.toISOString().slice(0, 10), 1), to: closing };
+  const closing = normalizeDay(currentBill?.statementClosingDate);
+  if (!currentBill || !closing) return null;
+  const previousBill = issuer.bills
+    .filter((bill) => bill.billingPeriod < currentBill.billingPeriod)
+    .sort((left, right) =>
+      right.billingPeriod.localeCompare(left.billingPeriod),
+    )[0];
+  const previousClosing = normalizeDay(previousBill?.statementClosingDate);
+  const start =
+    previousClosing && previousClosing < closing
+      ? previousClosing
+      : oneMonthBefore(closing);
+  return { from: shiftDate(start, 1), to: closing };
 }
 
 function issuerWindowStart(issuer: Issuer, monthStart: string) {
@@ -645,11 +654,15 @@ function issuerWindowStart(issuer: Issuer, monthStart: string) {
   const snapshotClosing = issuer.snapshots
     .map((snapshot) => normalizeDay(snapshot.statementClosingDate))
     .find(Boolean);
-  const start =
+  const currentClosing = normalizeDay(current?.statementClosingDate);
+  const start = [
     normalizeDay(previous?.statementClosingDate) ??
-    normalizeDay(current?.statementClosingDate) ??
-    snapshotClosing ??
-    shiftDate(monthStart, -1);
+      currentClosing ??
+      snapshotClosing ??
+      shiftDate(monthStart, -1),
+    // 本期區間在沒有上期結帳日時由本期結帳日往前一個月推算，載入範圍要涵蓋到那天。
+    ...(currentClosing ? [oneMonthBefore(currentClosing)] : []),
+  ].sort()[0]!;
   return shiftDate(start, -TRANSACTION_LOOKBACK_DAYS);
 }
 
@@ -678,16 +691,9 @@ export async function getCardsSummary(
         .find(Boolean) ??
       null;
     const since = closing ? shiftDate(closing, 1) : monthStart;
-    const statementPeriod = currentBill
-      ? statementWindow(issuer, currentBill.statementClosingDate ?? null)
-      : null;
-    const { unbilled, cards, physicalCardCount } = await summarizeCards(
-      db,
-      issuer,
-      since,
-      statementPeriod,
-      loaded,
-    );
+    const statementPeriod = statementWindow(issuer, currentBill);
+    const { unbilled, statementMissingCurrencies, cards, physicalCardCount } =
+      await summarizeCards(db, issuer, since, statementPeriod, loaded);
     const reasons = estimatedReasons(issuer, currentBill, closing != null);
     summaries.push({
       issuer: issuer.issuer,
@@ -696,6 +702,7 @@ export async function getCardsSummary(
       combinedStatement: physicalCardCount > 1,
       currentBill,
       statementPeriod,
+      statementMissingCurrencies,
       unbilled,
       cards,
       source: sourceOf(issuer),

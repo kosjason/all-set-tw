@@ -24,6 +24,7 @@ function issuer(
     combinedStatement: false,
     currentBill: null,
     statementPeriod: null,
+    statementMissingCurrencies: [],
     unbilled: {
       since: "2026-09-07",
       amount: 0,

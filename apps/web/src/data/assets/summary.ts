@@ -57,17 +57,28 @@ function institutionKey(account: BankAccountRow) {
   return bankCode ? `bank:${bankCode}` : `connector:${account.connectorId}`;
 }
 
-/** 同一資料來源已有帳戶記錄餘額（合併帳單）時，沒有餘額的其他卡視為併入該帳單。 */
+const COMBINED_BILL_SOURCE_ID = /^credit:[^:]+:main(?::[A-Z]{3})?$/;
+
+/**
+ * 沒有自己餘額、欠款併入合併帳單的實體卡：同一資料來源、同一幣別有合併帳單帳戶
+ * （sourceId `credit:<來源>:main`，外幣加 `:<幣別>`）記錄餘額時才成立。各幣別或各卡分開計帳、
+ * 各自應有餘額的帳戶缺資料時仍視為不完整。
+ */
 function combinedBillCardIds(cards: BankAccountRow[]) {
-  const connectorsWithBalance = new Set(
+  const billsWithBalance = new Set(
     cards
-      .filter((card) => card.balance != null)
-      .map((card) => card.connectorId),
+      .filter(
+        (card) =>
+          card.balance != null && COMBINED_BILL_SOURCE_ID.test(card.sourceId),
+      )
+      .map((card) => `${card.connectorId}:${card.currency}`),
   );
   return cards
     .filter(
       (card) =>
-        card.balance == null && connectorsWithBalance.has(card.connectorId),
+        card.balance == null &&
+        !COMBINED_BILL_SOURCE_ID.test(card.sourceId) &&
+        billsWithBalance.has(`${card.connectorId}:${card.currency}`),
     )
     .map((card) => card.id);
 }
@@ -176,6 +187,8 @@ export function calculateAssetSummary({
       const cards = groupedAccounts.filter(
         (account) => account.accountType === "credit",
       );
+      const combined = combinedBillCardIds(cards);
+      const combinedSet = new Set(combined);
       return {
         key,
         institution:
@@ -197,11 +210,9 @@ export function calculateAssetSummary({
           (sum, account) => sum + toTwd(account.balance ?? 0, account.currency),
           0,
         ),
-        combinedBillCardIds: combinedBillCardIds(cards),
+        combinedBillCardIds: combined,
         hasUnknownCardBalance: cards.some(
-          (card) =>
-            card.balance == null &&
-            !combinedBillCardIds(cards).includes(card.id),
+          (card) => card.balance == null && !combinedSet.has(card.id),
         ),
         debtTotalTwd: cards.reduce(
           (sum, account) =>

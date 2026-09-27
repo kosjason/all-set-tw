@@ -743,12 +743,17 @@ TradingView、Trend Micro／趨勢科技 → `tech`；LINE禮物 → `misc`（�
 交易頁連結；一張卡一個帳戶，或多卡共用帳戶但已知末四碼時 `activityFilterExact = true`。
 
 各卡本期帳單：銀行只開合併帳單，應繳與額度只記在合併帳單帳戶，各卡在帳單中的金額由刷卡明細推得。
-`statementPeriod` 為上期結帳日隔天～本期結帳日（沒有上期帳單時以本期結帳日往前一個月推算；
-本期結帳日不明時為 null），各卡 `statementAmount` 為區間內 `spending` 交易淨額（退款沖減、以入帳日
+`statementPeriod` 為緊鄰上一期帳單的結帳日隔天～本期結帳日（上一期沒有帳單或沒有結帳日時，以本期
+結帳日往前一個月推算，前一個月沒有同一天時取該月最後一天；本期結帳日不明時為 null；交易載入範圍
+涵蓋此區間），各卡 `statementAmount` 為區間內 `spending` 交易淨額（退款沖減、以入帳日
 歸期），不含前期餘額、利息與費用，因此加總不一定等於應繳。
 
-交易 API 的 `cardLast4`：信用卡交易由 raw `cardLast4`（台新、中信），或 raw `cardNo` 的末四碼（國泰，
-來源已遮罩）取得，只輸出 4 位數字；多卡共用帳戶的交易頁以此篩到單張卡。
+`statementMissingCurrencies` 列出本期區間內缺匯率而未計入各卡本期金額的外幣（未出帳另有
+`unbilled.missingCurrencies`）。
+
+交易 API 的 `cardLast4`：信用卡交易取 raw `cardLast4`（國泰、台新、中信）；舊版國泰資料只有遮罩後的
+raw `cardNo`，取其末四碼相容。只輸出 4 位數字字串，非信用卡為 NULL；多卡共用帳戶的交易頁以此篩到
+單張卡。交易頁的卡片篩選只比對末四碼，不同發卡行剛好有相同末四碼的卡會一起列出。
 
 ### 待處理收件匣
 

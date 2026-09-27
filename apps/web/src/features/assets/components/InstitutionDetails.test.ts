@@ -195,4 +195,45 @@ describe("credit card balance availability", () => {
     expect(screen.queryByText("金額尚未取得")).not.toBeInTheDocument();
     expect(screen.queryByText("資料不完整")).not.toBeInTheDocument();
   });
+
+  it("still flags a missing balance when accounts are billed separately", () => {
+    const summary = calculateAssetSummary({
+      bank: {
+        accounts: [
+          {
+            id: "twd",
+            sourceId: "credit:sinopac:TWD",
+            connectorId: "sinopac",
+            accountType: "credit",
+            currency: "TWD",
+            balance: -3000,
+          },
+          {
+            id: "usd",
+            sourceId: "credit:sinopac:USD",
+            connectorId: "sinopac",
+            accountType: "credit",
+            currency: "USD",
+            balance: null,
+          },
+          {
+            id: "card-9999",
+            sourceId: "credit:sinopac:9999",
+            connectorId: "sinopac",
+            accountType: "credit",
+            currency: "TWD",
+            balance: null,
+          },
+        ],
+        transactions: [],
+      },
+      investments: [],
+      manualAssets: [],
+      rates: [{ currency: "USD", rateTwd: 32, updatedAt: "2026-09-13" }],
+    });
+    const group = summary.institutionGroups[0];
+    expect(group.combinedBillCardIds).toEqual([]);
+    expect(group.hasUnknownCardBalance).toBe(true);
+    expect(summary.hasUnknownCardBalance).toBe(true);
+  });
 });

@@ -63,15 +63,20 @@ const bankTransactionColumns = {
   counterpartyAccountSuffix: sql<
     string | null
   >`${txn.counterpartyAccountSuffix}`.as("counterpartyAccountSuffix"),
-  // 刷卡的卡片末四碼：多卡共用帳戶（台新、中信）以 raw `cardLast4`，國泰以 raw `cardNo`
-  // 的末四碼辨識；只輸出 4 位數字，不回傳完整卡號。
+  // 刷卡的卡片末四碼：取 raw `cardLast4`（國泰、台新、中信）；舊版國泰資料只有遮罩後的 raw
+  // `cardNo`，取其末四碼相容。只輸出 4 位數字字串，不回傳完整卡號；非信用卡為 NULL。
   cardLast4: sql<string | null>`CASE
-    WHEN ${account.accountType} = 'credit' AND json_valid(${txn.rawPayload}) THEN (
-      SELECT value FROM (
-        SELECT json_extract(${txn.rawPayload}, '$.cardLast4') AS value
-        UNION ALL
-        SELECT substr(replace(replace(json_extract(${txn.rawPayload}, '$.cardNo'), '-', ''), ' ', ''), -4)
-      ) WHERE value GLOB '[0-9][0-9][0-9][0-9]' LIMIT 1
+    WHEN ${account.accountType} = 'credit' AND json_valid(${txn.rawPayload}) THEN COALESCE(
+      CASE
+        WHEN json_type(${txn.rawPayload}, '$.cardLast4') = 'text'
+          AND json_extract(${txn.rawPayload}, '$.cardLast4') GLOB '[0-9][0-9][0-9][0-9]'
+        THEN json_extract(${txn.rawPayload}, '$.cardLast4')
+      END,
+      CASE
+        WHEN json_type(${txn.rawPayload}, '$.cardNo') = 'text'
+          AND substr(replace(replace(json_extract(${txn.rawPayload}, '$.cardNo'), '-', ''), ' ', ''), -4) GLOB '[0-9][0-9][0-9][0-9]'
+        THEN substr(replace(replace(json_extract(${txn.rawPayload}, '$.cardNo'), '-', ''), ' ', ''), -4)
+      END
     )
   END`.as("cardLast4"),
 };

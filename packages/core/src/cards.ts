@@ -132,6 +132,8 @@ export interface CardIssuerSummary {
   currentBill: CurrentCardBill | null;
   /** 本期帳單的刷卡區間（上期結帳日隔天～本期結帳日，YYYY-MM-DD）；結帳日不明時為 null。 */
   statementPeriod: { from: string; to: string } | null;
+  /** 本期帳單區間內缺匯率而未計入各卡 `statementAmount` 的外幣。 */
+  statementMissingCurrencies: string[];
   unbilled: CardUnbilledSummary;
   cards: CardSummaryCard[];
   source: CardDataSource;

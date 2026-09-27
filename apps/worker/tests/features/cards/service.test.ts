@@ -10,7 +10,16 @@ import { honoFactory } from "../../../src/platform/hono";
 import { apiErrorResponse } from "../../../src/platform/http";
 import type { Env } from "../../../src/platform/env";
 import { createTestD1 } from "../../../../../packages/db/testing/d1";
-import { NOW, seedCards, transactionStatement } from "./fixtures";
+import {
+  accountStatement,
+  accounts,
+  billStatement,
+  bills,
+  NOW,
+  seedCards,
+  transactionStatement,
+  transactions,
+} from "./fixtures";
 
 describe("credit card summary", () => {
   let harness: Awaited<ReturnType<typeof createTestD1>>;
@@ -152,7 +161,7 @@ describe("credit card summary", () => {
     });
     expect(cards.get("1111")).toMatchObject({ statementAmount: 0 });
 
-    // 玉山沒有上期帳單紀錄時仍以結帳日往前一個月推算：08-16～09-15。
+    // 玉山上期結帳 08-15、本期結帳 09-15。
     const esun = byIssuer.get("esun")!;
     expect(esun.statementPeriod).toEqual({
       from: "2026-08-16",
@@ -174,6 +183,7 @@ describe("credit card summary", () => {
     expect(byId.get("t5555-shop")?.cardLast4).toBe("5555");
     expect(byId.get("t6666-pending")?.cardLast4).toBe("6666");
     expect(byId.get("c1111-shop")?.cardLast4).toBe("1111");
+    expect(byId.get("c4444-late-post")?.cardLast4).toBe("4444");
     // 沒有卡號的刷卡與存款交易不帶 cardLast4。
     expect(byId.get("c3333-billed")?.cardLast4 ?? null).toBeNull();
     expect(byId.get("cathay-pay-bank")?.cardLast4 ?? null).toBeNull();
@@ -288,4 +298,38 @@ describe("credit card summary", () => {
     } as Env);
     expect(summary.status).toBe(200);
   });
+});
+
+describe("statement period without a previous bill", () => {
+  it("loads and sums a lone issuer's spending back to one month before the closing date", async () => {
+    const harness = await createTestD1();
+    try {
+      const db = harness.binding;
+      await db.batch([
+        ...accounts
+          .filter((account) => account.connector === "esun")
+          .map((account) => accountStatement(db, account)),
+        ...bills
+          .filter(
+            (bill) => bill.connector === "esun" && bill.period === "2026-09",
+          )
+          .map((bill) => billStatement(db, bill)),
+        ...transactions
+          .filter((tx) => tx.connector === "esun")
+          .map((tx) => transactionStatement(db, tx)),
+      ]);
+      const summary = await getCardsSummary(db, NOW);
+      const esun = summary.issuers.find((issuer) => issuer.issuer === "esun")!;
+      // 沒有上期帳單：由 09-15 往前一個月推算為 08-16 起，08-20 的刷卡也要載入並計入。
+      expect(esun.statementPeriod).toEqual({
+        from: "2026-08-16",
+        to: "2026-09-15",
+      });
+      expect(
+        esun.cards.reduce((sum, card) => sum + (card.statementAmount ?? 0), 0),
+      ).toBe(2000);
+    } finally {
+      await harness.mf.dispose();
+    }
+  }, 60_000);
 });
