@@ -175,9 +175,9 @@ test("uses the desktop asset ledger without losing detail workflows", async ({
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/#/assets");
 
-  // 新導覽下頁面標題是「資產」，清冊區塊標題為「帳戶與資產」。
+  // 新導覽下頁面標題是「資產」，清冊區塊標題為「資產總表」。
   await expect(
-    page.getByRole("heading", { name: "帳戶與資產", exact: true }),
+    page.getByRole("heading", { name: "資產總表", exact: true }),
   ).toBeVisible();
 
   const ledger = page
@@ -243,7 +243,7 @@ test("keeps the mobile ledger readable and expandable", async ({ page }) => {
   await taishin.click();
   await expect(taishin).toHaveAttribute("aria-expanded", "true");
   await expect(ledger.getByText("薪轉戶", { exact: true })).toBeVisible();
-  await expect(page.getByText(/已扣除 .+ 信用卡負債/)).toBeVisible();
+  await expect(page.getByText(/總資產 .+ − 卡債 .+/)).toBeVisible();
   await expect(ledger.getByText("元大台灣50")).toBeVisible();
   await expect(ledger.getByRole("button", { name: /^自住房屋/ })).toBeVisible();
   await expect(

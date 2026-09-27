@@ -348,7 +348,7 @@
     {:else}
       <section
         class="hidden min-w-0 grid-cols-12 gap-4 xl:grid xl:gap-5"
-        aria-label="資產總表"
+        aria-label="資產清冊"
       >
         <Card
           class="col-span-7 flex h-[540px] min-h-0 flex-col overflow-hidden"
