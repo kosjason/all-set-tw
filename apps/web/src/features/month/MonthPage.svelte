@@ -1,7 +1,7 @@
 <!--
-  本月（首頁）：月份切換與資料更新時間 → 條件式待處理提示條 → 收支算式
-  （收入 − 消費 ＝ 存下來，其中投資／留在帳戶）→ 卡費提醒（7 天內未繳）→
-  消費分類排行 → 近 6 月消費／存下來 → 最近交易 → 淨資產一行 → 發票去重摘要。
+  本月（首頁）：月份切換與資料更新時間 → 條件式待處理提示條，下方為分區 dashboard：
+  上排 收支算式（收入 − 消費 ＝ 存下來，其中投資／留在帳戶）｜卡費提醒（7 天內未繳）＋淨資產卡；
+  中排 消費分類排行｜近 6 月收入／消費；下排 最近交易｜發票對應卡。
   收支數字一律來自 summary API。
 -->
 <script lang="ts">
@@ -258,6 +258,28 @@
     </Card>
 
     <div class="grid min-w-0 content-start gap-4 xl:col-span-4 xl:gap-5">
+      {#if reminder}
+        <button
+          type="button"
+          data-testid="month-card-due"
+          class="flex min-h-14 min-w-0 items-center gap-3 rounded-xl border border-coral/30 bg-coral/5 px-4 py-3 text-left text-sm shadow-xs transition hover:bg-coral/10"
+          onclick={() => navigate("cards")}
+        >
+          <CreditCard class="size-5 shrink-0 text-coral" />
+          <span class="min-w-0 flex-1">
+            <span class="block font-semibold"
+              >{reminder.name} 卡費{cardDueLabel(reminder.daysUntilDue)}</span
+            >
+            <span class="block text-caption text-subtle"
+              >截止日 {reminder.paymentDueDate}{reminder.remainingAmount != null
+                ? ` · 尚未繳 ${formatCurrency(reminder.remainingAmount)}`
+                : ""}</span
+            >
+          </span>
+          <ChevronRight class="size-4 shrink-0 text-subtle" />
+        </button>
+      {/if}
+
       <Card class="min-w-0 border-steel/20 bg-steel/5">
         <button
           type="button"
@@ -285,34 +307,12 @@
           {/if}
         </button>
       </Card>
-
-      {#if reminder}
-        <button
-          type="button"
-          data-testid="month-card-due"
-          class="flex min-h-14 min-w-0 items-center gap-3 rounded-xl border border-coral/30 bg-coral/5 px-4 py-3 text-left text-sm shadow-xs transition hover:bg-coral/10"
-          onclick={() => navigate("cards")}
-        >
-          <CreditCard class="size-5 shrink-0 text-coral" />
-          <span class="min-w-0 flex-1">
-            <span class="block font-semibold"
-              >{reminder.name} 卡費{cardDueLabel(reminder.daysUntilDue)}</span
-            >
-            <span class="block text-caption text-subtle"
-              >截止日 {reminder.paymentDueDate}{reminder.remainingAmount != null
-                ? ` · 尚未繳 ${formatCurrency(reminder.remainingAmount)}`
-                : ""}</span
-            >
-          </span>
-          <ChevronRight class="size-4 shrink-0 text-subtle" />
-        </button>
-      {/if}
     </div>
   </section>
 
   <!-- 中：消費分類（左）＋近 6 個月趨勢（右） -->
-  <section class="grid min-w-0 gap-4 xl:grid-cols-12 xl:gap-5">
-    <Card class="min-w-0 p-4 md:p-5 xl:col-span-5">
+  <section class="grid min-w-0 gap-4 lg:grid-cols-2 xl:grid-cols-12 xl:gap-5">
+    <Card class="min-w-0 p-4 md:p-5 lg:col-span-1 xl:col-span-5">
       <SpendingCategoryRanking
         {ranking}
         total={summary?.spending ?? 0}
@@ -320,7 +320,7 @@
         onSelect={openCategory}
       />
     </Card>
-    <Card class="min-w-0 p-4 md:p-5 xl:col-span-7">
+    <Card class="min-w-0 p-4 md:p-5 lg:col-span-1 xl:col-span-7">
       <MonthTrend
         points={trend}
         {selectedMonth}
@@ -343,33 +343,35 @@
       />
     </Card>
     {#if dedupe}
-      <Card class="min-w-0 content-start p-4 md:p-5 xl:col-span-4">
+      <Card class="min-w-0 p-4 md:p-5 xl:col-span-4">
         <div data-testid="month-dedupe">
           <h2 class="font-semibold">發票對應</h2>
-          <div class="mt-3 grid gap-2 text-sm">
-            <p class="flex justify-between gap-3">
-              <span class="text-subtle">已併入刷卡</span>
-              <strong class="tabular-nums">{dedupe.merged} 張</strong>
-            </p>
-            <p class="flex justify-between gap-3">
-              <span class="text-subtle">未對應</span>
-              <strong class="tabular-nums">{dedupe.unmatched} 張</strong>
-            </p>
+          <dl class="mt-3 grid gap-2 text-sm">
+            <div class="flex justify-between gap-3">
+              <dt class="text-subtle">已併入刷卡</dt>
+              <dd class="font-semibold tabular-nums">{dedupe.merged} 張</dd>
+            </div>
+            <div class="flex justify-between gap-3">
+              <dt class="text-subtle">未對應</dt>
+              <dd class="font-semibold tabular-nums">{dedupe.unmatched} 張</dd>
+            </div>
             {#if dedupe.awaitingCard}
-              <p class="flex justify-between gap-3">
-                <span class="text-subtle">等待刷卡入帳</span>
-                <strong class="tabular-nums">{dedupe.awaitingCard} 張</strong>
-              </p>
+              <div class="flex justify-between gap-3">
+                <dt class="text-subtle">等待刷卡入帳</dt>
+                <dd class="font-semibold tabular-nums">
+                  {dedupe.awaitingCard} 張
+                </dd>
+              </div>
             {/if}
             {#if dedupe.ambiguous}
-              <p class="flex justify-between gap-3">
-                <span class="text-subtle">待確認</span>
-                <strong class="tabular-nums text-coral"
-                  >{dedupe.ambiguous} 張</strong
-                >
-              </p>
+              <div class="flex justify-between gap-3">
+                <dt class="text-subtle">待確認</dt>
+                <dd class="font-semibold tabular-nums text-coral">
+                  {dedupe.ambiguous} 張
+                </dd>
+              </div>
             {/if}
-          </div>
+          </dl>
           <button
             type="button"
             class="mt-4 text-sm font-semibold text-steel"
