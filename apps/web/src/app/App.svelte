@@ -140,10 +140,9 @@
         target.focus();
         return;
       }
-      const main = document.querySelector<HTMLElement>("main");
-      if (!main) return;
-      main.tabIndex = -1;
-      main.focus({ preventScroll: true });
+      document
+        .querySelector<HTMLElement>("main")
+        ?.focus({ preventScroll: true });
     });
   }
   // 抽屜開啟時把焦點移到關閉鈕；背景以 inert 排除在 Tab 順序外。
@@ -359,7 +358,8 @@
 
       <div class="flex min-w-0 flex-1 items-start">
         <main
-          class="mx-auto w-full min-w-0 max-w-[1440px] flex-1 px-4 pb-5 pt-0 sm:px-6 md:py-5 xl:px-8 xl:py-6"
+          tabindex="-1"
+          class="mx-auto w-full min-w-0 max-w-[1440px] flex-1 px-4 outline-none pb-5 pt-0 sm:px-6 md:py-5 xl:px-8 xl:py-6"
         >
           {#if view === "month"}
             <MonthPage {api} {navigate} {inboxCounts} />

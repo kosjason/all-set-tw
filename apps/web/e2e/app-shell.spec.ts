@@ -20,7 +20,7 @@ test.beforeEach(async ({ page }) => {
     else if (path === "/api/exchange-rates") body = [];
     else if (path === "/api/classification/categories") body = [];
     else if (path === "/api/history/net-worth/chart") body = [];
-    else throw new Error(`Unexpected API request in lazy-page test: ${path}`);
+    else throw new Error(`Unexpected API request in app-shell test: ${path}`);
     await route.fulfill({
       status: 200,
       contentType: "application/json",
