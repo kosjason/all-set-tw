@@ -239,7 +239,7 @@
     </button>
   {/if}
 
-  <!-- 上：本月收支（左）＋淨資產、卡費提醒（右） -->
+  <!-- 上：本月收支（左）＋卡費提醒、淨資產（右） -->
   <section class="grid min-w-0 gap-4 xl:grid-cols-12 xl:gap-5">
     <Card class="min-w-0 p-4 md:p-5 xl:col-span-8">
       <CashFlowSummary
