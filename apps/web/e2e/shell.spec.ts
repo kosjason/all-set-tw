@@ -444,7 +444,7 @@ test("warns about a missing exchange rate only when the foreign balance is posit
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/#/assets");
-  await expect(page.getByRole("region", { name: "淨資產" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "資產摘要" })).toBeVisible();
   await expect(warning).toHaveCount(0);
 
   hkdBalance = 100;

@@ -290,11 +290,12 @@ describe("month page", () => {
       },
     });
     const line = await screen.findByTestId("month-dedupe");
-    expect(line).toHaveTextContent(
-      "12 張發票已併入刷卡、3 張未對應、2 張等待刷卡入帳",
-    );
+    expect(line).toHaveTextContent(/已併入刷卡\s*12 張/);
+    expect(line).toHaveTextContent(/未對應\s*3 張/);
+    expect(line).toHaveTextContent(/等待刷卡入帳\s*2 張/);
+    expect(line).not.toHaveTextContent("待確認");
     await fireEvent.click(
-      within(line).getByRole("button", { name: "查看發票" }),
+      within(line).getByRole("button", { name: "查看發票 →" }),
     );
     expect(navigate).toHaveBeenCalledWith("transactions", {
       query: "tab=invoice",

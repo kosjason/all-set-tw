@@ -85,7 +85,10 @@ npm run verify:web
 ## 本月頁
 
 `features/month/MonthPage` 是首頁，所有收支數字來自 summary API（範圍為最近 6 個月，
-以台北月份為準），由上而下：
+以台北月份為準）。版面為分區 dashboard：月份列與待處理提示條之下，`xl` 以上分三排——
+上排左為收支算式、右為卡費提醒與淨資產卡；中排左為消費分類、右為近 6 個月趨勢（`lg` 起即為兩欄）；
+下排左為最近交易、右為發票對應（沒有發票時最近交易佔滿整排）。較窄時依上、中、下排，每排左欄先、
+右欄後排成單欄。各區塊內容（編號為內容說明，不代表排列順序）：
 
 1. 月份切換（最近 6 個月，非本月時寫入 `#/month?month=`）與資料更新時間（同步工作最近一次成功）。
 2. 條件式待處理提示條（`model/month.ts` 的 `pendingBanner`）：收件匣有項目時導向待處理（有
@@ -100,14 +103,14 @@ npm run verify:web
 5. 消費分類排行（水平長條，`data/activity/categories.ts` 的 `buildSpendingCategoryRanking`，每列「emoji 名稱」，
    顏色沿用 `ACTIVITY_CATEGORY_COLOR_BY_ID`；9 個分類沒有子類，不需展開）；點選導向交易頁該分類的消費
    （`role=spending&category=`）。
-6. 近 6 個月消費／存下來長條（點選切換月份）。
+6. 近 6 個月收入／消費長條，下方文字列出存下來（點選切換月份）。
 7. 最近 8 筆交易（去掉已併入其他紀錄的重複項目），主標為商家顯示名稱並列品項與備註，連到交易頁。
-8. 淨資產一行（`data/assets/summary.ts` 的 `calculateAssetSummary`，較上月取自資產走勢），連到資產頁。
-9. 發票去重摘要：summary 的 `dedupe`（`InvoiceDedupeCounts`）有任何發票時顯示
-   「N 張發票已併入刷卡、M 張未對應」，另有等待刷卡入帳或待確認的張數時一併列出
+8. 淨資產卡（`data/assets/summary.ts` 的 `calculateAssetSummary`，較上月取自資產走勢），連到資產頁。
+9. 發票對應卡：summary 的 `dedupe`（`InvoiceDedupeCounts`）有任何發票時顯示
+   已併入刷卡與未對應張數，另有等待刷卡入帳或待確認的張數時一併列出
    （`model/dedupe.ts`），點「查看發票」開啟交易頁發票分頁。
 
-「支出高於收入」這類警告卡已移除。原總覽的淨資產與資產走勢移到資產頁。
+「支出高於收入」這類警告卡已移除。資產走勢在資產頁；本月頁保留淨資產摘要卡。
 
 ## 資產頁版面
 
