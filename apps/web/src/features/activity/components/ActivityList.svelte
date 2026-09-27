@@ -164,7 +164,7 @@
         /></colgroup
       >
       <thead
-        class="sticky top-[calc(var(--app-sticky-top,0px)_+_var(--activity-toolbar-height,0px))] z-10 border-b border-ink/10 bg-paper text-caption text-subtle xl:top-[var(--activity-toolbar-height,0px)]"
+        class="sticky top-[calc(var(--app-sticky-top,0px)_+_var(--activity-toolbar-height,0px))] z-10 border-b border-ink/10 bg-paper text-caption text-subtle"
       >
         <tr>
           {@render sortHeader("date", "pr-3")}

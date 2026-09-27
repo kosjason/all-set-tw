@@ -69,6 +69,17 @@ npm run verify:web
   信用卡／資產／資料來源」，底部「設定」。平板（md–xl）以頂端橫列顯示同一組項目。
 - 手機底部列（`MobileTabBar`）：本月｜交易｜信用卡｜資產｜更多；「更多」（`MoreMenu`，`#/more`）
   列出資料來源、待處理與設定。頁首右上另有待處理按鈕。
+- 頁首（`AppHeader`，所有寬度皆 sticky）：頁面標題與說明；md 以上有全域搜尋（Enter 開啟
+  `#/transactions?q=`；已在交易頁時以 `replaceState` 換網址並送出 popstate，讓交易頁重新還原且不增加上一頁紀錄），lg 以上有同步
+  狀態（`app/shell-status.ts` 的 `summarizeSyncJobs`，點選開資料來源頁）；另有待處理、概況欄開關（xl
+  以上）與隱藏金額。
+- 右側概況欄（`AppRightRail`）：待處理前 4 項（需要處理排前）、近期卡費（`upcomingCardDues`：未繳清且
+  截止日已知，依截止日排序）、資料來源狀態（已設定的來源；狀態判定優先序為執行中 > 需處理 > 排程全關的「未排程」> 從未成功 > 正常，
+  列表依需處理 > 從未成功 > 未排程 > 執行中 > 正常排序）。寬度 ≥ 1680px
+  時常駐於內容右側、開關記在 `localStorage`；1280–1679px 由頁首按鈕以抽屜（`role="dialog"`，背景 inert、
+  焦點移入並於關閉後還原）開啟，Esc 或點背景關閉；xl 以下不提供概況欄。各區塊讀取失敗時顯示「無法讀取」。
+  同步工作有來源執行中時每 10 秒、平常每分鐘重新讀取。
+- 頁尾（`AppFooter`，md 以上）：免責聲明摘要（可展開全文）與最近一次同步成功時間。
 - 待處理 badge 來自 `GET /api/inbox`（`data/inbox`）：`counts.blocking > 0` 顯示紅點、
   `counts.tidy` 顯示數字（`InboxBadge`）；載入失敗時不顯示。App 本身在
   `QueryClientProvider` 之外，因此直接把 `queryClient` 傳給 `createQuery`。
@@ -157,7 +168,7 @@ sticky 工具列（`ActivityToolbar`）在 lg 以上單列不換行：搜尋（`
 - `card=<末四碼>`（信用卡頁「查看明細」）：切到信用卡分頁並只列該卡。末四碼取交易的 `cardLast4`
   （後端提供時）或帳戶末四碼；多卡共用帳戶（台新）目前 API 沒有逐筆卡號，只能篩到帳戶末四碼。
 
-App 以 `--app-sticky-top` 提供窄螢幕 sticky 頁首高度，交易頁據此把工具列與表頭接在頁首下方。
+App 以 `--app-sticky-top` 提供 sticky 頁首高度（所有寬度），交易頁據此把工具列與表頭接在頁首下方。
 「只看未分類」與「只看待確認」（`review=1`）在共用篩選後套用，不影響收支數字；被排除計算的活動
 仍列出，以淡色與刪除線標示。「自動整理 →」連到 `#/transactions/rules`（目前為原分類規則面板）。
 

@@ -1075,7 +1075,7 @@
     />
     <div
       bind:offsetHeight={toolbarHeight}
-      class="sticky top-[var(--app-sticky-top,0px)] z-30 border-b border-ink/10 bg-paper/95 backdrop-blur-sm xl:top-0"
+      class="sticky top-[var(--app-sticky-top,0px)] z-30 border-b border-ink/10 bg-paper/95 backdrop-blur-sm"
     >
       <ActivityToolbar
         {searching}
