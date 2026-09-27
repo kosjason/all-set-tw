@@ -17,6 +17,7 @@
     formatCompactTwd,
     formatCurrency,
     formatDate,
+    parseValidDate,
   } from "@/shared/format/financial";
   import Card from "@/shared/ui/Card.svelte";
   import EmptyState from "@/shared/ui/EmptyState.svelte";
@@ -128,45 +129,60 @@
   );
   const largestCurrency = $derived(summary.currencyBreakdown[0]?.totalTwd ?? 0);
 
+  // 佔比以「正值資產」為分母：透支等負值不應把分母拉低而讓佔比超過 100%。
+  const positiveAssets = $derived(
+    Math.max(summary.bankTotal, 0) +
+      Math.max(summary.investmentTotal, 0) +
+      Math.max(summary.manualTotal, 0),
+  );
+  const currencyTotal = $derived(
+    summary.currencyBreakdown.reduce((sum, item) => sum + item.totalTwd, 0),
+  );
+
   const STALE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+
+  function latestTime(values: Array<string | undefined>) {
+    const times = values
+      .map((value) => parseValidDate(value)?.getTime())
+      .filter((value): value is number => value !== undefined);
+    return times.length ? Math.max(...times) : undefined;
+  }
+
   const freshness = $derived(
     [
       ...summary.institutionGroups.map((group) => ({
         key: group.key,
         label: group.institution,
-        latest: [...group.accounts, ...group.cards]
-          .map((account) => account.asOfAt)
-          .filter((value): value is string => Boolean(value))
-          .sort()
-          .at(-1),
+        latest: latestTime(
+          [...group.accounts, ...group.cards].map((account) => account.asOfAt),
+        ),
       })),
       ...(($investments.data?.length ?? 0) > 0
         ? [
             {
               key: "investments",
               label: "投資",
-              latest: ($investments.data ?? [])
-                .map((item) => item.asOfDate)
-                .filter((value): value is string => Boolean(value))
-                .sort()
-                .at(-1),
+              latest: latestTime(
+                ($investments.data ?? []).map((item) => item.asOfDate),
+              ),
             },
           ]
         : []),
     ].map((item) => ({
       ...item,
       stale:
-        !item.latest ||
-        Date.now() - new Date(item.latest).getTime() > STALE_AFTER_MS,
+        item.latest === undefined || Date.now() - item.latest > STALE_AFTER_MS,
     })),
   );
 
-  function share(value: number) {
-    return summary.grossAssets > 0 ? (value / summary.grossAssets) * 100 : 0;
+  function share(value: number, total = positiveAssets) {
+    if (value <= 0 || total <= 0) return 0;
+    return Math.min((value / total) * 100, 100);
   }
 
-  function formatShare(value: number) {
-    const percent = share(value);
+  function formatShare(value: number, total = positiveAssets) {
+    if (value < 0) return "—";
+    const percent = share(value, total);
     return percent > 0 && percent < 1 ? "<1%" : `${Math.round(percent)}%`;
   }
 
@@ -586,21 +602,25 @@
               總資產 {formatCompactTwd(summary.grossAssets)}
             </span>
           </div>
-          <div
-            class="mt-4 flex h-3 w-full gap-0.5 overflow-hidden rounded-full bg-ink/6"
-            role="img"
-            aria-label={allocation
-              .map((item) => `${item.label} ${formatShare(item.value)}`)
-              .join("、")}
-          >
-            {#each allocation as item (item.key)}
-              <span
-                class="h-full first:rounded-l-full last:rounded-r-full"
-                style={`width:${share(item.value)}%;background:${item.color}`}
-                title={`${item.label} ${formatShare(item.value)}`}
-              ></span>
-            {/each}
-          </div>
+          {#if allocation.length > 0}
+            <div
+              class="mt-4 flex h-3 w-full gap-0.5 overflow-hidden rounded-full bg-ink/6"
+              role="img"
+              aria-label={allocation
+                .map((item) => `${item.label} ${formatShare(item.value)}`)
+                .join("、")}
+            >
+              {#each allocation as item (item.key)}
+                <span
+                  class="h-full first:rounded-l-full last:rounded-r-full"
+                  style={`width:${share(item.value)}%;background:${item.color}`}
+                  title={`${item.label} ${formatShare(item.value)}`}
+                ></span>
+              {/each}
+            </div>
+          {:else}
+            <p class="mt-4 text-caption text-subtle">尚無正值資產</p>
+          {/if}
           <ul class="mt-4 grid gap-2.5 text-sm">
             {#each allocation as item (item.key)}
               <li
@@ -659,7 +679,12 @@
                 <span
                   class={`shrink-0 text-caption tabular-nums ${item.stale ? "font-medium text-coral" : "text-subtle"}`}
                 >
-                  {item.latest ? formatDate(item.latest) : "尚未同步"}
+                  {item.latest !== undefined
+                    ? formatDate(new Date(item.latest).toISOString())
+                    : "尚未同步"}
+                  {#if item.stale}
+                    <span class="ml-1">· 已過期</span>
+                  {/if}
                 </span>
               </li>
             {/each}
@@ -691,7 +716,7 @@
                     {formatCompactTwd(item.totalTwd)}
                   </span>
                   <span class="text-right tabular-nums text-subtle">
-                    {formatShare(item.totalTwd)}
+                    {formatShare(item.totalTwd, currencyTotal)}
                   </span>
                 </li>
               {/each}
