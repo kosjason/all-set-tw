@@ -25,6 +25,11 @@ export interface InstitutionAssetGroup {
   assetTotalTwd: number;
   debtTotalTwd: number;
   hasUnknownCardBalance: boolean;
+  /**
+   * 沒有自己餘額、欠款併入同一資料來源合併帳單帳戶的卡片 id。銀行每期只開一張合併帳單，
+   * 共用額度與欠款只記在合併帳單帳戶，各卡本來就沒有餘額，不算資料不完整。
+   */
+  combinedBillCardIds: string[];
   foreignCurrencies: string[];
 }
 
@@ -50,6 +55,32 @@ function institutionKey(account: BankAccountRow) {
   const bankCode =
     account.bankCode ?? CONNECTOR_BANK_CODES[account.connectorId];
   return bankCode ? `bank:${bankCode}` : `connector:${account.connectorId}`;
+}
+
+const COMBINED_BILL_SOURCE_ID = /^credit:[^:]+:main(?::[A-Z]{3})?$/;
+
+/**
+ * 沒有自己餘額、欠款併入合併帳單的實體卡：同一資料來源、同一幣別有合併帳單帳戶
+ * （sourceId `credit:<來源>:main`，外幣加 `:<幣別>`）記錄餘額時才成立。各幣別或各卡分開計帳、
+ * 各自應有餘額的帳戶缺資料時仍視為不完整。
+ */
+function combinedBillCardIds(cards: BankAccountRow[]) {
+  const billsWithBalance = new Set(
+    cards
+      .filter(
+        (card) =>
+          card.balance != null && COMBINED_BILL_SOURCE_ID.test(card.sourceId),
+      )
+      .map((card) => `${card.connectorId}:${card.currency}`),
+  );
+  return cards
+    .filter(
+      (card) =>
+        card.balance == null &&
+        !COMBINED_BILL_SOURCE_ID.test(card.sourceId) &&
+        billsWithBalance.has(`${card.connectorId}:${card.currency}`),
+    )
+    .map((card) => card.id);
 }
 
 export function calculateAssetSummary({
@@ -156,6 +187,8 @@ export function calculateAssetSummary({
       const cards = groupedAccounts.filter(
         (account) => account.accountType === "credit",
       );
+      const combined = combinedBillCardIds(cards);
+      const combinedSet = new Set(combined);
       return {
         key,
         institution:
@@ -177,7 +210,10 @@ export function calculateAssetSummary({
           (sum, account) => sum + toTwd(account.balance ?? 0, account.currency),
           0,
         ),
-        hasUnknownCardBalance: cards.some((card) => card.balance == null),
+        combinedBillCardIds: combined,
+        hasUnknownCardBalance: cards.some(
+          (card) => card.balance == null && !combinedSet.has(card.id),
+        ),
         debtTotalTwd: cards.reduce(
           (sum, account) =>
             sum + Math.abs(toTwd(account.balance ?? 0, account.currency)),
@@ -214,7 +250,9 @@ export function calculateAssetSummary({
     investmentTotal,
     manualTotal,
     cardDebt,
-    hasUnknownCardBalance: cards.some((card) => card.balance == null),
+    hasUnknownCardBalance: institutionGroups.some(
+      (group) => group.hasUnknownCardBalance,
+    ),
     grossAssets,
     positiveAssetTotal,
     netWorth: grossAssets - cardDebt,

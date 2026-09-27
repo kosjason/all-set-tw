@@ -1,5 +1,5 @@
 <!--
-  單一發卡行的本期帳單列；展開後列出各卡未出帳、本期繳款與交易頁連結。
+  單一發卡行的本期帳單列；展開後列出本期繳款、未出帳，以及各卡本期帳單與未出帳消費和交易頁連結。
   推估資料標示「推估」並說明原因、來源與更新時間。
 -->
 <script lang="ts">
@@ -41,6 +41,10 @@
     unpaid: "bg-coral/10 text-coral",
     unknown: "bg-ink/5 text-subtle",
   } as const;
+  // 部署期間前端可能先於 API 更新；舊版 API 沒有這個欄位時視為沒有缺匯率。
+  const statementMissingCurrencies = $derived(
+    issuer.statementMissingCurrencies ?? [],
+  );
 </script>
 
 <article
@@ -214,14 +218,31 @@
             缺少 {issuer.unbilled.missingCurrencies.join("、")} 匯率，未計入。
           </p>
         {/if}
-        <ul class="mt-2 divide-y divide-border">
+      </div>
+
+      <div>
+        <div
+          class="grid grid-cols-[minmax(0,1fr)_5.5rem_5.5rem] items-baseline gap-2 sm:grid-cols-[minmax(0,1fr)_7rem_7rem] sm:gap-3 border-b border-border pb-1.5 text-caption font-semibold text-subtle"
+        >
+          <h4>各卡消費</h4>
+          <span
+            class="text-right"
+            title={issuer.statementPeriod
+              ? `${formatDate(issuer.statementPeriod.from)}～${formatDate(issuer.statementPeriod.to)}`
+              : undefined}>本期帳單</span
+          >
+          <span class="text-right">未出帳</span>
+        </div>
+        <ul class="divide-y divide-border">
           {#each issuer.cards as card (card.key)}
             <li
-              class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-2"
+              class="grid grid-cols-[minmax(0,1fr)_5.5rem_5.5rem] items-center gap-2 sm:grid-cols-[minmax(0,1fr)_7rem_7rem] sm:gap-3 py-2"
               data-testid={`card-${card.key}`}
             >
               <div class="min-w-0">
-                <p class="truncate text-sm font-medium">{card.name}</p>
+                <p class="break-words text-sm font-medium sm:truncate">
+                  {card.name}
+                </p>
                 <a
                   class="text-caption font-medium text-steel underline-offset-2 hover:underline"
                   href={cardActivityHash(card)}
@@ -230,8 +251,24 @@
                     : `查看${issuer.name}明細`}</a
                 >
               </div>
-              <div class="text-right">
-                <p class="text-sm font-semibold tabular-nums">
+              <div class="text-right" data-testid="card-statement">
+                {#if card.statementAmount == null}
+                  <p class="text-sm text-subtle">—</p>
+                {:else}
+                  <p
+                    class={`text-sm font-semibold tabular-nums ${card.statementAmount === 0 ? "text-subtle" : ""}`}
+                  >
+                    {formatCurrency(card.statementAmount)}
+                  </p>
+                  <p class="text-caption text-subtle">
+                    {card.statementTransactionCount} 筆
+                  </p>
+                {/if}
+              </div>
+              <div class="text-right" data-testid="card-unbilled">
+                <p
+                  class={`text-sm font-semibold tabular-nums ${card.unbilledAmount === 0 ? "text-subtle" : ""}`}
+                >
                   {formatCurrency(card.unbilledAmount)}
                 </p>
                 <p class="text-caption text-subtle">
@@ -245,6 +282,18 @@
             <li class="py-2 text-sm text-subtle">沒有卡片資料。</li>
           {/each}
         </ul>
+        {#if statementMissingCurrencies.length > 0}
+          <p class="mt-2 text-caption text-coral">
+            本期帳單缺少 {statementMissingCurrencies.join("、")} 匯率，各卡本期金額未計入這些外幣消費。
+          </p>
+        {/if}
+        {#if issuer.combinedStatement && issuer.statementPeriod}
+          <p class="mt-2 text-caption text-subtle">
+            本期帳單為 {formatDate(issuer.statementPeriod.from)}～{formatDate(
+              issuer.statementPeriod.to,
+            )} 各卡刷卡加總；合併帳單的應繳金額另含前期餘額、利息與費用，可能與加總不同。
+          </p>
+        {/if}
       </div>
 
       <footer class="text-caption text-subtle" data-testid="issuer-source">

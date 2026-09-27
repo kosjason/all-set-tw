@@ -21,6 +21,7 @@
     compact?: boolean;
   } = $props();
 
+  const combinedCardIds = $derived(new Set(group.combinedBillCardIds));
   const cardsById = $derived(
     new Map(group.cards.map((card) => [card.id, card])),
   );
@@ -46,6 +47,7 @@
     }
     const dueDate = card.paymentDueDate ?? latestBill?.paymentDueDate;
     if (dueDate) return `繳款期限 ${formatDate(dueDate)}`;
+    if (combinedCardIds.has(card.id)) return "欠款與繳款併入合併帳單";
     return card.balance == null ? "繳款期限待同步" : "繳款期限尚未提供";
   }
 
@@ -167,11 +169,15 @@
                 {cardPaymentLabel(card)}
               </p>
             </div>
-            <p class="text-right text-sm font-medium tabular-nums text-coral">
-              {card.balance == null
-                ? "金額尚未取得"
-                : formatCurrency(-Math.abs(card.balance), card.currency)}
-            </p>
+            {#if combinedCardIds.has(card.id)}
+              <p class="text-right text-caption text-subtle">合併帳單</p>
+            {:else}
+              <p class="text-right text-sm font-medium tabular-nums text-coral">
+                {card.balance == null
+                  ? "金額尚未取得"
+                  : formatCurrency(-Math.abs(card.balance), card.currency)}
+              </p>
+            {/if}
           </div>
         {/each}
       </div>

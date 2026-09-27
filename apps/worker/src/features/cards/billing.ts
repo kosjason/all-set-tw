@@ -20,6 +20,22 @@ export function shiftDate(day: string, offset: number) {
   return date.toISOString().slice(0, 10);
 }
 
+/** 同一天往前一個月；前一個月沒有這一天時取該月最後一天（3/31 → 2/28 或 2/29）。 */
+export function oneMonthBefore(day: string) {
+  const [year, month, date] = day.split("-").map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const lastDayOfPreviousMonth = new Date(
+    Date.UTC(year, month - 1, 0),
+  ).getUTCDate();
+  const previous = new Date(
+    Date.UTC(year, month - 2, Math.min(date, lastDayOfPreviousMonth)),
+  );
+  return previous.toISOString().slice(0, 10);
+}
+
 /** b − a 的天數（皆為 YYYY-MM-DD）。 */
 export function daysBetween(from: string, to: string) {
   return Math.round(

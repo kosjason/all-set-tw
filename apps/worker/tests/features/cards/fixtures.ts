@@ -192,6 +192,7 @@ export const transactions: Tx[] = [
     day: "2026-09-10",
     amount: -1200,
     description: "咖啡豆專賣",
+    raw: { cardLast4: "1111" },
   },
   {
     id: "c1111-refund",
@@ -228,6 +229,8 @@ export const transactions: Tx[] = [
     posted: "2026-09-08",
     amount: -300,
     description: "停車場",
+    // 舊版國泰資料只有遮罩後的卡號；交易 API 只取末四碼。
+    raw: { cardNo: "4000-12** ****-4444" },
   },
   // 台新：多卡共用帳戶，以 raw cardLast4 分卡；本期已由存款端繳清。
   {
@@ -325,28 +328,30 @@ export function transactionStatement(db: D1Database, tx: Tx) {
 }
 
 /** 寫入信用卡頁的基本資料；中信上次匯入是 16 天前。 */
+export function billStatement(db: D1Database, bill: Bill) {
+  return db
+    .prepare(
+      "INSERT INTO credit_card_bills (id, connector_id, account_id, source_id, billing_period, statement_amount, minimum_payment, paid_amount, is_paid, payment_due_date, statement_closing_date, currency, created_at, updated_at) VALUES (?1, ?2, ?3, ?1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'TWD', ?11, ?11)",
+    )
+    .bind(
+      `${bill.account}:${bill.period}`,
+      bill.connector,
+      bill.account,
+      bill.period,
+      bill.amount ?? null,
+      bill.minimum ?? null,
+      bill.paid ?? null,
+      bill.isPaid == null ? null : bill.isPaid ? 1 : 0,
+      bill.due ?? null,
+      bill.closing ?? null,
+      CREATED,
+    );
+}
+
 export async function seedCards(db: D1Database) {
   await db.batch([
     ...accounts.map((account) => accountStatement(db, account)),
-    ...bills.map((bill) =>
-      db
-        .prepare(
-          "INSERT INTO credit_card_bills (id, connector_id, account_id, source_id, billing_period, statement_amount, minimum_payment, paid_amount, is_paid, payment_due_date, statement_closing_date, currency, created_at, updated_at) VALUES (?1, ?2, ?3, ?1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'TWD', ?11, ?11)",
-        )
-        .bind(
-          `${bill.account}:${bill.period}`,
-          bill.connector,
-          bill.account,
-          bill.period,
-          bill.amount ?? null,
-          bill.minimum ?? null,
-          bill.paid ?? null,
-          bill.isPaid == null ? null : bill.isPaid ? 1 : 0,
-          bill.due ?? null,
-          bill.closing ?? null,
-          CREATED,
-        ),
-    ),
+    ...bills.map((bill) => billStatement(db, bill)),
     ...transactions.map((tx) => transactionStatement(db, tx)),
     db
       .prepare(

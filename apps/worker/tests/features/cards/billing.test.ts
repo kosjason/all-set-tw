@@ -7,6 +7,7 @@ import {
   transactionDay,
   type BillInput,
   type CardTransaction,
+  oneMonthBefore,
 } from "../../../src/features/cards/billing";
 
 const bill: BillInput = {
@@ -150,5 +151,18 @@ describe("cardPaymentSide", () => {
     expect(
       cardPaymentSide({ ...base, economicRole: "own_transfer" }, issuer),
     ).toBeNull();
+  });
+});
+
+describe("oneMonthBefore", () => {
+  it.each([
+    ["2026-03-31", "2026-02-28"],
+    ["2028-03-31", "2028-02-29"],
+    ["2026-05-31", "2026-04-30"],
+    ["2026-12-31", "2026-11-30"],
+    ["2026-01-31", "2025-12-31"],
+    ["2026-09-15", "2026-08-15"],
+  ])("%s → %s", (day, expected) => {
+    expect(oneMonthBefore(day)).toBe(expected);
   });
 });
