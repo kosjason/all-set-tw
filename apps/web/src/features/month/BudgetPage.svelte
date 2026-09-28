@@ -388,6 +388,16 @@
         {/if}
       </Card>
 
+      {#if data.annualWithoutReserve}
+        <p
+          class="rounded-lg bg-amber-50 px-4 py-3 text-caption text-amber-900"
+          role="status"
+        >
+          有商家標成「年繳」，但年繳總額是
+          0：這些付款目前照常扣本月可花。填入一年的年繳總額後，每月先提撥、付款時就不再扣可花。
+        </p>
+      {/if}
+
       {#if data.largeMerchants.length > 0}
         <Card class="min-w-0 p-4 md:p-5" as="section">
           <h2 class="font-semibold">本月的大筆消費</h2>
@@ -410,10 +420,10 @@
                   </p>
                 </div>
                 <div class="flex flex-wrap gap-1.5">
-                  {#each ["annual", "monthly"] as const as kind (kind)}
+                  {#each ["annual", "monthly", "not_fixed"] as const as kind (kind)}
                     <Button
                       size="sm"
-                      variant="secondary"
+                      variant={kind === "not_fixed" ? "outline" : "secondary"}
                       disabled={$saveMerchant.isPending}
                       onclick={() =>
                         $saveMerchant.mutate({

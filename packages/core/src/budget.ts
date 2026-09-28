@@ -346,6 +346,10 @@ export interface BudgetSummary {
   largeMerchants: BudgetLargeMerchant[];
   /** 載入資料時的問題；有值時可花金額可能不準。 */
   incompleteReasons: ActivitySummaryIncompleteReason[];
+  /**
+   * 有標成年繳的商家，但年繳準備金是 0：年繳消費改計入本月已花，避免這筆錢哪裡都沒扣。
+   */
+  annualWithoutReserve: boolean;
 }
 
 export interface BudgetLargeMerchant {
@@ -509,10 +513,17 @@ export function computeBudget(input: {
         paidThisMonth: round(paid.get(decision.merchantKey) ?? 0),
       };
     });
+  const hasAnnual = fixedMerchants.some(
+    (merchant) => merchant.kind === "annual",
+  );
+  const annualWithoutReserve = hasAnnual && settings.annualReserve <= 0;
+  // 沒有年繳準備金時，年繳消費照常扣本月可花。
   const annualKeys = new Set(
-    fixedMerchants
-      .filter((merchant) => merchant.kind === "annual")
-      .map((merchant) => merchant.merchantKey),
+    annualWithoutReserve
+      ? []
+      : fixedMerchants
+          .filter((merchant) => merchant.kind === "annual")
+          .map((merchant) => merchant.merchantKey),
   );
   const monthlyKeys = new Set(
     fixedMerchants
@@ -617,5 +628,6 @@ export function computeBudget(input: {
       .sort((a, b) => b.amountThisMonth - a.amountThisMonth)
       .slice(0, LARGE_MERCHANT_LIMIT),
     incompleteReasons: input.incompleteReasons ?? [],
+    annualWithoutReserve,
   };
 }

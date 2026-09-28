@@ -47,7 +47,7 @@
   const weekStart = $derived(selected === "this" ? thisWeek : lastWeek);
   const review = createQuery(
     toStore(() => ({
-      ...weeklyReviewQuery(() => api, weekStart),
+      ...weeklyReviewQuery(() => api, weekStart, today),
       placeholderData: keepPreviousData,
     })),
   );

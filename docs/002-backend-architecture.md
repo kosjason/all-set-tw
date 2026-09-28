@@ -776,6 +776,7 @@ spending 角色的退款為負數沖減；逐筆四捨五入到分，加總與 s
     該商家有消費紀錄的月份。
   - `largeMerchants`：本月消費 ≥ 1,000、尚未判斷且不是候選的商家（年繳一年只出現一次，由此標成年繳）；
     `excludedMerchants`：標為 `not_fixed` 的商家，可移除判斷復原。
+  - 年繳準備金為 0 時（`annualWithoutReserve`），年繳商家的消費照常計入本月已花，避免這筆錢哪裡都沒扣。
   - `incompleteReasons`：本月 summary 的不完整原因（缺匯率、分類或 override 載入失敗等）。
 - `PUT /api/budget/settings`：`expectedIncome`（null 為推算）、`savingsTargetType`（`amount`／`percent`）、
   `savingsTargetValue`（percent 時 ≤ 100）、`annualReserve`，皆為 0 以上。
@@ -784,7 +785,7 @@ spending 角色的退款為負數沖減；逐筆四捨五入到分，加總與 s
   `DELETE` 移除判斷，不存在時回傳 `404 BUDGET_MERCHANT_NOT_FOUND`。
 - `GET /api/budget/week?start=<週一>`：一週的消費回顧（未帶 `start` 為本週；不是週一或在未來回傳 400）。
   - 與過去 8 週「同一段天數」的中位數比較：已結束的週比整週，進行中的週只比週一到今天，不拿半週比整週。
-    資料在該週第二天之後才開始的週不列入基準；可比的週少於 2 週時不比較，也不列新商家與分類增幅。
+    資料起點取資料庫中最早一筆銀行／信用卡交易日；資料在該週第二天之後才開始的週不列入基準；可比的週少於 2 週時不比較，也不列新商家與分類增幅。
   - 內容：各日金額、待入帳金額、比平均多花最多的 3 個分類、最大 5 筆、8 週內沒出現過的商家。
   - `possiblyIncompleteFrom`：今天往前 2 天起（不早於週一）落在這週時，標示信用卡可能尚未入帳完；
     週一看上週時也會標出週末。

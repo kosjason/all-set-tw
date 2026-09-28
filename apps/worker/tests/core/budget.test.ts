@@ -336,6 +336,30 @@ describe("computeBudget", () => {
     });
   });
 
+  it("still counts annual payments when there is no annual reserve", () => {
+    const budget = computeBudget({
+      ...base,
+      settings: { ...DEFAULT_BUDGET_SETTINGS, expectedIncome: 100000 },
+      decisions: [
+        {
+          merchantKey: "name:insurance",
+          kind: "annual",
+          displayName: "保險",
+          expectedAmount: null,
+        },
+      ],
+      currentEntries: [
+        entry("2026-09-10", 36000, { merchantKey: "name:insurance" }),
+      ],
+    });
+    expect(budget).toMatchObject({
+      annualWithoutReserve: true,
+      spent: 36000,
+      spentFromReserve: 0,
+      available: 64000,
+    });
+  });
+
   it("lists large merchants to mark as annual and keeps excluded ones restorable", () => {
     const budget = computeBudget({
       ...base,

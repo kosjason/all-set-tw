@@ -21,6 +21,7 @@ import { loadRoleActivities, monthsBetween } from "../activity/summary-service";
 import { getSyncJobs } from "../sync/schedule-service";
 import {
   deleteBudgetMerchantDecision,
+  earliestTransactionDay,
   listBudgetMerchantDecisions,
   readBudgetSettings,
   upsertBudgetMerchantDecision,
@@ -202,9 +203,10 @@ export async function getWeeklyReview(
   const from = addDays(weekStart, -7 * WEEKLY_BASELINE_WEEKS);
   const to = addDays(weekStart, 6);
   const months = monthsBetween(from.slice(0, 7), to.slice(0, 7));
-  const [{ items, rates, dataIssues }, sources] = await Promise.all([
+  const [{ items, rates, dataIssues }, sources, dataStart] = await Promise.all([
     loadRoleActivities(db, months, { includeTrades: false, today }),
     sourceFreshness(db, now),
+    earliestTransactionDay(db),
   ]);
   const incompleteReasons = [
     ...new Set(
@@ -221,5 +223,7 @@ export async function getWeeklyReview(
     today,
     sources,
     incompleteReasons,
+    // 以資料庫中最早的交易日為資料起點；沒有交易時退回載入範圍內最早的消費。
+    ...(dataStart ? { dataStart } : {}),
   });
 }

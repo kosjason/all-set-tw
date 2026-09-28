@@ -11,8 +11,8 @@ export const queryKeys = {
   cardBills: (issuer: string) => ["bank", "cards", "bills", issuer] as const,
   inbox: ["bank", "inbox"] as const,
   budget: ["bank", "budget"] as const,
-  weeklyReview: (weekStart: string) =>
-    ["bank", "budget", "week", weekStart] as const,
+  weeklyReview: (weekStart: string, today: string) =>
+    ["bank", "budget", "week", weekStart, today] as const,
   investments: ["investments"] as const,
   investmentTransactions: ["investment-transactions"] as const,
   investmentTransactionsRange: (from: string, to: string) =>

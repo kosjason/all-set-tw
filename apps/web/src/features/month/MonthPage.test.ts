@@ -341,6 +341,7 @@ describe("month page", () => {
       excludedMerchants: [],
       largeMerchants: [],
       incompleteReasons: [],
+      annualWithoutReserve: false,
       candidates: [
         {
           merchantKey: "name:stream",

@@ -137,6 +137,11 @@
         部分資料載入有問題（例如外幣缺匯率），可花金額可能不準。
       </p>
     {/if}
+    {#if budget.annualWithoutReserve}
+      <p class="mt-2 text-caption text-amber-900">
+        有年繳商家但年繳總額是 0，年繳付款照常扣可花。
+      </p>
+    {/if}
     {#if budget.savingsTarget === 0}
       <button
         type="button"

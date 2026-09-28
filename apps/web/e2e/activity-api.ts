@@ -82,6 +82,7 @@ export async function routeNavigationApi(page: Page) {
         excludedMerchants: [],
         largeMerchants: [],
         incompleteReasons: [],
+        annualWithoutReserve: false,
       },
     }),
   );

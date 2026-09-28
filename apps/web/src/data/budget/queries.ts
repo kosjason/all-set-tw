@@ -22,10 +22,17 @@ export const budgetQuery = (getApi: ApiProvider) =>
     queryFn: () => getApi().get<BudgetSummary>("/api/budget"),
   });
 
-/** 一週的消費回顧；weekStart 為週一（`GET /api/budget/week?start=`）。 */
-export const weeklyReviewQuery = (getApi: ApiProvider, weekStart: string) =>
+/**
+ * 一週的消費回顧；weekStart 為週一（`GET /api/budget/week?start=`）。today 放進 key，
+ * 頁面開著跨過午夜時重新計算「到今天」的天數。
+ */
+export const weeklyReviewQuery = (
+  getApi: ApiProvider,
+  weekStart: string,
+  today: string,
+) =>
   queryOptions({
-    queryKey: queryKeys.weeklyReview(weekStart),
+    queryKey: queryKeys.weeklyReview(weekStart, today),
     queryFn: () =>
       getApi().get<WeeklyReview>(
         `/api/budget/week?start=${encodeURIComponent(weekStart)}`,
