@@ -9,6 +9,7 @@ import {
   summarizeWeek,
   taipeiDay,
   type BudgetMerchantDecision,
+  type ActivitySummaryIncompleteReason,
   type BudgetSettings,
   type BudgetSummary,
   type SpendingEntry,
@@ -57,16 +58,24 @@ export async function getBudget(
   const today = taipeiDay(now);
   const month = today.slice(0, 7);
   const historyMonths = previousMonths(month, BUDGET_HISTORY_MONTHS);
-  const [{ items, rates }, settings, decisions] = await Promise.all([
-    loadRoleActivities(db, [...historyMonths, month], {
-      includeTrades: false,
-      today,
-    }),
-    readBudgetSettings(db),
-    listBudgetMerchantDecisions(db),
-  ]);
+  const [{ items, rates, dataIssues }, settings, decisions] = await Promise.all(
+    [
+      loadRoleActivities(db, [...historyMonths, month], {
+        includeTrades: false,
+        today,
+      }),
+      readBudgetSettings(db),
+      listBudgetMerchantDecisions(db),
+    ],
+  );
   // 同步資料的起點可能落在最早那個月的月中；筆數不到最多那個月一半的月份視為不完整，不採用。
   const summaries = summarizeActivityMonths(items, historyMonths, rates);
+  const [currentSummary] = summarizeActivityMonths(
+    items,
+    [month],
+    rates,
+    dataIssues,
+  );
   const maxCount = Math.max(
     0,
     ...summaries.map((summary) => summary.activityCount),
@@ -98,6 +107,7 @@ export async function getBudget(
       ]),
     ),
     historyMonths: usableMonths,
+    incompleteReasons: currentSummary?.incompleteReasons ?? [],
   });
 }
 
@@ -126,6 +136,21 @@ export async function removeBudgetMerchant(
   return deleteBudgetMerchantDecision(db, merchantKey);
 }
 
+/** 只看會產生消費資料（銀行、信用卡交易或發票）的來源；投資持倉落後不影響消費。 */
+const SPENDING_CAPABILITIES = new Set([
+  "bank_transaction",
+  "credit_card_bill",
+  "invoice",
+]);
+function producesSpending(connectorId: string) {
+  return (
+    isConnectorId(connectorId) &&
+    (connectorCatalog[connectorId].capabilities as readonly string[]).some(
+      (capability) => SPENDING_CAPABILITIES.has(capability),
+    )
+  );
+}
+
 async function sourceFreshness(
   db: D1Database,
   now: Date,
@@ -133,7 +158,7 @@ async function sourceFreshness(
   const jobs = await getSyncJobs(db);
   const byConnector = new Map<string, string | null>();
   for (const job of jobs) {
-    if (!job.configured) continue;
+    if (!job.configured || !producesSpending(job.connectorId)) continue;
     const previous = byConnector.get(job.connectorId) ?? null;
     const current = job.lastSuccessAt ?? null;
     byConnector.set(
@@ -150,9 +175,8 @@ async function sourceFreshness(
   return [...byConnector]
     .map(([connectorId, lastSuccessAt]) => ({
       connectorId,
-      name: isConnectorId(connectorId)
-        ? connectorCatalog[connectorId].title
-        : connectorId,
+      name: connectorCatalog[connectorId as keyof typeof connectorCatalog]
+        .title,
       lastSuccessAt,
       stale:
         !lastSuccessAt ||
@@ -177,15 +201,25 @@ export async function getWeeklyReview(
   if (weekStart > today) throw new WeekInFutureError();
   const from = addDays(weekStart, -7 * WEEKLY_BASELINE_WEEKS);
   const to = addDays(weekStart, 6);
-  const [{ items, rates }, sources] = await Promise.all([
-    loadRoleActivities(db, monthsBetween(from.slice(0, 7), to.slice(0, 7)), {
-      includeTrades: false,
-      today,
-    }),
+  const months = monthsBetween(from.slice(0, 7), to.slice(0, 7));
+  const [{ items, rates, dataIssues }, sources] = await Promise.all([
+    loadRoleActivities(db, months, { includeTrades: false, today }),
     sourceFreshness(db, now),
   ]);
+  const incompleteReasons = [
+    ...new Set(
+      summarizeActivityMonths(items, months, rates, dataIssues).flatMap(
+        (summary) => summary.incompleteReasons,
+      ),
+    ),
+  ] as ActivitySummaryIncompleteReason[];
   const entries = activitySpendingEntries(items, rates).filter(
     (entry) => entry.day >= from && entry.day <= to && entry.day <= today,
   );
-  return summarizeWeek(entries, { weekStart, today, sources });
+  return summarizeWeek(entries, {
+    weekStart,
+    today,
+    sources,
+    incompleteReasons,
+  });
 }

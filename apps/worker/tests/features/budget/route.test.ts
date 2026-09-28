@@ -236,7 +236,8 @@ describe("budget API", () => {
       complete: true,
       // 超市 7000（09-15）+ 燒肉 2500（09-16）。
       total: 9500,
-      possiblyIncompleteFrom: null,
+      // 週一看上週：週六、日的刷卡可能還沒入帳。
+      possiblyIncompleteFrom: "2026-09-19",
     });
     expect(review.largest.map((largest) => largest.amount)).toEqual([
       7000, 2500,
@@ -250,7 +251,8 @@ describe("budget API", () => {
       complete: false,
       elapsedDays: 1,
       total: 150,
-      possiblyIncompleteFrom: "2026-09-19",
+      // 不早於這週週一。
+      possiblyIncompleteFrom: "2026-09-21",
     });
   });
 });

@@ -171,6 +171,32 @@ describe("summarizeWeek", () => {
   });
 });
 
+describe("summarizeWeek data coverage", () => {
+  it("flags the weekend as possibly incomplete when reviewing last week on Monday", () => {
+    const review = summarizeWeek(
+      [entry("2026-09-01", 100), entry("2026-09-22", 300)],
+      { weekStart: "2026-09-21", today: "2026-09-28" },
+    );
+    expect(review.complete).toBe(true);
+    expect(review.possiblyIncompleteFrom).toBe("2026-09-26");
+  });
+
+  it("does not compare against weeks before the data started", () => {
+    // 資料從 09-15 才開始：只有 09-14 那週（資料在第二天開始）可比，不足 2 週。
+    const review = summarizeWeek(
+      [
+        entry("2026-09-15", 500, { merchantKey: "name:a" }),
+        entry("2026-09-22", 800, { merchantKey: "name:b" }),
+      ],
+      { weekStart: "2026-09-21", today: "2026-09-28" },
+    );
+    expect(review.baseline).toEqual({ weeks: 1, median: null });
+    expect(review.difference).toBeNull();
+    expect(review.newMerchants).toEqual([]);
+    expect(review.topCategoryIncreases).toEqual([]);
+  });
+});
+
 describe("detectFixedCandidates", () => {
   const months = ["2026-06", "2026-07", "2026-08"];
   const history = new Map(
@@ -308,6 +334,36 @@ describe("computeBudget", () => {
       fixedRemaining: 0,
       available: 145000,
     });
+  });
+
+  it("lists large merchants to mark as annual and keeps excluded ones restorable", () => {
+    const budget = computeBudget({
+      ...base,
+      settings: DEFAULT_BUDGET_SETTINGS,
+      decisions: [
+        {
+          merchantKey: "name:cafe",
+          kind: "not_fixed",
+          displayName: "咖啡店",
+          expectedAmount: null,
+        },
+      ],
+      currentEntries: [
+        entry("2026-09-02", 36000, { merchantKey: "name:insurance" }),
+        entry("2026-09-03", 900, { merchantKey: "name:small" }),
+        entry("2026-09-04", 1500, { merchantKey: "name:cafe" }),
+      ],
+    });
+    expect(budget.largeMerchants).toEqual([
+      expect.objectContaining({
+        merchantKey: "name:insurance",
+        amountThisMonth: 36000,
+        count: 1,
+      }),
+    ]);
+    expect(budget.excludedMerchants).toEqual([
+      { merchantKey: "name:cafe", displayName: "咖啡店" },
+    ]);
   });
 
   it("cannot compute an amount without any income", () => {

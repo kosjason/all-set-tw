@@ -1,7 +1,7 @@
 <!--
   週回顧：本週／上週的消費，與過去 8 週「同一段天數」的中位數比較；列出多花最多的分類、
-  最大 5 筆與 8 週內沒出現過的商家。進行中的週最近 3 天標示可能未到齊；有來源同步落後時
-  不下「比平常少」的結論，改寫「目前至少」。
+  最大 5 筆與 8 週內沒出現過的商家。最近 3 天落在這週時標示可能未到齊；這時、有來源同步
+  落後或資料載入有問題時，不下「比平常少」的結論，改寫「目前至少」。
 -->
 <script lang="ts">
   import { createQuery, keepPreviousData } from "@tanstack/svelte-query";
@@ -29,11 +29,21 @@
     dailyAllowance?: number | null;
   } = $props();
 
-  const today = taipeiDay(new Date());
-  const thisWeek = weekStartOf(today);
-  const lastWeek = addDays(thisWeek, -7);
+  // 頁面開著跨過午夜或跨週時，每分鐘更新今天。
+  let now = $state(Date.now());
+  $effect(() => {
+    const timer = setInterval(() => (now = Date.now()), 60_000);
+    return () => clearInterval(timer);
+  });
+  const today = $derived(taipeiDay(new Date(now)));
+  const thisWeek = $derived(weekStartOf(today));
+  const lastWeek = $derived(addDays(thisWeek, -7));
   // 週一時本週幾乎沒有資料，預設看上週回顧。
-  let selected = $state<"this" | "last">(today === thisWeek ? "last" : "this");
+  let selected = $state<"this" | "last">(
+    taipeiDay(new Date()) === weekStartOf(taipeiDay(new Date()))
+      ? "last"
+      : "this",
+  );
   const weekStart = $derived(selected === "this" ? thisWeek : lastWeek);
   const review = createQuery(
     toStore(() => ({
@@ -76,6 +86,21 @@
     );
   }
 
+  const INCOMPLETE_REASON_LABELS: Record<string, string> = {
+    missing_exchange_rates: "有外幣缺匯率",
+    classification_unavailable: "分類規則載入失敗",
+    role_overrides_unavailable: "手動調整的角色載入失敗",
+    own_accounts_unavailable: "我的其他帳戶載入失敗",
+  };
+  const uncertain = $derived(
+    Boolean(
+      data &&
+      (data.possiblyIncompleteFrom != null ||
+        staleSources.length > 0 ||
+        (data.incompleteReasons ?? []).length > 0),
+    ),
+  );
+
   const verdict = $derived.by(() => {
     if (!data || data.baseline.median == null || data.difference == null)
       return null;
@@ -86,11 +111,13 @@
         text: `比${span}多 ${formatCurrency(data.difference)}`,
       };
     // 資料可能還沒到齊時，不說「花得比較少」。
-    if (!data.complete || staleSources.length > 0)
+    if (uncertain)
       return {
         tone: "text-subtle",
         text: `目前至少 ${formatCurrency(data.total)}；${span}約 ${formatCurrency(data.baseline.median)}`,
       };
+    if (data.difference === 0)
+      return { tone: "text-subtle", text: `和${span}差不多` };
     return {
       tone: "text-moss",
       text: `比${span}少 ${formatCurrency(-data.difference)}`,
@@ -188,7 +215,14 @@
         </div>
         {#if data.possiblyIncompleteFrom}
           <p class="mt-2 text-caption text-subtle">
-            斜線：{shortDate(data.possiblyIncompleteFrom)} 起信用卡可能還沒入帳完
+            斜線：{shortDate(data.possiblyIncompleteFrom)} 起的信用卡可能還沒入帳完
+          </p>
+        {/if}
+        {#if (data.incompleteReasons ?? []).length > 0}
+          <p class="mt-1 text-caption text-amber-900">
+            {(data.incompleteReasons ?? [])
+              .map((reason) => INCOMPLETE_REASON_LABELS[reason] ?? reason)
+              .join("、")}，數字可能不完整。
           </p>
         {/if}
         {#if staleSources.length > 0}

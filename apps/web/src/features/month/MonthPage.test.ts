@@ -338,6 +338,9 @@ describe("month page", () => {
       available: 108960,
       dailyAllowance: 10896,
       fixedMerchants: [],
+      excludedMerchants: [],
+      largeMerchants: [],
+      incompleteReasons: [],
       candidates: [
         {
           merchantKey: "name:stream",
@@ -377,6 +380,7 @@ describe("month page", () => {
       newMerchants: [],
       possiblyIncompleteFrom: "2026-09-19",
       sources: [],
+      incompleteReasons: [],
       ...overrides,
     });
 
@@ -417,6 +421,26 @@ describe("month page", () => {
       await waitFor(() =>
         expect(review).toHaveTextContent("照本月可花，一週約 NT$76,272"),
       );
+    });
+
+    it("does not claim lower spending for last week while its weekend may be incomplete", async () => {
+      renderMonth({
+        budget,
+        week: (start) =>
+          week(start, {
+            complete: true,
+            elapsedDays: 7,
+            total: 700,
+            difference: -500,
+            possiblyIncompleteFrom: "2026-09-26",
+          }),
+      });
+      const review = await screen.findByTestId("weekly-review");
+      await fireEvent.click(
+        within(review).getByRole("button", { name: "上週" }),
+      );
+      await waitFor(() => expect(review).toHaveTextContent("目前至少 NT$700"));
+      expect(review).not.toHaveTextContent("少 NT$500");
     });
 
     it("calls out a finished week that cost more than usual", async () => {

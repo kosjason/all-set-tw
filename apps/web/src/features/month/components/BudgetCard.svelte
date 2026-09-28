@@ -6,6 +6,7 @@
   import { ChevronRight } from "@lucide/svelte";
   import type { BudgetSummary } from "@/data/budget/queries";
   import { formatCurrency } from "@/shared/format/financial";
+  import { moneyState } from "@/shared/state/money-visibility.svelte";
 
   let {
     budget,
@@ -80,7 +81,9 @@
     <div
       class="mt-3 h-2 w-full overflow-hidden rounded-full bg-ink/6"
       role="img"
-      aria-label={`已用掉或預留收入的 ${Math.round(usedPercent)}%`}
+      aria-label={moneyState.hidden
+        ? "收入已用掉或預留的比例"
+        : `已用掉或預留收入的 ${Math.round(usedPercent)}%`}
     >
       <div
         class={`h-full rounded-full ${overspent ? "bg-coral" : "bg-steel"}`}
@@ -129,6 +132,11 @@
       {/if}
     </dl>
 
+    {#if (budget.incompleteReasons ?? []).length > 0}
+      <p class="mt-2 text-caption text-amber-900">
+        部分資料載入有問題（例如外幣缺匯率），可花金額可能不準。
+      </p>
+    {/if}
     {#if budget.savingsTarget === 0}
       <button
         type="button"

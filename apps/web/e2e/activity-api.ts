@@ -79,6 +79,9 @@ export async function routeNavigationApi(page: Page) {
         dailyAllowance: null,
         fixedMerchants: [],
         candidates: [],
+        excludedMerchants: [],
+        largeMerchants: [],
+        incompleteReasons: [],
       },
     }),
   );
@@ -102,6 +105,7 @@ export async function routeNavigationApi(page: Page) {
         newMerchants: [],
         possiblyIncompleteFrom: null,
         sources: [],
+        incompleteReasons: [],
       },
     });
   });

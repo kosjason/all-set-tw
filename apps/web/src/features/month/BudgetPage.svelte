@@ -26,6 +26,8 @@
   let { api, navigate }: { api: ApiClient; navigate: Navigate } = $props();
 
   const qc = useQueryClient();
+  /** 與 API 的上限相同。 */
+  const MAX_AMOUNT = 1_000_000_000;
   const budget = createQuery(budgetQuery(() => api));
   const invalidate = () => qc.invalidateQueries({ queryKey: queryKeys.budget });
 
@@ -67,6 +69,12 @@
     else if (savingsType === "percent" && savingsTargetValue > 100)
       errors.push("儲蓄比例不能超過 100%。");
     if (Number.isNaN(annualReserve)) errors.push("年繳總額要是 0 以上的數字。");
+    if (
+      [expectedIncome ?? 0, savingsTargetValue, annualReserve].some(
+        (value) => value > MAX_AMOUNT,
+      )
+    )
+      errors.push("金額太大了。");
     return {
       errors,
       settings: {
@@ -78,11 +86,21 @@
     };
   });
 
+  // 「已儲存」只在表單內容仍與儲存時相同時顯示。
+  let savedKey = $state<string | null>(null);
   const saveSettings = createMutation({
     mutationFn: (settings: BudgetSettings) =>
       api.put("/api/budget/settings", settings),
-    onSuccess: invalidate,
+    onSuccess: (_result, settings) => {
+      savedKey = JSON.stringify(settings);
+      return invalidate();
+    },
   });
+  const savedCurrent = $derived(
+    savedKey != null && savedKey === JSON.stringify(form.settings),
+  );
+  // 每月金額輸入無效時的提示（依商家）。
+  let amountErrors = $state<Record<string, boolean>>({});
   const saveMerchant = createMutation({
     mutationFn: (input: {
       merchantKey: string;
@@ -116,7 +134,7 @@
     const text = (event.currentTarget as HTMLInputElement).value.trim();
     if (!text) return null;
     const value = parseAmount(text);
-    return Number.isNaN(value) ? undefined : value;
+    return Number.isNaN(value) || value > MAX_AMOUNT ? undefined : value;
   }
 </script>
 
@@ -206,7 +224,7 @@
         {/if}
         {#if $saveSettings.isError}
           <p class="text-caption text-coral">儲存失敗，請再試一次。</p>
-        {:else if $saveSettings.isSuccess}
+        {:else if savedCurrent}
           <p class="text-caption text-moss" role="status">已儲存。</p>
         {/if}
         <div class="flex gap-2">
@@ -334,6 +352,10 @@
                         : ""}
                       onchange={(event) => {
                         const expectedAmount = amountInput(event);
+                        amountErrors = {
+                          ...amountErrors,
+                          [merchant.merchantKey]: expectedAmount === undefined,
+                        };
                         if (expectedAmount === undefined) return;
                         $saveMerchant.mutate({
                           merchantKey: merchant.merchantKey,
@@ -352,6 +374,11 @@
                     >移除</Button
                   >
                 </div>
+                {#if amountErrors[merchant.merchantKey]}
+                  <p class="text-caption text-coral sm:col-span-2">
+                    每月金額要是 0 以上的數字，留白則用推算值。
+                  </p>
+                {/if}
               </li>
             {/each}
           </ul>
@@ -360,6 +387,78 @@
           <p class="mt-2 text-caption text-coral">更新失敗，請再試一次。</p>
         {/if}
       </Card>
+
+      {#if data.largeMerchants.length > 0}
+        <Card class="min-w-0 p-4 md:p-5" as="section">
+          <h2 class="font-semibold">本月的大筆消費</h2>
+          <p class="mt-1 text-caption text-subtle">
+            年繳（保險、稅、年費）一年只出現一次，不會出現在上面的候選；在這裡標成「年繳」後，由年繳準備金支付，不扣本月可花。
+          </p>
+          <ul class="mt-3 divide-y divide-border">
+            {#each data.largeMerchants as merchant (merchant.merchantKey)}
+              <li
+                class="grid gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+              >
+                <div class="min-w-0">
+                  <p class="break-words text-sm font-medium">
+                    {merchant.displayName}
+                  </p>
+                  <p class="text-caption text-subtle tabular-nums">
+                    本月 {merchant.count} 筆 · {formatCurrency(
+                      merchant.amountThisMonth,
+                    )}
+                  </p>
+                </div>
+                <div class="flex flex-wrap gap-1.5">
+                  {#each ["annual", "monthly"] as const as kind (kind)}
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={$saveMerchant.isPending}
+                      onclick={() =>
+                        $saveMerchant.mutate({
+                          merchantKey: merchant.merchantKey,
+                          kind,
+                          displayName: merchant.displayName,
+                          expectedAmount: null,
+                        })}>{KIND_LABELS[kind]}</Button
+                    >
+                  {/each}
+                </div>
+              </li>
+            {/each}
+          </ul>
+        </Card>
+      {/if}
+
+      {#if data.excludedMerchants.length > 0}
+        <Card class="min-w-0 p-4 md:p-5" as="section">
+          <details>
+            <summary class="cursor-pointer text-sm font-semibold">
+              已排除（{data.excludedMerchants.length}）
+            </summary>
+            <p class="mt-1 text-caption text-subtle">
+              標成「不是固定」的商家不再列入候選；移除判斷後會重新偵測。
+            </p>
+            <ul class="mt-2 divide-y divide-border">
+              {#each data.excludedMerchants as merchant (merchant.merchantKey)}
+                <li class="flex items-center justify-between gap-3 py-2">
+                  <span class="min-w-0 break-words text-sm">
+                    {merchant.displayName}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={$removeMerchant.isPending}
+                    onclick={() => $removeMerchant.mutate(merchant.merchantKey)}
+                    >移除判斷</Button
+                  >
+                </li>
+              {/each}
+            </ul>
+          </details>
+        </Card>
+      {/if}
     </div>
   </div>
 {/if}

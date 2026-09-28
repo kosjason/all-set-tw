@@ -108,7 +108,13 @@
     })),
   );
   const categoryRows = createQuery(classificationCategoriesQuery(() => api));
-  const budget = createQuery(budgetQuery(() => api));
+  // 本月可花只在看本月時顯示，其他月份不發出請求。
+  const budget = createQuery(
+    toStore(() => ({
+      ...budgetQuery(() => api),
+      enabled: selectedMonth === currentMonth,
+    })),
+  );
   const jobs = createQuery(syncJobsQuery(() => api));
   // 卡費提醒：載入失敗時不顯示，不當成本月頁的錯誤。
   const cards = createQuery({

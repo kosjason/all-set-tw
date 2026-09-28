@@ -758,8 +758,9 @@ raw `cardNo`，取其末四碼相容。只輸出 4 位數字字串，非信用�
 ### 本月可花與週回顧
 
 `features/budget` 提供「本月可花」與週回顧。消費口徑與月收支 summary 相同：core 的
-`activitySpendingEntries` 取出銀行、信用卡與發票中 `economicRole = spending`、未重複、未「不計入」的
-活動（TWD，退款為負數沖減），加總等於 summary 的 `spending`。計算都在 core `budget.ts` 的純函式。
+`activitySpendingEntries` 取出銀行、信用卡與發票中經濟角色為消費、未重複、未「不計入」的活動（TWD，
+spending 角色的退款為負數沖減；逐筆四捨五入到分，加總與 summary 的 `spending` 可能有分以下差異）。
+計算都在 core `budget.ts` 的純函式。
 
 - `GET /api/budget`：本月（台北日期）可花。
   - 公式：預期月收入 − 儲蓄目標 − 年繳準備金（`annual_reserve ÷ 12`）− 本月已花 − 每月固定支出尚未扣款
@@ -771,7 +772,11 @@ raw `cardNo`，取其末四碼相容。只輸出 4 位數字字串，非信用�
   - 固定支出：`budget_merchants` 的 `monthly` 商家每月預期金額（使用者設定，否則為採用月份中位數），
     本月已扣的部分不再預留；`annual` 商家本月的消費列為 `spentFromReserve`，不扣本月可花。
   - 固定支出候選 `candidates`：採用的每個月份都有消費、每月至少 100、每月最多 2 筆、金額穩定
-    （最大 ≤ 最小 × 1.5），且使用者尚未判斷過的商家（依 `merchantKey`）。
+    （最大 ≤ 最小 × 1.5），且使用者尚未判斷過的商家（依 `merchantKey`）。每月固定商家的推算金額只看
+    該商家有消費紀錄的月份。
+  - `largeMerchants`：本月消費 ≥ 1,000、尚未判斷且不是候選的商家（年繳一年只出現一次，由此標成年繳）；
+    `excludedMerchants`：標為 `not_fixed` 的商家，可移除判斷復原。
+  - `incompleteReasons`：本月 summary 的不完整原因（缺匯率、分類或 override 載入失敗等）。
 - `PUT /api/budget/settings`：`expectedIncome`（null 為推算）、`savingsTargetType`（`amount`／`percent`）、
   `savingsTargetValue`（percent 時 ≤ 100）、`annualReserve`，皆為 0 以上。
 - `PUT /api/budget/merchants/:merchantKey`：`kind`（`monthly`／`annual`／`not_fixed`）、`displayName`、
@@ -779,9 +784,12 @@ raw `cardNo`，取其末四碼相容。只輸出 4 位數字字串，非信用�
   `DELETE` 移除判斷，不存在時回傳 `404 BUDGET_MERCHANT_NOT_FOUND`。
 - `GET /api/budget/week?start=<週一>`：一週的消費回顧（未帶 `start` 為本週；不是週一或在未來回傳 400）。
   - 與過去 8 週「同一段天數」的中位數比較：已結束的週比整週，進行中的週只比週一到今天，不拿半週比整週。
+    資料在該週第二天之後才開始的週不列入基準；可比的週少於 2 週時不比較，也不列新商家與分類增幅。
   - 內容：各日金額、待入帳金額、比平均多花最多的 3 個分類、最大 5 筆、8 週內沒出現過的商家。
-  - 進行中的週以 `possiblyIncompleteFrom`（今天往前 2 天）標示信用卡可能尚未入帳完。
-  - `sources` 為已設定資料來源的最後成功同步時間，超過 2 天標 `stale`。
+  - `possiblyIncompleteFrom`：今天往前 2 天起（不早於週一）落在這週時，標示信用卡可能尚未入帳完；
+    週一看上週時也會標出週末。
+  - `sources` 為已設定、會產生消費資料（銀行交易、信用卡帳單或發票）的來源最後成功同步時間，超過 2 天標
+    `stale`；`incompleteReasons` 為涵蓋月份 summary 的不完整原因。
 
 ### 待處理收件匣
 

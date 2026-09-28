@@ -1,4 +1,7 @@
-import type { SpendingEntry } from "./economic-role";
+import type {
+  ActivitySummaryIncompleteReason,
+  SpendingEntry,
+} from "./economic-role";
 
 /** 預算與週回顧共用的日期工具：皆以台北日期字串 YYYY-MM-DD 計算。 */
 function dayToUtc(day: string) {
@@ -97,14 +100,23 @@ export interface WeeklyReview {
   topCategoryIncreases: WeeklyCategoryChange[];
   largest: WeeklyLargestEntry[];
   newMerchants: WeeklyNewMerchant[];
-  /** 進行中的週：這天之後的資料可能還沒到齊。已結束的週為 null。 */
+  /**
+   * 這天（含）之後到今天的資料可能還沒到齊：今天往前 {@link RECENT_INCOMPLETE_DAYS} 天內落在這週的
+   * 部分（不早於 weekStart）。這週都在那之前時為 null。
+   */
   possiblyIncompleteFrom: string | null;
   sources: WeeklySourceFreshness[];
+  /** 載入資料時的問題（缺匯率、分類或 override 載入失敗等）；有值時數字可能不完整。 */
+  incompleteReasons: ActivitySummaryIncompleteReason[];
 }
+
+/** 比較基準至少要有這麼多週的資料，否則不比較。 */
+export const WEEKLY_MIN_BASELINE_WEEKS = 2;
 
 /**
  * 彙整一週的消費並與過去 {@link WEEKLY_BASELINE_WEEKS} 週比較。進行中的週只和過去各週
  * 「週一到同一天」比，不拿半週比整週。entries 需涵蓋 weekStart 往前 baselineWeeks 週。
+ * 資料開始（dataStart，通常是最早一筆消費）之前的週不列入基準，避免把「還沒同步」當成 0。
  */
 export function summarizeWeek(
   entries: readonly SpendingEntry[],
@@ -113,6 +125,9 @@ export function summarizeWeek(
     today: string;
     baselineWeeks?: number;
     sources?: WeeklySourceFreshness[];
+    /** 最早有資料的日期；未提供時取 entries 中最早的一筆。 */
+    dataStart?: string;
+    incompleteReasons?: ActivitySummaryIncompleteReason[];
   },
 ): WeeklyReview {
   const { weekStart, today } = options;
@@ -135,13 +150,22 @@ export function summarizeWeek(
   const comparable = week.filter((entry) =>
     inRange(entry, weekStart, elapsedDays),
   );
+  const dataStart =
+    options.dataStart ??
+    entries.reduce<string | null>(
+      (earliest, entry) =>
+        earliest == null || entry.day < earliest ? entry.day : earliest,
+      null,
+    );
+  // 資料在該週第二天之後才開始的週視為不完整，不列入基準。
   const pastStarts = Array.from({ length: baselineWeeks }, (_, index) =>
     addDays(weekStart, -7 * (index + 1)),
-  );
+  ).filter((start) => dataStart != null && dataStart <= addDays(start, 1));
   const pastWeeks = pastStarts.map((start) =>
     entries.filter((entry) => inRange(entry, start, elapsedDays)),
   );
-  const baselineMedian = median(pastWeeks.map(sumAmounts));
+  const hasBaseline = pastWeeks.length >= WEEKLY_MIN_BASELINE_WEEKS;
+  const baselineMedian = hasBaseline ? median(pastWeeks.map(sumAmounts)) : null;
   const total = sumAmounts(comparable);
 
   const categoryTotals = (list: readonly SpendingEntry[]) => {
@@ -155,7 +179,7 @@ export function summarizeWeek(
   };
   const current = categoryTotals(comparable);
   const pastTotals = pastWeeks.map(categoryTotals);
-  const topCategoryIncreases = [...current]
+  const topCategoryIncreases = (hasBaseline ? [...current] : [])
     .map(([categoryId, amount]) => {
       const baseline =
         pastTotals.reduce(
@@ -179,7 +203,8 @@ export function summarizeWeek(
       .map((entry) => entry.merchantKey!),
   );
   const newMerchantMap = new Map<string, WeeklyNewMerchant>();
-  for (const entry of week) {
+  // 沒有足夠的過去資料時，幾乎每個商家都是「第一次」，不列。
+  for (const entry of hasBaseline ? week : []) {
     if (!entry.merchantKey || seenBefore.has(entry.merchantKey)) continue;
     const existing = newMerchantMap.get(entry.merchantKey) ?? {
       merchantKey: entry.merchantKey,
@@ -229,10 +254,13 @@ export function summarizeWeek(
     newMerchants: [...newMerchantMap.values()]
       .sort((a, b) => b.amount - a.amount)
       .slice(0, 5),
-    possiblyIncompleteFrom: complete
-      ? null
-      : addDays(today, -(RECENT_INCOMPLETE_DAYS - 1)),
+    possiblyIncompleteFrom: (() => {
+      const from = addDays(today, -(RECENT_INCOMPLETE_DAYS - 1));
+      if (from > weekEnd) return null;
+      return from < weekStart ? weekStart : from;
+    })(),
     sources: options.sources ?? [],
+    incompleteReasons: options.incompleteReasons ?? [],
   };
 }
 
@@ -310,7 +338,27 @@ export interface BudgetSummary {
   dailyAllowance: number | null;
   fixedMerchants: BudgetFixedMerchant[];
   candidates: BudgetCandidate[];
+  /** 使用者標為「不是固定」的商家，可移除判斷復原。 */
+  excludedMerchants: Array<{ merchantKey: string; displayName: string }>;
+  /**
+   * 本月消費較大、尚未判斷的商家（年繳通常只出現一次，不會成為候選；由此標成年繳或每月固定）。
+   */
+  largeMerchants: BudgetLargeMerchant[];
+  /** 載入資料時的問題；有值時可花金額可能不準。 */
+  incompleteReasons: ActivitySummaryIncompleteReason[];
 }
+
+export interface BudgetLargeMerchant {
+  merchantKey: string;
+  displayName: string;
+  categoryId: string;
+  amountThisMonth: number;
+  count: number;
+}
+
+/** 本月大筆消費商家的門檻與列出數量。 */
+export const LARGE_MERCHANT_MIN_AMOUNT = 1000;
+const LARGE_MERCHANT_LIMIT = 8;
 
 /** 各商家在各月的消費。 */
 function merchantMonthlyTotals(
@@ -405,6 +453,7 @@ export function computeBudget(input: {
   currentEntries: readonly SpendingEntry[];
   historyByMonth: ReadonlyMap<string, readonly SpendingEntry[]>;
   historyMonths: readonly string[];
+  incompleteReasons?: ActivitySummaryIncompleteReason[];
 }): BudgetSummary {
   const { settings, month, today } = input;
   const expectedIncome =
@@ -438,11 +487,12 @@ export function computeBudget(input: {
       } => decision.kind !== "not_fixed",
     )
     .map((decision) => {
-      const months = history.get(decision.merchantKey)?.months;
+      const record = history.get(decision.merchantKey);
+      // 只看該商家有消費紀錄的月份（含退款沖成 0 以下的月份），沒出現的月份不算 0。
       const historical = median(
         input.historyMonths
-          .map((historyMonth) => months?.get(historyMonth) ?? 0)
-          .filter((amount) => amount > 0),
+          .filter((historyMonth) => (record?.counts.get(historyMonth) ?? 0) > 0)
+          .map((historyMonth) => record!.months.get(historyMonth) ?? 0),
       );
       return {
         merchantKey: decision.merchantKey,
@@ -510,6 +560,33 @@ export function computeBudget(input: {
   const decided = new Set(
     input.decisions.map((decision) => decision.merchantKey),
   );
+  const candidates = detectFixedCandidates(
+    input.historyByMonth,
+    input.historyMonths,
+    decided,
+  );
+  const candidateKeys = new Set(
+    candidates.map((candidate) => candidate.merchantKey),
+  );
+  const monthMerchants = new Map<string, BudgetLargeMerchant>();
+  for (const entry of input.currentEntries) {
+    if (
+      !entry.merchantKey ||
+      decided.has(entry.merchantKey) ||
+      candidateKeys.has(entry.merchantKey)
+    )
+      continue;
+    const merchant = monthMerchants.get(entry.merchantKey) ?? {
+      merchantKey: entry.merchantKey,
+      displayName: entry.displayName,
+      categoryId: entry.categoryId,
+      amountThisMonth: 0,
+      count: 0,
+    };
+    merchant.amountThisMonth = round(merchant.amountThisMonth + entry.amount);
+    merchant.count += 1;
+    monthMerchants.set(entry.merchantKey, merchant);
+  }
   return {
     month,
     today,
@@ -529,10 +606,16 @@ export function computeBudget(input: {
         ? null
         : round(Math.max(available, 0) / daysLeft),
     fixedMerchants,
-    candidates: detectFixedCandidates(
-      input.historyByMonth,
-      input.historyMonths,
-      decided,
-    ),
+    candidates,
+    excludedMerchants: input.decisions
+      .filter((decision) => decision.kind === "not_fixed")
+      .map(({ merchantKey, displayName }) => ({ merchantKey, displayName })),
+    largeMerchants: [...monthMerchants.values()]
+      .filter(
+        (merchant) => merchant.amountThisMonth >= LARGE_MERCHANT_MIN_AMOUNT,
+      )
+      .sort((a, b) => b.amountThisMonth - a.amountThisMonth)
+      .slice(0, LARGE_MERCHANT_LIMIT),
+    incompleteReasons: input.incompleteReasons ?? [],
   };
 }
