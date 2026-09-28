@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { BudgetSummary, WeeklyReview } from "@taiwan-fin-hub/core";
+import { earliestTransactionDay } from "../../../src/features/budget/repository";
 import { budgetRoutes } from "../../../src/features/budget/route";
 import {
   getBudget,
@@ -255,4 +256,35 @@ describe("budget API", () => {
       possiblyIncompleteFrom: "2026-09-21",
     });
   });
+
+  it("finds the earliest transaction day in Taipei time using the day index", async () => {
+    const harness = await createTestD1();
+    try {
+      const utc = harness.binding;
+      await utc.batch([
+        utc
+          .prepare(
+            "INSERT INTO bank_accounts (id, connector_id, source_id, account_type, created_at, updated_at) VALUES ('a', 'taishin', 'credit:taishin:main', 'credit', ?1, ?1)",
+          )
+          .bind(CREATED),
+        // UTC 09-01 16:30 是台北 09-02 00:30。
+        utc
+          .prepare(
+            "INSERT INTO bank_transactions (id, connector_id, account_id, source_id, authorized_at, amount, currency, status, created_at, updated_at) VALUES ('t1', 'taishin', 'a', 't1', '2026-09-01T16:30:00Z', -100, 'TWD', 'posted', ?1, ?1), ('t2', 'taishin', 'a', 't2', '2026-09-03', -100, 'TWD', 'posted', ?1, ?1)",
+          )
+          .bind(CREATED),
+      ]);
+      expect(await earliestTransactionDay(utc)).toBe("2026-09-02");
+      const plan = await utc
+        .prepare(
+          "EXPLAIN QUERY PLAN SELECT MIN(CASE WHEN length(authorized_at) > 10 THEN COALESCE(date(authorized_at, '+8 hours'), substr(authorized_at, 1, 10)) ELSE substr(COALESCE(authorized_at, posted_date), 1, 10) END) AS day FROM bank_transactions",
+        )
+        .all<{ detail: string }>();
+      expect(plan.results.map((row) => row.detail).join(" ")).toContain(
+        "idx_bank_transactions_transaction_day",
+      );
+    } finally {
+      await harness.mf.dispose();
+    }
+  }, 60_000);
 });

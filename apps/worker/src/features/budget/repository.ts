@@ -10,8 +10,7 @@ import {
   type BudgetSettings,
   type SavingsTargetType,
 } from "@taiwan-fin-hub/core";
-import { eq, sql } from "drizzle-orm";
-import { bankTransactions } from "@taiwan-fin-hub/db";
+import { eq } from "drizzle-orm";
 
 const SETTINGS_ID = "default";
 
@@ -96,17 +95,27 @@ export async function deleteBudgetMerchantDecision(
   return (result.meta?.changes ?? 0) > 0;
 }
 
-/** 最早一筆銀行／信用卡交易的日期（YYYY-MM-DD）；週回顧據此排除資料開始前的週。 */
+/**
+ * 最早一筆銀行／信用卡交易的台北日期（YYYY-MM-DD）；週回顧據此排除資料開始前的週。
+ * 算式與 idx_bank_transactions_transaction_day 完全相同（時間戳加 8 小時換成台北日期），
+ * 讓 MIN 走索引、不掃整張表。
+ */
 export async function earliestTransactionDay(
   db: D1Database,
 ): Promise<string | null> {
-  const row = await createDrizzle(db)
-    .select({
-      day: sql<
-        string | null
-      >`MIN(substr(COALESCE(${bankTransactions.authorizedAt}, ${bankTransactions.postedDate}), 1, 10))`,
-    })
-    .from(bankTransactions)
-    .get();
+  const row = await db
+    .prepare(
+      `SELECT MIN(
+        CASE
+          WHEN length(authorized_at) > 10
+            THEN COALESCE(
+              date(authorized_at, '+8 hours'),
+              substr(authorized_at, 1, 10)
+            )
+          ELSE substr(COALESCE(authorized_at, posted_date), 1, 10)
+        END
+      ) AS day FROM bank_transactions`,
+    )
+    .first<{ day: string | null }>();
   return row?.day ?? null;
 }
