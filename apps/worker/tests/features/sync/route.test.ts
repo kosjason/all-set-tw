@@ -4,6 +4,7 @@ import {
   ObankConnectionError,
   SkbankConnectionError,
 } from "@taiwan-fin-hub/connectors";
+import { BrowserRunCapacityError } from "../../../src/connectors/browser";
 import {
   FirstbankBrowserCapacityError,
   FirstbankConnectionError,
@@ -22,7 +23,6 @@ import {
   CathayOtpRequiredError,
   CathayOtpSessionExpiredError,
 } from "../../../src/connectors/cathaybk";
-import { BrowserCapacityError } from "../../../src/connectors/browser";
 import {
   TaishinBrowserCapacityError,
   TaishinConnectionError,
@@ -34,11 +34,14 @@ const mocks = vi.hoisted(() => ({
   cancelQueuedTdccSyncRun: vi.fn(),
   enqueueEinvoiceSyncChunk: vi.fn(),
   enqueueTdccSyncChunk: vi.fn(),
+  prepareSinopacCaptchaSession: vi.fn(),
   prepareTaishinCaptchaSession: vi.fn(),
   prepareHncbCaptchaSession: vi.fn(),
   prepareKgibankCaptchaSession: vi.fn(),
   prepareObankCaptchaSession: vi.fn(),
   prepareMegabankCaptchaSession: vi.fn(),
+  prepareNextbankCaptchaSession: vi.fn(),
+  syncNextbank: vi.fn(),
   prepareFirstbankCaptchaSession: vi.fn(),
   startEinvoiceSyncRun: vi.fn(),
   startTdccSyncRun: vi.fn(),
@@ -51,6 +54,7 @@ const mocks = vi.hoisted(() => ({
   syncFirstbank: vi.fn(),
   syncHncb: vi.fn(),
   syncKgibank: vi.fn(),
+  syncSinopac: vi.fn(),
   syncTaishin: vi.fn(),
   syncSkbank: vi.fn(),
 }));
@@ -77,12 +81,15 @@ vi.mock("../../../src/features/sync/scheduler-queue", () => ({
 
 vi.mock("../../../src/features/sync/service", () => ({
   NeedsUserActionError: class NeedsUserActionError extends Error {},
-  prepareSinopacCaptchaSession: vi.fn(),
+  NextbankCaptchaRequiredError: class NextbankCaptchaRequiredError extends Error {},
+  prepareSinopacCaptchaSession: mocks.prepareSinopacCaptchaSession,
   prepareHncbCaptchaSession: mocks.prepareHncbCaptchaSession,
   prepareKgibankCaptchaSession: mocks.prepareKgibankCaptchaSession,
   prepareTaishinCaptchaSession: mocks.prepareTaishinCaptchaSession,
   prepareObankCaptchaSession: mocks.prepareObankCaptchaSession,
   prepareMegabankCaptchaSession: mocks.prepareMegabankCaptchaSession,
+  prepareNextbankCaptchaSession: mocks.prepareNextbankCaptchaSession,
+  syncNextbank: mocks.syncNextbank,
   prepareFirstbankCaptchaSession: mocks.prepareFirstbankCaptchaSession,
   safeErrorMessage: (error: unknown) =>
     error instanceof Error ? error.message : String(error),
@@ -90,7 +97,7 @@ vi.mock("../../../src/features/sync/service", () => ({
   syncCtbc: mocks.syncCtbc,
   syncEinvoice: vi.fn(),
   syncEsun: mocks.syncEsun,
-  syncSinopac: vi.fn(),
+  syncSinopac: mocks.syncSinopac,
   syncObank: mocks.syncObank,
   syncMegabank: mocks.syncMegabank,
   syncFirstbank: mocks.syncFirstbank,
@@ -117,6 +124,7 @@ import {
   CTBC_IMPORT_MAX_BYTES,
   syncRoutes,
 } from "../../../src/features/sync/route";
+import { NextbankCaptchaRequiredError } from "../../../src/features/sync/service";
 
 const env = {} as Env;
 
@@ -603,9 +611,7 @@ describe("E.SUN sync route", () => {
     ["esun", mocks.syncEsun],
     ["cathaybk", mocks.syncCathaybk],
   ])("maps %s Browser Run capacity failures", async (connectorId, sync) => {
-    sync.mockRejectedValueOnce(
-      new BrowserCapacityError("Cloudflare 瀏覽器暫時達到使用上限。", 20),
-    );
+    sync.mockRejectedValueOnce(new BrowserRunCapacityError("rate_limit", 20));
 
     const response = await syncRoutes.request(
       `/connectors/${connectorId}/sync`,
@@ -618,7 +624,7 @@ describe("E.SUN sync route", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: {
         code: "BROWSER_BUSY",
-        message: "Cloudflare 瀏覽器暫時達到使用上限。",
+        message: "Cloudflare 瀏覽器暫時達到使用上限，請稍後再試。",
       },
     });
   });
@@ -923,6 +929,69 @@ describe("KGI Bank sync routes", () => {
   });
 });
 
+describe("Nextbank sync routes", () => {
+  it("returns a challenge and forwards the manual answer to the runtime", async () => {
+    mocks.prepareNextbankCaptchaSession.mockResolvedValueOnce({
+      captchaImage: "data:image/png;base64,AQID",
+      captchaLength: 5,
+      captchaKind: "alphanumeric",
+    });
+    const challenge = await syncRoutes.request(
+      "/connectors/nextbank/captcha",
+      { method: "POST" },
+      env,
+    );
+    expect(challenge.status).toBe(200);
+    expect(await challenge.json()).toMatchObject({ captchaLength: 5 });
+    mocks.syncNextbank.mockResolvedValueOnce({
+      success: true,
+      connectorId: "nextbank",
+      scope: "all",
+      records: 0,
+    });
+    const synced = await syncRoutes.request(
+      "/connectors/nextbank/sync",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ captcha: "A1b2C" }),
+      },
+      env,
+    );
+    expect(synced.status).toBe(200);
+    expect(mocks.syncNextbank).toHaveBeenCalledWith(env, "manual", {
+      captcha: "A1b2C",
+    });
+  });
+  it("rejects invalid answers before reaching the bank runtime", async () => {
+    const response = await syncRoutes.request(
+      "/connectors/nextbank/sync",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ captcha: "abcdef" }),
+      },
+      env,
+    );
+    expect(response.status).toBe(400);
+    expect(mocks.syncNextbank).not.toHaveBeenCalled();
+  });
+  it("returns a stable code when a new CAPTCHA is required", async () => {
+    mocks.syncNextbank.mockRejectedValueOnce(
+      new NextbankCaptchaRequiredError("請重新取得驗證碼。"),
+    );
+    const response = await syncRoutes.request(
+      "/connectors/nextbank/sync",
+      { method: "POST" },
+      env,
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "NEXTBANK_CAPTCHA_REQUIRED" },
+    });
+  });
+});
+
 describe("O-Bank sync routes", () => {
   it("returns the App API CAPTCHA metadata", async () => {
     const response = await syncRoutes.request(
@@ -1116,4 +1185,59 @@ describe("First Bank web sync routes", () => {
       error: { code: "FIRSTBANK_BROWSER_BUSY" },
     });
   });
+});
+
+describe("shared Browser Run capacity responses", () => {
+  it.each([
+    ["esun", mocks.syncEsun],
+    ["cathaybk", mocks.syncCathaybk],
+    ["sinopac", mocks.syncSinopac],
+    ["taishin", mocks.syncTaishin],
+    ["hncb", mocks.syncHncb],
+    ["kgibank", mocks.syncKgibank],
+    ["firstbank", mocks.syncFirstbank],
+  ])("maps %s sync failures to BROWSER_BUSY", async (connectorId, sync) => {
+    sync.mockRejectedValueOnce(new BrowserRunCapacityError("rate_limit", 20));
+    const response = await syncRoutes.request(
+      `/connectors/${connectorId}/sync`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      },
+      env,
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("20");
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "BROWSER_BUSY" },
+    });
+  });
+
+  it.each([
+    ["sinopac", mocks.prepareSinopacCaptchaSession],
+    ["taishin", mocks.prepareTaishinCaptchaSession],
+    ["hncb", mocks.prepareHncbCaptchaSession],
+    ["kgibank", mocks.prepareKgibankCaptchaSession],
+    ["firstbank", mocks.prepareFirstbankCaptchaSession],
+  ])(
+    "maps %s CAPTCHA failures to BROWSER_BUSY",
+    async (connectorId, prepare) => {
+      prepare.mockRejectedValueOnce(
+        new BrowserRunCapacityError("acquisition_rate_limit", 17),
+      );
+      const response = await syncRoutes.request(
+        `/connectors/${connectorId}/captcha`,
+        { method: "POST" },
+        env,
+      );
+
+      expect(response.status).toBe(429);
+      expect(response.headers.get("Retry-After")).toBe("17");
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "BROWSER_BUSY" },
+      });
+    },
+  );
 });

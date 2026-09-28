@@ -174,6 +174,17 @@ export type {
   ObankSyncOptions,
 } from "./obank-mobile-api";
 import { obankConfigSchema } from "./obank";
+import { nextbankConfigSchema } from "./nextbank";
+export {
+  nextbankConfigSchema,
+  parseNextbankConfig,
+  parseNextbankDeposits,
+} from "./nextbank";
+export {
+  NextbankApiClient,
+  NextbankApiError,
+  collectNextbankDepositPayloads,
+} from "./nextbank-api";
 
 export {
   firstbankConfigSchema,
@@ -867,6 +878,7 @@ export const connectorConfigSchemas = {
   ctbc: ctbcConfigSchema,
   skbank: skbankConfigSchema,
   obank: obankConfigSchema,
+  nextbank: nextbankConfigSchema,
   firstbank: firstbankConfigSchema,
   hncb: hncbConfigSchema,
   kgibank: kgibankConfigSchema,

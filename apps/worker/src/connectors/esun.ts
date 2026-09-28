@@ -1,4 +1,4 @@
-import { launchBrowserOrCapacityError } from "./browser.js";
+import { launchBrowserWithRetry } from "./browser.js";
 import {
   buildEsunCreditTimelinePages,
   collectEsunBrowserSnapshot,
@@ -112,7 +112,7 @@ async function loginWithBrowser(
   config: EsunConfig,
 ) {
   console.log("[esun debug] launching browser");
-  const browser = await launchBrowserOrCapacityError(browserBinding);
+  const browser = await launchBrowserWithRetry(browserBinding);
   const page = await browser.newPage();
   let txnDupToken: string | undefined;
 
