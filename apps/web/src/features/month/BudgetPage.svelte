@@ -77,10 +77,9 @@
     };
   });
   const previewSavings = $derived.by(() => {
+    // 收入欄留白時，以歷史推算的收入預覽（不是之前儲存的設定值）。
     const income =
-      form.settings.expectedIncome ??
-      $budget.data?.expectedIncome.amount ??
-      null;
+      form.settings.expectedIncome ?? $budget.data?.historicalIncome ?? null;
     const monthly = form.settings.monthlyBudget;
     if (
       income == null ||

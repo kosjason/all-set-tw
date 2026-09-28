@@ -323,6 +323,8 @@ export interface BudgetSummary {
     amount: number | null;
     source: "settings" | "history" | "none";
   };
+  /** 由採用月份推算的月收入（不論是否有設定）；設定頁清空收入時用來預覽。 */
+  historicalIncome: number | null;
   /** 照預算本月約可存下：預期收入 − 預算 − 年繳準備金；收入或預算不明時為 null。 */
   expectedSavings: number | null;
   monthlyReserve: number;
@@ -560,11 +562,18 @@ export function computeBudget(input: {
     monthlyBudget == null
       ? null
       : round(monthlyBudget - spent - fixedRemaining);
+  // 參考值一律排除標成年繳的商家，不受年繳準備金是否設定影響。
+  const allAnnualKeys = new Set(
+    fixedMerchants
+      .filter((merchant) => merchant.kind === "annual")
+      .map((merchant) => merchant.merchantKey),
+  );
   const typicalSpending = median(
     input.historyMonths.map((historyMonth) =>
       sumAmounts(
         (input.historyByMonth.get(historyMonth) ?? []).filter(
-          (entry) => !entry.merchantKey || !annualKeys.has(entry.merchantKey),
+          (entry) =>
+            !entry.merchantKey || !allAnnualKeys.has(entry.merchantKey),
         ),
       ),
     ),
@@ -612,6 +621,10 @@ export function computeBudget(input: {
     monthlyBudget,
     typicalSpending: typicalSpending == null ? null : round(typicalSpending),
     expectedIncome,
+    historicalIncome:
+      input.historicalIncome != null && input.historicalIncome > 0
+        ? round(input.historicalIncome)
+        : null,
     expectedSavings,
     monthlyReserve,
     spent,

@@ -363,6 +363,50 @@ describe("computeBudget", () => {
     });
   });
 
+  it("keeps annual merchants out of the typical spending even without a reserve", () => {
+    const withInsurance = new Map([
+      ...history,
+      [
+        "2026-08",
+        [
+          entry("2026-08-05", 15000, { merchantKey: "name:rent" }),
+          entry("2026-08-20", 36000, { merchantKey: "name:insurance" }),
+        ],
+      ],
+    ]);
+    const budget = computeBudget({
+      ...base,
+      historyByMonth: withInsurance,
+      settings: DEFAULT_BUDGET_SETTINGS,
+      decisions: [
+        {
+          merchantKey: "name:insurance",
+          kind: "annual",
+          displayName: "保險",
+          expectedAmount: null,
+        },
+      ],
+      currentEntries: [],
+    });
+    expect(budget.annualWithoutReserve).toBe(true);
+    expect(budget.typicalSpending).toBe(15000);
+    expect(budget.historicalIncome).toBe(160000);
+  });
+
+  it("has no typical spending without usable history", () => {
+    const budget = computeBudget({
+      ...base,
+      historyByMonth: new Map(),
+      historyMonths: [],
+      historicalIncome: null,
+      settings: DEFAULT_BUDGET_SETTINGS,
+      decisions: [],
+      currentEntries: [],
+    });
+    expect(budget.typicalSpending).toBeNull();
+    expect(budget.historicalIncome).toBeNull();
+  });
+
   it("lists large merchants to mark as annual and keeps excluded ones restorable", () => {
     const budget = computeBudget({
       ...base,

@@ -21,11 +21,12 @@
   } = $props();
 
   const used = $derived(budget ? budget.spent + budget.fixedRemaining : 0);
-  const usedPercent = $derived(
-    budget?.monthlyBudget
-      ? Math.min((used / budget.monthlyBudget) * 100, 100)
-      : 0,
-  );
+  // 0–100%；預算為 0 時只要有花就算 100%。
+  const usedPercent = $derived.by(() => {
+    if (budget?.monthlyBudget == null) return 0;
+    if (budget.monthlyBudget === 0) return used > 0 ? 100 : 0;
+    return Math.min(Math.max((used / budget.monthlyBudget) * 100, 0), 100);
+  });
   const overspent = $derived(budget?.available != null && budget.available < 0);
 </script>
 
@@ -121,7 +122,9 @@
         data-testid="budget-expected-savings"
       >
         {#if budget.expectedSavings < 0}
-          這個預算比收入還高 {formatCurrency(-budget.expectedSavings)}
+          照這個預算和年繳準備，每月還差 {formatCurrency(
+            -budget.expectedSavings,
+          )}
         {:else}
           照這個預算，本月約可存下 {formatCurrency(
             budget.expectedSavings,

@@ -70,6 +70,7 @@ export async function routeNavigationApi(page: Page) {
         monthlyBudget: null,
         typicalSpending: null,
         expectedIncome: { amount: null, source: "none" },
+        historicalIncome: null,
         expectedSavings: null,
         monthlyReserve: 0,
         spent: 0,

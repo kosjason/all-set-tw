@@ -330,6 +330,7 @@ describe("month page", () => {
       monthlyBudget: 20000,
       typicalSpending: 18000,
       expectedIncome: { amount: 160000, source: "history" },
+      historicalIncome: 160000,
       expectedSavings: 139000,
       monthlyReserve: 1000,
       spent: 9650,
