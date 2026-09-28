@@ -187,13 +187,15 @@
           <span class="text-sm font-medium">預期月收入（選填）</span>
           <Input
             inputmode="numeric"
-            placeholder={data.expectedIncome.source === "history"
-              ? `留白：用近 ${data.historyMonths.length} 個月推算的 ${formatCurrency(data.expectedIncome.amount ?? 0)}`
+            placeholder={data.historicalIncome != null
+              ? `留白：用近 ${data.historyMonths.length} 個月推算的 ${formatCurrency(data.historicalIncome)}`
               : "例如 160000"}
             bind:value={incomeText}
           />
           <span class="text-caption text-subtle">
-            {#if previewSavings != null}
+            {#if previewSavings != null && previewSavings < 0}
+              照這個預算和年繳準備，每月還差 {formatCurrency(-previewSavings)}。
+            {:else if previewSavings != null}
               照這個預算，每月約可存下 {formatCurrency(previewSavings)}（收入 −
               預算 − 年繳準備金）。
             {:else}
