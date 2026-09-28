@@ -86,18 +86,18 @@ Connector 不得依賴 Hono、D1、Worker `Env`，也不得直接寫入資料庫
 `apps/worker/src/connectors/browser.ts` 的 `launchBrowserWithRetry`，不得直接呼叫
 `puppeteer.launch`。共用 adapter 在 binding `fetch` 層僅針對建立瀏覽器的
 `POST /v1/devtools/browser` 請求依 HTTP status `503` 判斷重試，不比對錯誤文案。
-預設等待 2 秒、5 秒後重試，
-最多嘗試 3 次；耗盡後保留原始錯誤，交由既有同步失敗流程處理。結構化 log
-只記錄狀態碼、嘗試次數與重試延遲。`429` 額度／限流錯誤不重試；
-session 重連、瀏覽器建立後的操作與銀行登入不在此重試範圍內。
+預設等待 2 秒、5 秒後重試，最多嘗試 3 次；`503` 耗盡後保留原始錯誤。
+結構化 log 只記錄狀態碼、嘗試次數與重試延遲。建立瀏覽器時遇到 Browser Run
+每日額度或限流，`classifyBrowserRunCapacityError` 會轉成共用的
+`BrowserRunCapacityError`；不相關錯誤原樣傳遞。每日額度依 Cloudflare 的 UTC
+隔日重置，使用者訊息說明「每日台灣時間早上 8 點重置」，`Retry-After` 為距離
+下一次重置的秒數。五家原有的 `puppeteer.limits` 啟動頻率預先檢查也使用共用錯誤，
+並保留當下取得的等待秒數。
 
-建立瀏覽器時遇到 Browser Run 每日額度用完或限流，adapter 應轉成使用者看得懂的
-capacity error，不要讓原始 Puppeteer 訊息寫入同步紀錄。新的 adapter 使用
-`browser.ts` 的 `launchBrowserOrCapacityError`，它會呼叫 `launchBrowserWithRetry`，
-並以 `classifyBrowserCapacityError` 將錯誤轉成 `BrowserCapacityError`；同步 route
-會回應 `429 BROWSER_BUSY` 與 `Retry-After`。此類錯誤維持 `failed` 狀態，不視為需要
-使用者處理。永豐、台新、華南、第一、凱基仍沿用各自的 capacity error 類別，以保留
-前端依錯誤代碼處理驗證碼流程的行為。
+手動同步與驗證碼 route 對共用錯誤回應 `429 BROWSER_BUSY`；同步紀錄維持
+`failed`，排程在下一輪照常重試。銀行專屬 capacity error 只處理驗證碼作業或
+session 忙碌，原有專屬 API 錯誤碼仍供這些情境使用。session 重連、瀏覽器建立後
+的操作與銀行登入不在共用辨識及建立重試範圍內。
 
 ## 正規化資料契約
 
@@ -382,6 +382,7 @@ migration `0049_cathay_credit_card_repairs.sql` 一次修正國泰信用卡帳�
 ### 台新銀行
 
 - 台新登入後若出現「訊息通知／每三個月變更一次密碼」彈窗，必須點「關閉」後再抓資料。不得點「前往修改」或「3個月後提醒」，也不得停在彈窗卻因為 session API 仍可用而回報同步成功。
+- 自動辨識驗證碼的結果若不符合頁面要求的數字位數，不送出登入；重新載入頁面取得新驗證碼，沿用最多三次的自動登入嘗試。仍無法辨識時改由使用者人工驗證，日誌不得記錄驗證碼或圖片。
 - 信用卡資料依頁面載入順序取得：`doXTPA` 摘要與本期 `init` 帳單之後才查 `qryRealTime` 即時消費。`qryRealTime` 連續三次回「系統忙碌」時，以本期帳單參數（`org`、`byear`、`bmonth`、`cardHolderFlagSelected`、`cardNo`）試查 `qryUnposted`；只有回應帶已知的 `fmtRealTxListMap` 格式才採用，否則僅記錄回應欄位名稱與陣列長度（不含值）供實機確認。`qryUnposted` 的實際參數與回應格式尚未經實機驗證。
 - 即時消費最終仍取不到時，同步照常寫入已入帳交易與帳單，但 `SyncResult.warnings` 帶上說明；同步工作維持 `success`，警告寫入 `sync_jobs.last_error`，資料來源頁以「上次同步成功，但部分資料未取得」顯示，下一次無警告的成功同步會清除。
 
@@ -544,9 +545,15 @@ depositTransactionsUnavailable?: boolean }`，上限 5 MB；zod 只驗證各回�
 
 - 使用 App 2.5.19 的 MobileFirst API：OAuth client credentials、`/main/init`、App 初始化、五位數字驗證碼、E2EE RSA／TripleDES 帳密登入。一般登入不要求快速登入或裝置綁定。本機已完成一次實際同步；Cloudflare Workers 線上執行仍需驗證。
 - 人工驗證碼的待登入 session 只保存於 `encrypted_config`，兩分鐘到期，成功或失敗後清除；排程同步使用 Workers AI 辨識。`sync_cursor` 只含同步時間。
+- 登入後無論同步成功或失敗，都依 App 流程呼叫 `/fco/fco02011/logout` 釋放銀行工作階段；登出失敗不覆蓋同步結果或原始錯誤。
+- 本機曾觀察到網銀登入期間同步回 `SYS014`，登出網銀後同步成功；這支持工作階段衝突的推論，但尚無 `SYS014` 的官方定義。此代碼會提示先登出網銀再試，連接器不自動接管其他登入。
 - 驗證碼準備及同步後的設定寫入會比對當初讀取的加密設定；promotion batch 也先檢查同一版本，期間若憑證已更新，不寫入舊帳務、舊憑證或同步游標。
 - 兆豐同步工作建立時停用；首次成功同步後會比照永豐、台新與王道自動啟用。若使用者之後手動停用，再次手動同步不會重新啟用。
 - 存款清單取 `/fco/fco10001/home`；臺幣交易按帳戶查 `/fao/fao01001/query`，最多回溯三個月並處理 `tsqName` 分頁。外幣帳戶與餘額仍會同步，外幣交易查詢尚未完成協定驗證。
 - 信用卡總覽與餘額取 `/fco/fco10007/home`，近三期帳單取 `/fao/fao01009/home`，消費取 `/fao/fao01010/home` 與 `query`。本機真實登入已確認這些端點及總覽、帳單、消費查詢的外層欄位；探測只記錄欄位型別與筆數，未保存金額或交易內容。
 - 總覽 `creditCardBillInfoList` 依 `ACCT_TYPE` 與 `CURR_CODE` 區分；`ACCT_MON=999912` 是未出帳，其餘僅取各組最新一期計算目前應繳，不累加歷史帳單。消費的 `acctMon=999912` 表示未入帳；本機同步的信用卡消費金額已與 App 顯示核對一致，其他內層欄位尚待逐一核對。
 - 帳戶與卡號只用於請求和雜湊識別；持久化的 `raw` 只保留末四碼。任何關鍵回應無法解析時整次同步失敗，避免部分更新。
+
+## 將來銀行
+
+使用銀行 Web API 與人工 CAPTCHA／自動辨識，單次帳密登入、查詢後登出，不接管其他工作階段。主帳戶查詢最近三個月，活存口袋讀取所有分頁後依日期篩選；定存口袋目前僅合成驗證，基金與美股未接入。排程預設停用，排程登入尚未真實驗收。設定 CAS 與原子寫入 guard 防止查詢期間變更帳密後仍寫入舊結果。
