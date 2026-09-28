@@ -125,7 +125,11 @@ describe("budget API", () => {
     expect(budget.candidates[0]!.monthlyAmounts).toEqual([390, 390, 390]);
     // 本月已花：超市 7000 + 燒肉 2500 + 咖啡 150。
     expect(budget.spent).toBe(9650);
-    expect(budget.available).toBe(160000 - 9650);
+    // 還沒設定預算：不計算可花，只給過去每月約花多少參考
+    // （6–8 月超市 1000／3000／5000 加訂閱 390，中位數 3390）。
+    expect(budget.available).toBeNull();
+    expect(budget.monthlyBudget).toBeNull();
+    expect(budget.typicalSpending).toBe(3390);
   });
 
   it("reserves a confirmed monthly merchant that has not been charged yet", async () => {
@@ -149,9 +153,8 @@ describe("budget API", () => {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        monthlyBudget: 30000,
         expectedIncome: null,
-        savingsTargetType: "percent",
-        savingsTargetValue: 25,
         annualReserve: 12000,
       }),
     });
@@ -169,10 +172,12 @@ describe("budget API", () => {
       }),
     ]);
     expect(budget).toMatchObject({
-      savingsTarget: 40000,
+      monthlyBudget: 30000,
       monthlyReserve: 1000,
       fixedRemaining: 390,
-      available: 160000 - 40000 - 1000 - 9650 - 390,
+      available: 30000 - 9650 - 390,
+      // 照預算可存下：收入 − 預算 − 年繳準備金。
+      expectedSavings: 160000 - 30000 - 1000,
     });
 
     const removed = await request(
@@ -197,19 +202,18 @@ describe("budget API", () => {
     expect(
       (
         await put("/budget/settings", {
+          monthlyBudget: 30000,
           expectedIncome: 100,
-          savingsTargetType: "percent",
-          savingsTargetValue: 120,
           annualReserve: 0,
+          savingsTargetType: "percent",
         })
       ).status,
     ).toBe(400);
     expect(
       (
         await put("/budget/settings", {
-          expectedIncome: -1,
-          savingsTargetType: "amount",
-          savingsTargetValue: 0,
+          monthlyBudget: -1,
+          expectedIncome: null,
           annualReserve: 0,
         })
       ).status,

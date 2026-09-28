@@ -9,7 +9,6 @@ export type {
   BudgetMerchantKind,
   BudgetSettings,
   BudgetSummary,
-  SavingsTargetType,
   WeeklyReview,
 } from "@taiwan-fin-hub/core";
 

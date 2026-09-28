@@ -260,13 +260,12 @@ describe("computeBudget", () => {
     historyMonths: months,
   };
 
-  it("subtracts savings, reserve, spending and fixed costs not yet paid", () => {
+  it("subtracts spending and fixed costs not yet paid from the monthly budget", () => {
     const budget = computeBudget({
       ...base,
       settings: {
+        monthlyBudget: 40000,
         expectedIncome: 150000,
-        savingsTargetType: "percent",
-        savingsTargetValue: 20,
         annualReserve: 24000,
       },
       decisions: [
@@ -290,8 +289,8 @@ describe("computeBudget", () => {
     });
     expect(budget).toMatchObject({
       daysLeft: 10,
+      monthlyBudget: 40000,
       expectedIncome: { amount: 150000, source: "settings" },
-      savingsTarget: 30000,
       monthlyReserve: 2000,
       // 年繳保險由準備金支付，不扣本月可花。
       spent: 10000,
@@ -299,8 +298,12 @@ describe("computeBudget", () => {
       spentFixed: 0,
       // 房租本月還沒扣款，依近 3 個月中位數預留。
       fixedRemaining: 15000,
-      available: 150000 - 30000 - 2000 - 10000 - 15000,
-      dailyAllowance: 9300,
+      available: 40000 - 10000 - 15000,
+      dailyAllowance: 1500,
+      // 照預算可存下：收入 − 預算 − 年繳準備金。
+      expectedSavings: 150000 - 40000 - 2000,
+      // 過去每月都只有房租 15000。
+      typicalSpending: 15000,
     });
     expect(budget.fixedMerchants[0]).toMatchObject({
       merchantKey: "name:rent",
@@ -314,7 +317,7 @@ describe("computeBudget", () => {
   it("stops reserving a fixed cost once it has been paid", () => {
     const budget = computeBudget({
       ...base,
-      settings: DEFAULT_BUDGET_SETTINGS,
+      settings: { ...DEFAULT_BUDGET_SETTINGS, monthlyBudget: 30000 },
       decisions: [
         {
           merchantKey: "name:rent",
@@ -332,14 +335,14 @@ describe("computeBudget", () => {
       spent: 15000,
       spentFixed: 15000,
       fixedRemaining: 0,
-      available: 145000,
+      available: 15000,
     });
   });
 
   it("still counts annual payments when there is no annual reserve", () => {
     const budget = computeBudget({
       ...base,
-      settings: { ...DEFAULT_BUDGET_SETTINGS, expectedIncome: 100000 },
+      settings: { ...DEFAULT_BUDGET_SETTINGS, monthlyBudget: 100000 },
       decisions: [
         {
           merchantKey: "name:insurance",
@@ -390,7 +393,7 @@ describe("computeBudget", () => {
     ]);
   });
 
-  it("cannot compute an amount without any income", () => {
+  it("does not compute an amount before a monthly budget is set", () => {
     const budget = computeBudget({
       ...base,
       historicalIncome: null,
@@ -399,9 +402,12 @@ describe("computeBudget", () => {
       currentEntries: [],
     });
     expect(budget).toMatchObject({
+      monthlyBudget: null,
       expectedIncome: { amount: null, source: "none" },
       available: null,
       dailyAllowance: null,
+      expectedSavings: null,
+      typicalSpending: 15000,
     });
     expect(budget.candidates.map((candidate) => candidate.merchantKey)).toEqual(
       ["name:rent"],

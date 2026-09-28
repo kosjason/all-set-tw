@@ -1,6 +1,6 @@
 <!--
-  本月可花：預期收入 − 儲蓄目標 − 年繳準備金 ÷ 12 − 本月已花 − 固定支出待扣。
-  顯示還可花與「每天約可花」，下方列出各項扣除；預期收入不明時提示到可花設定頁填寫。
+  本月可花：每月消費預算 − 本月已花 − 每月固定支出待扣（年繳由準備金支付，不扣）。
+  顯示還可花與「每天約可花」、照預算可存下多少；還沒設定預算時只給過去每月約花多少，引導到可花設定。
 -->
 <script lang="ts">
   import { ChevronRight } from "@lucide/svelte";
@@ -20,17 +20,11 @@
     onOpenSettings: () => void;
   } = $props();
 
-  const income = $derived(budget?.expectedIncome.amount ?? null);
-  const committed = $derived(
-    budget
-      ? budget.savingsTarget +
-          budget.monthlyReserve +
-          budget.spent +
-          budget.fixedRemaining
-      : 0,
-  );
+  const used = $derived(budget ? budget.spent + budget.fixedRemaining : 0);
   const usedPercent = $derived(
-    income && income > 0 ? Math.min((committed / income) * 100, 100) : 0,
+    budget?.monthlyBudget
+      ? Math.min((used / budget.monthlyBudget) * 100, 100)
+      : 0,
   );
   const overspent = $derived(budget?.available != null && budget.available < 0);
 </script>
@@ -53,19 +47,24 @@
     <p class="mt-2 text-sm text-subtle">計算中…</p>
   {:else if failed || !budget}
     <p class="mt-2 text-sm text-coral">本月可花無法載入。</p>
-  {:else if budget.available == null}
-    <p class="mt-2 text-sm">還不知道每月收入。</p>
+  {:else if budget.monthlyBudget == null}
+    <p class="mt-2 text-sm" data-testid="budget-unset">還沒設定每月預算。</p>
+    {#if budget.typicalSpending != null}
+      <p class="mt-1 text-caption text-subtle">
+        過去每月約花 {formatCurrency(budget.typicalSpending)}（不含年繳）
+      </p>
+    {/if}
     <button
       type="button"
-      class="mt-1 text-sm font-semibold text-steel"
-      onclick={onOpenSettings}>填寫預期月收入 →</button
+      class="mt-2 text-sm font-semibold text-steel"
+      onclick={onOpenSettings}>設定每月預算 →</button
     >
   {:else}
     <p
       class={`mt-1 break-all text-[clamp(1.5rem,4vw,2rem)] leading-tight font-semibold tracking-tight tabular-nums ${overspent ? "text-coral" : ""}`}
       data-testid="budget-available"
     >
-      {formatCurrency(budget.available)}
+      {formatCurrency(budget.available ?? 0)}
     </p>
     <p class="mt-1 text-caption text-subtle">
       {#if overspent}
@@ -82,8 +81,8 @@
       class="mt-3 h-2 w-full overflow-hidden rounded-full bg-ink/6"
       role="img"
       aria-label={moneyState.hidden
-        ? "收入已用掉或預留的比例"
-        : `已用掉或預留收入的 ${Math.round(usedPercent)}%`}
+        ? "預算已用掉或預留的比例"
+        : `預算已用掉或預留 ${Math.round(usedPercent)}%`}
     >
       <div
         class={`h-full rounded-full ${overspent ? "bg-coral" : "bg-steel"}`}
@@ -93,35 +92,19 @@
 
     <dl class="mt-3 grid gap-1 text-caption">
       <div class="flex justify-between gap-3">
-        <dt class="text-subtle">
-          預期收入{budget.expectedIncome.source === "history"
-            ? `（近 ${budget.historyMonths.length} 個月推算）`
-            : ""}
-        </dt>
-        <dd class="tabular-nums">{formatCurrency(income ?? 0)}</dd>
+        <dt class="text-subtle">每月預算</dt>
+        <dd class="tabular-nums">{formatCurrency(budget.monthlyBudget)}</dd>
       </div>
-      {#if budget.savingsTarget > 0}
-        <div class="flex justify-between gap-3">
-          <dt class="text-subtle">先存起來</dt>
-          <dd class="tabular-nums">−{formatCurrency(budget.savingsTarget)}</dd>
-        </div>
-      {/if}
-      {#if budget.monthlyReserve > 0}
-        <div class="flex justify-between gap-3">
-          <dt class="text-subtle">年繳準備金</dt>
-          <dd class="tabular-nums">−{formatCurrency(budget.monthlyReserve)}</dd>
-        </div>
-      {/if}
+      <div class="flex justify-between gap-3">
+        <dt class="text-subtle">本月已花</dt>
+        <dd class="tabular-nums">−{formatCurrency(budget.spent)}</dd>
+      </div>
       {#if budget.fixedRemaining > 0}
         <div class="flex justify-between gap-3">
           <dt class="text-subtle">固定支出待扣</dt>
           <dd class="tabular-nums">−{formatCurrency(budget.fixedRemaining)}</dd>
         </div>
       {/if}
-      <div class="flex justify-between gap-3">
-        <dt class="text-subtle">本月已花</dt>
-        <dd class="tabular-nums">−{formatCurrency(budget.spent)}</dd>
-      </div>
       {#if budget.spentFromReserve > 0}
         <div class="flex justify-between gap-3">
           <dt class="text-subtle">年繳（由準備金支付，不扣可花）</dt>
@@ -132,6 +115,22 @@
       {/if}
     </dl>
 
+    {#if budget.expectedSavings != null}
+      <p
+        class={`mt-3 text-caption ${budget.expectedSavings < 0 ? "text-coral" : "text-moss"}`}
+        data-testid="budget-expected-savings"
+      >
+        {#if budget.expectedSavings < 0}
+          這個預算比收入還高 {formatCurrency(-budget.expectedSavings)}
+        {:else}
+          照這個預算，本月約可存下 {formatCurrency(
+            budget.expectedSavings,
+          )}{budget.expectedIncome.source === "history"
+            ? "（收入以近幾個月推算）"
+            : ""}
+        {/if}
+      </p>
+    {/if}
     {#if (budget.incompleteReasons ?? []).length > 0}
       <p class="mt-2 text-caption text-amber-900">
         部分資料載入有問題（例如外幣缺匯率），可花金額可能不準。
@@ -142,28 +141,18 @@
         有年繳商家但年繳總額是 0，年繳付款照常扣可花。
       </p>
     {/if}
-    {#if budget.savingsTarget === 0}
-      <button
-        type="button"
-        class="mt-3 flex w-full items-center justify-between gap-3 rounded-lg bg-steel/8 px-3 py-2 text-left text-caption text-steel hover:bg-steel/12"
-        onclick={onOpenSettings}
-        data-testid="budget-no-savings"
+  {/if}
+
+  {#if budget && !loading && !failed && budget.candidates.length > 0}
+    <button
+      type="button"
+      class="mt-3 flex w-full items-center justify-between gap-3 rounded-lg bg-amber-50 px-3 py-2 text-left text-caption text-amber-900 hover:bg-amber-100"
+      onclick={onOpenSettings}
+    >
+      <span
+        >發現 {budget.candidates.length} 個可能的固定支出，確認後會先預留</span
       >
-        <span>還沒設定「先存起來」：上面的可花包含原本會存下來的錢</span>
-        <ChevronRight class="size-3.5 shrink-0" />
-      </button>
-    {/if}
-    {#if budget.candidates.length > 0}
-      <button
-        type="button"
-        class="mt-3 flex w-full items-center justify-between gap-3 rounded-lg bg-amber-50 px-3 py-2 text-left text-caption text-amber-900 hover:bg-amber-100"
-        onclick={onOpenSettings}
-      >
-        <span
-          >發現 {budget.candidates.length} 個可能的固定支出，確認後會先預留</span
-        >
-        <ChevronRight class="size-3.5 shrink-0" />
-      </button>
-    {/if}
+      <ChevronRight class="size-3.5 shrink-0" />
+    </button>
   {/if}
 </section>

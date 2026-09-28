@@ -20,17 +20,11 @@ const amount = z.number().finite().min(0).max(MAX_AMOUNT);
 
 const settingsSchema = z
   .object({
+    monthlyBudget: amount.nullable(),
     expectedIncome: amount.nullable(),
-    savingsTargetType: z.enum(["amount", "percent"]),
-    savingsTargetValue: amount,
     annualReserve: amount,
   })
-  .strict()
-  .refine(
-    (value) =>
-      value.savingsTargetType === "amount" || value.savingsTargetValue <= 100,
-    { message: "Percent savings target cannot exceed 100." },
-  );
+  .strict();
 
 const merchantKeySchema = z
   .string()

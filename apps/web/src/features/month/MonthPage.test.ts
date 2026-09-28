@@ -323,20 +323,21 @@ describe("month page", () => {
       daysLeft: 10,
       historyMonths: ["2026-06", "2026-07", "2026-08"],
       settings: {
+        monthlyBudget: 20000,
         expectedIncome: null,
-        savingsTargetType: "percent",
-        savingsTargetValue: 25,
         annualReserve: 12000,
       },
+      monthlyBudget: 20000,
+      typicalSpending: 18000,
       expectedIncome: { amount: 160000, source: "history" },
-      savingsTarget: 40000,
+      expectedSavings: 139000,
       monthlyReserve: 1000,
       spent: 9650,
       spentFixed: 0,
       spentFromReserve: 0,
       fixedRemaining: 390,
-      available: 108960,
-      dailyAllowance: 10896,
+      available: 9960,
+      dailyAllowance: 996,
       fixedMerchants: [],
       excludedMerchants: [],
       largeMerchants: [],
@@ -392,12 +393,33 @@ describe("month page", () => {
       });
       const available = await screen.findByTestId("budget-available");
       const card = screen.getByTestId("month-budget");
-      expect(available).toHaveTextContent("NT$108,960");
+      expect(available).toHaveTextContent("NT$9,960");
       expect(card).toHaveTextContent("剩 10 天，每天約可花");
       expect(card).toHaveTextContent("發現 1 個可能的固定支出");
-      expect(within(card).queryByTestId("budget-no-savings")).toBeNull();
+      expect(
+        within(card).getByTestId("budget-expected-savings"),
+      ).toHaveTextContent("照這個預算，本月約可存下 NT$139,000");
       await fireEvent.click(within(card).getByRole("button", { name: /設定/ }));
       expect(navigate).toHaveBeenCalledWith("budget");
+    });
+
+    it("asks for a monthly budget instead of treating all income as spendable", async () => {
+      renderMonth({
+        budget: {
+          ...budget,
+          settings: { ...budget.settings, monthlyBudget: null },
+          monthlyBudget: null,
+          expectedSavings: null,
+          available: null,
+          dailyAllowance: null,
+        },
+        week: (start) => week(start),
+      });
+      const unset = await screen.findByTestId("budget-unset");
+      const card = screen.getByTestId("month-budget");
+      expect(unset).toHaveTextContent("還沒設定每月預算");
+      expect(card).toHaveTextContent("過去每月約花 NT$18,000");
+      expect(within(card).queryByTestId("budget-available")).toBeNull();
     });
 
     it("marks overspending instead of a daily allowance", async () => {
@@ -420,7 +442,7 @@ describe("month page", () => {
       await waitFor(() => expect(review).toHaveTextContent("目前至少 NT$450"));
       expect(review).not.toHaveTextContent("少 NT$750");
       await waitFor(() =>
-        expect(review).toHaveTextContent("照本月可花，一週約 NT$76,272"),
+        expect(review).toHaveTextContent("照本月可花，一週約 NT$6,972"),
       );
     });
 
