@@ -11,7 +11,7 @@
 - Tables：38
 - Explicit indexes：45
 - Other objects：0
-- Migrations：64
+- Migrations：65
 
 ## Tables
 
@@ -24,7 +24,7 @@
 | [`bank_transaction_preferences`](#bank_transaction_preferences) | 使用者對銀行交易計算方式的個別偏好。 | 4 | 1 | 1 |
 | [`bank_transactions`](#bank_transactions) | 銀行帳戶、信用卡與其他存款型連接器同步回來的交易明細。 | 19 | 3 | 7 |
 | [`budget_merchants`](#budget_merchants) | 使用者對商家是否為固定支出的判斷，供「本月可花」預留尚未扣款的固定支出與排除年繳。 | 6 | 0 | 0 |
-| [`budget_settings`](#budget_settings) | 「本月可花」的設定（單列，id 固定為 default）：預期月收入、儲蓄目標與年繳準備金。 | 6 | 0 | 0 |
+| [`budget_settings`](#budget_settings) | 「本月可花」的設定（單列，id 固定為 default）：每月消費預算、預期月收入與年繳準備金。 | 5 | 0 | 0 |
 | [`classification_categories`](#classification_categories) | 消費分類字典（兩層）與收入子類；id 為穩定契約，須與 packages/core 的 categories.ts 一致。 | 7 | 1 | 1 |
 | [`classification_migration_notes`](#classification_migration_notes) | 分類遷移（0055、0067、0069）紀錄：id 有變動的個別覆寫與使用者規則、因撞名改名的自訂分類，以及保留下來的使用者系統規則 pattern，保留原分類名稱與原 pattern 供人工處理。 | 14 | 0 | 0 |
 | [`classification_overrides`](#classification_overrides) | 使用者對單筆目標資料指定的分類覆寫。 | 6 | 1 | 1 |
@@ -422,19 +422,18 @@ CREATE TABLE budget_merchants (
 
 ### `budget_settings`
 
-> 用途：「本月可花」的設定（單列，id 固定為 default）：預期月收入、儲蓄目標與年繳準備金。
-> 注意：本月可花 = 預期月收入 − 儲蓄目標 − 年繳準備金 ÷ 12 − 本月已花（不含年繳商家）− 每月固定支出尚未扣款的部分。沒有這一列時全部視為預設值。
+> 用途：「本月可花」的設定（單列，id 固定為 default）：每月消費預算、預期月收入與年繳準備金。
+> 注意：本月可花 = 每月消費預算 − 本月已花（不含年繳商家）− 每月固定支出尚未扣款的部分；預算為 NULL 時不計算可花。預期收入只用來估計「照預算可存下」（收入 − 預算 − 年繳總額 ÷ 12）。0071 由 0070 的收入扣儲蓄目標改為設定預算，移除 savings_target_* 並保留預期收入與年繳總額。沒有這一列時全部視為預設值。
 
 #### Columns
 
 | 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
 | ---: | --- | --- | --- | :---: | --- | ---: | --- |
 | 1 | `id` | 固定為 default（CHECK 限制只能有一列）。 | TEXT | NO | — | 1 | — |
-| 2 | `expected_income` | 預期月收入（TWD）；NULL 時由近 3 個完整月份收入的中位數推算。 | REAL | YES | — | — | — |
-| 3 | `savings_target_type` | 儲蓄目標的單位：amount 固定金額（TWD）或 percent 預期月收入的百分比。 | TEXT | NO | 'amount' | — | — |
-| 4 | `savings_target_value` | 儲蓄目標數值；percent 時介於 0–100。 | REAL | NO | 0 | — | — |
-| 5 | `annual_reserve` | 一年的年繳大額總額（TWD，例如保險、稅、年費）；每月提撥十二分之一。 | REAL | NO | 0 | — | — |
-| 6 | `updated_at` | 設定最後更新的時間。 | TEXT | NO | — | — | — |
+| 2 | `monthly_budget` | 每月消費預算（TWD，含每月固定支出、不含年繳）；NULL 表示還沒設定。 | REAL | YES | — | — | — |
+| 3 | `expected_income` | 預期月收入（TWD）；NULL 時由近幾個完整月份收入的中位數推算，只用來估計照預算可存下多少。 | REAL | YES | — | — | — |
+| 4 | `annual_reserve` | 一年的年繳大額總額（TWD，例如保險、稅、年費）；每月提撥十二分之一。 | REAL | NO | 0 | — | — |
+| 5 | `updated_at` | 設定最後更新的時間。 | TEXT | NO | — | — | — |
 
 #### Foreign keys
 
@@ -447,13 +446,10 @@ CREATE TABLE budget_merchants (
 #### DDL
 
 ```sql
-CREATE TABLE budget_settings (
+CREATE TABLE "budget_settings" (
   id TEXT PRIMARY KEY NOT NULL CHECK (id = 'default'),
+  monthly_budget REAL CHECK (monthly_budget IS NULL OR monthly_budget >= 0),
   expected_income REAL CHECK (expected_income IS NULL OR expected_income >= 0),
-  savings_target_type TEXT NOT NULL DEFAULT 'amount' CHECK (savings_target_type IN ('amount', 'percent')),
-  savings_target_value REAL NOT NULL DEFAULT 0 CHECK (
-    savings_target_value >= 0 AND (savings_target_type = 'amount' OR savings_target_value <= 100)
-  ),
   annual_reserve REAL NOT NULL DEFAULT 0 CHECK (annual_reserve >= 0),
   updated_at TEXT NOT NULL
 )
@@ -2074,6 +2070,7 @@ Migration 是 schema 演進的 source of truth；若要了解某欄位的變更�
 - [`0068_investment_keywords_exclude_foundation.sql`](../packages/db/migrations/0068_investment_keywords_exclude_foundation.sql)
 - [`0069_donation_category.sql`](../packages/db/migrations/0069_donation_category.sql)
 - [`0070_budget.sql`](../packages/db/migrations/0070_budget.sql)
+- [`0071_budget_monthly_limit.sql`](../packages/db/migrations/0071_budget_monthly_limit.sql)
 
 ## 程式碼導覽
 

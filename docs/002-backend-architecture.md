@@ -763,10 +763,16 @@ spending 角色的退款為負數沖減；逐筆四捨五入到分，加總與 s
 計算都在 core `budget.ts` 的純函式。
 
 - `GET /api/budget`：本月（台北日期）可花。
-  - 公式：預期月收入 − 儲蓄目標 − 年繳準備金（`annual_reserve ÷ 12`）− 本月已花 − 每月固定支出尚未扣款
-    的部分（`available`，預期收入不明時為 null）；`dailyAllowance` 為剩餘天數平均（超支時為 0）。
+  - 公式：使用者設定的每月消費預算（`monthly_budget`）− 本月已花（不含年繳商家）− 每月固定支出尚未扣款
+    的部分（`available`；還沒設定預算時為 null，不以收入推算，避免把收入全部當成可花）；`dailyAllowance`
+    為剩餘天數平均（超支時為 0）。
+  - `typicalSpending`：採用月份每月消費（一律排除標成年繳的商家）的中位數，供設定預算參考；
+    `historicalIncome`：採用月份收入的中位數（不論是否有設定收入），供設定頁預覽。
+  - `expectedSavings`：照預算可存下 = 預期月收入 − 預算 − 年繳準備金（`annual_reserve ÷ 12`）；收入或
+    預算不明時為 null。
   - 信用卡以刷卡日認列消費，繳卡費不是消費，不會重複扣。
-  - 預期月收入：`budget_settings.expected_income`，NULL 時為採用月份收入（大於 0 者）的中位數。
+  - 預期月收入：`budget_settings.expected_income`，NULL 時為採用月份收入（大於 0 者）的中位數；只用於
+    `expectedSavings`。0071 由 0070 的「收入扣儲蓄目標」改為設定預算，移除儲蓄目標欄位。
   - 採用月份 `historyMonths`：近 3 個完整月份中，活動筆數達最多那個月一半的月份（同步起點落在月中的
     月份不採用）。
   - 固定支出：`budget_merchants` 的 `monthly` 商家每月預期金額（使用者設定，否則為採用月份中位數），
@@ -778,8 +784,8 @@ spending 角色的退款為負數沖減；逐筆四捨五入到分，加總與 s
     `excludedMerchants`：標為 `not_fixed` 的商家，可移除判斷復原。
   - 年繳準備金為 0 時（`annualWithoutReserve`），年繳商家的消費照常計入本月已花，避免這筆錢哪裡都沒扣。
   - `incompleteReasons`：本月 summary 的不完整原因（缺匯率、分類或 override 載入失敗等）。
-- `PUT /api/budget/settings`：`expectedIncome`（null 為推算）、`savingsTargetType`（`amount`／`percent`）、
-  `savingsTargetValue`（percent 時 ≤ 100）、`annualReserve`，皆為 0 以上。
+- `PUT /api/budget/settings`：`monthlyBudget`（null 為還沒設定）、`expectedIncome`（null 為推算）、
+  `annualReserve`，皆為 0 以上。
 - `PUT /api/budget/merchants/:merchantKey`：`kind`（`monthly`／`annual`／`not_fixed`）、`displayName`、
   `expectedAmount`（null 為推算）；`merchantKey` 須為 `ban:` 或 `name:` 開頭。
   `DELETE` 移除判斷，不存在時回傳 `404 BUDGET_MERCHANT_NOT_FOUND`。

@@ -267,21 +267,18 @@ export function summarizeWeek(
 // ── 本月可花 ──────────────────────────────────────────────────────────────
 
 export type BudgetMerchantKind = "monthly" | "annual" | "not_fixed";
-export type SavingsTargetType = "amount" | "percent";
-
 export interface BudgetSettings {
-  /** 預期月收入；null 表示由近 3 個月收入推算。 */
+  /** 每月消費預算（含每月固定支出、不含年繳）；null 表示還沒設定，不計算可花。 */
+  monthlyBudget: number | null;
+  /** 預期月收入；null 表示由近幾個完整月份收入推算。只用來估計「照預算可存下」。 */
   expectedIncome: number | null;
-  savingsTargetType: SavingsTargetType;
-  savingsTargetValue: number;
   /** 一年的年繳大額總額。 */
   annualReserve: number;
 }
 
 export const DEFAULT_BUDGET_SETTINGS: BudgetSettings = {
+  monthlyBudget: null,
   expectedIncome: null,
-  savingsTargetType: "amount",
-  savingsTargetValue: 0,
   annualReserve: 0,
 };
 
@@ -318,11 +315,18 @@ export interface BudgetSummary {
   /** 推算收入、固定支出金額與偵測候選所採用的完整月份（舊到新；資料明顯不完整的月份不採用）。 */
   historyMonths: string[];
   settings: BudgetSettings;
+  /** 每月消費預算；還沒設定時為 null。 */
+  monthlyBudget: number | null;
+  /** 採用月份每月消費（不含年繳商家）的中位數，供設定預算參考；沒有資料時為 null。 */
+  typicalSpending: number | null;
   expectedIncome: {
     amount: number | null;
     source: "settings" | "history" | "none";
   };
-  savingsTarget: number;
+  /** 由採用月份推算的月收入（不論是否有設定）；設定頁清空收入時用來預覽。 */
+  historicalIncome: number | null;
+  /** 照預算本月約可存下：預期收入 − 預算 − 年繳準備金；收入或預算不明時為 null。 */
+  expectedSavings: number | null;
   monthlyReserve: number;
   /** 本月已花（不含年繳商家）。 */
   spent: number;
@@ -332,7 +336,7 @@ export interface BudgetSummary {
   spentFromReserve: number;
   /** 每月固定支出尚未扣款、需預留的部分。 */
   fixedRemaining: number;
-  /** 本月還可花；預期收入不明時為 null。 */
+  /** 本月還可花 = 預算 − 本月已花 − 固定支出待扣；還沒設定預算時為 null。 */
   available: number | null;
   /** 剩餘天數平均每天可花（available ≤ 0 時為 0）。 */
   dailyAllowance: number | null;
@@ -443,8 +447,8 @@ export function detectFixedCandidates(
 }
 
 /**
- * 本月可花 = 預期月收入 − 儲蓄目標 − 年繳準備金 ÷ 12 − 本月已花（不含年繳商家）
- *            − 每月固定支出尚未扣款的部分。
+ * 本月可花 = 每月消費預算 − 本月已花（不含年繳商家）− 每月固定支出尚未扣款的部分。
+ * 年繳商家由年繳準備金支付（年繳總額 ÷ 12 每月提撥），不扣本月可花。
  * 信用卡以刷卡日認列消費；繳卡費不是消費，不會重複扣。
  */
 export function computeBudget(input: {
@@ -466,11 +470,6 @@ export function computeBudget(input: {
       : input.historicalIncome != null && input.historicalIncome > 0
         ? { amount: round(input.historicalIncome), source: "history" as const }
         : { amount: null, source: "none" as const };
-  const savingsTarget = round(
-    settings.savingsTargetType === "percent"
-      ? ((expectedIncome.amount ?? 0) * settings.savingsTargetValue) / 100
-      : settings.savingsTargetValue,
-  );
   const monthlyReserve = round(settings.annualReserve / 12);
 
   const history = merchantMonthlyTotals(input.historyByMonth);
@@ -558,16 +557,31 @@ export function computeBudget(input: {
   const daysLeft = today.startsWith(month)
     ? daysInMonth(month) - dayOfMonth + 1
     : 0;
+  const monthlyBudget = settings.monthlyBudget;
   const available =
-    expectedIncome.amount == null
+    monthlyBudget == null
       ? null
-      : round(
-          expectedIncome.amount -
-            savingsTarget -
-            monthlyReserve -
-            spent -
-            fixedRemaining,
-        );
+      : round(monthlyBudget - spent - fixedRemaining);
+  // 參考值一律排除標成年繳的商家，不受年繳準備金是否設定影響。
+  const allAnnualKeys = new Set(
+    fixedMerchants
+      .filter((merchant) => merchant.kind === "annual")
+      .map((merchant) => merchant.merchantKey),
+  );
+  const typicalSpending = median(
+    input.historyMonths.map((historyMonth) =>
+      sumAmounts(
+        (input.historyByMonth.get(historyMonth) ?? []).filter(
+          (entry) =>
+            !entry.merchantKey || !allAnnualKeys.has(entry.merchantKey),
+        ),
+      ),
+    ),
+  );
+  const expectedSavings =
+    monthlyBudget == null || expectedIncome.amount == null
+      ? null
+      : round(expectedIncome.amount - monthlyBudget - monthlyReserve);
   const decided = new Set(
     input.decisions.map((decision) => decision.merchantKey),
   );
@@ -604,8 +618,14 @@ export function computeBudget(input: {
     daysLeft,
     historyMonths: [...input.historyMonths],
     settings,
+    monthlyBudget,
+    typicalSpending: typicalSpending == null ? null : round(typicalSpending),
     expectedIncome,
-    savingsTarget,
+    historicalIncome:
+      input.historicalIncome != null && input.historicalIncome > 0
+        ? round(input.historicalIncome)
+        : null,
+    expectedSavings,
     monthlyReserve,
     spent,
     spentFixed,

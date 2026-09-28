@@ -8,7 +8,6 @@ import {
   type BudgetMerchantDecision,
   type BudgetMerchantKind,
   type BudgetSettings,
-  type SavingsTargetType,
 } from "@taiwan-fin-hub/core";
 import { eq } from "drizzle-orm";
 
@@ -24,9 +23,8 @@ export async function readBudgetSettings(
     .get();
   if (!row) return DEFAULT_BUDGET_SETTINGS;
   return {
+    monthlyBudget: row.monthlyBudget,
     expectedIncome: row.expectedIncome,
-    savingsTargetType: row.savingsTargetType as SavingsTargetType,
-    savingsTargetValue: row.savingsTargetValue,
     annualReserve: row.annualReserve,
   };
 }
@@ -37,9 +35,8 @@ export async function writeBudgetSettings(
   now: string,
 ) {
   const values = {
+    monthlyBudget: settings.monthlyBudget,
     expectedIncome: settings.expectedIncome,
-    savingsTargetType: settings.savingsTargetType,
-    savingsTargetValue: settings.savingsTargetValue,
     annualReserve: settings.annualReserve,
     updatedAt: now,
   };

@@ -7,9 +7,8 @@ export const budgetSettings = sqliteTable(
   "budget_settings",
   {
     id: text("id").primaryKey(),
+    monthlyBudget: real("monthly_budget"),
     expectedIncome: real("expected_income"),
-    savingsTargetType: text("savings_target_type").notNull().default("amount"),
-    savingsTargetValue: real("savings_target_value").notNull().default(0),
     annualReserve: real("annual_reserve").notNull().default(0),
     updatedAt: text("updated_at").notNull(),
   },
@@ -17,17 +16,13 @@ export const budgetSettings = sqliteTable(
     check("budget_settings_check_1", sql`id = 'default'`),
     check(
       "budget_settings_check_2",
-      sql`expected_income IS NULL OR expected_income >= 0`,
+      sql`monthly_budget IS NULL OR monthly_budget >= 0`,
     ),
     check(
       "budget_settings_check_3",
-      sql`savings_target_type IN ('amount', 'percent')`,
+      sql`expected_income IS NULL OR expected_income >= 0`,
     ),
-    check(
-      "budget_settings_check_4",
-      sql`savings_target_value >= 0 AND (savings_target_type = 'amount' OR savings_target_value <= 100)`,
-    ),
-    check("budget_settings_check_5", sql`annual_reserve >= 0`),
+    check("budget_settings_check_4", sql`annual_reserve >= 0`),
   ],
 );
 

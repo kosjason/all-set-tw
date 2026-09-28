@@ -1,5 +1,5 @@
 <!--
-  可花設定（#/month/budget）：預期月收入、儲蓄目標、年繳準備金，以及固定支出。
+  可花設定（#/month/budget）：每月消費預算、預期月收入（估計可存下多少）、年繳準備金，以及固定支出。
   固定支出由近幾個完整月份每月都出現、金額穩定的商家自動偵測，使用者只要確認「每月固定／年繳／不是」。
 -->
 <script lang="ts">
@@ -13,7 +13,6 @@
     budgetQuery,
     type BudgetMerchantKind,
     type BudgetSettings,
-    type SavingsTargetType,
   } from "@/data/budget/queries";
   import type { ApiClient } from "@/shared/api/client";
   import { queryKeys } from "@/shared/api/query-keys";
@@ -31,10 +30,9 @@
   const budget = createQuery(budgetQuery(() => api));
   const invalidate = () => qc.invalidateQueries({ queryKey: queryKeys.budget });
 
-  // 表單欄位以字串保存，空字串代表「由歷史推算」或 0。
+  // 表單欄位以字串保存；預算空字串代表還沒設定，收入空字串代表由歷史推算，年繳空字串為 0。
+  let budgetText = $state("");
   let incomeText = $state("");
-  let savingsType = $state<SavingsTargetType>("amount");
-  let savingsText = $state("");
   let annualText = $state("");
   let loadedFrom = $state<string | null>(null);
   $effect(() => {
@@ -42,12 +40,10 @@
     const key = settings ? JSON.stringify(settings) : null;
     if (!settings || key === loadedFrom) return;
     loadedFrom = key;
+    budgetText =
+      settings.monthlyBudget == null ? "" : String(settings.monthlyBudget);
     incomeText =
       settings.expectedIncome == null ? "" : String(settings.expectedIncome);
-    savingsType = settings.savingsTargetType;
-    savingsText = settings.savingsTargetValue
-      ? String(settings.savingsTargetValue)
-      : "";
     annualText = settings.annualReserve ? String(settings.annualReserve) : "";
   });
 
@@ -56,21 +52,17 @@
     return Number.isFinite(value) && value >= 0 ? value : Number.NaN;
   }
   const form = $derived.by(() => {
+    const monthlyBudget = budgetText.trim() ? parseAmount(budgetText) : null;
     const expectedIncome = incomeText.trim() ? parseAmount(incomeText) : null;
-    const savingsTargetValue = savingsText.trim()
-      ? parseAmount(savingsText)
-      : 0;
     const annualReserve = annualText.trim() ? parseAmount(annualText) : 0;
     const errors: string[] = [];
+    if (monthlyBudget != null && Number.isNaN(monthlyBudget))
+      errors.push("每月預算要是 0 以上的數字。");
     if (expectedIncome != null && Number.isNaN(expectedIncome))
       errors.push("預期月收入要是 0 以上的數字。");
-    if (Number.isNaN(savingsTargetValue))
-      errors.push("儲蓄目標要是 0 以上的數字。");
-    else if (savingsType === "percent" && savingsTargetValue > 100)
-      errors.push("儲蓄比例不能超過 100%。");
     if (Number.isNaN(annualReserve)) errors.push("年繳總額要是 0 以上的數字。");
     if (
-      [expectedIncome ?? 0, savingsTargetValue, annualReserve].some(
+      [monthlyBudget ?? 0, expectedIncome ?? 0, annualReserve].some(
         (value) => value > MAX_AMOUNT,
       )
     )
@@ -78,12 +70,26 @@
     return {
       errors,
       settings: {
+        monthlyBudget,
         expectedIncome,
-        savingsTargetType: savingsType,
-        savingsTargetValue,
         annualReserve,
       } satisfies BudgetSettings,
     };
+  });
+  const previewSavings = $derived.by(() => {
+    // 收入欄留白時，以歷史推算的收入預覽（不是之前儲存的設定值）。
+    const income =
+      form.settings.expectedIncome ?? $budget.data?.historicalIncome ?? null;
+    const monthly = form.settings.monthlyBudget;
+    if (
+      income == null ||
+      monthly == null ||
+      Number.isNaN(income) ||
+      Number.isNaN(monthly) ||
+      Number.isNaN(form.settings.annualReserve)
+    )
+      return null;
+    return income - monthly - form.settings.annualReserve / 12;
   });
 
   // 「已儲存」只在表單內容仍與儲存時相同時顯示。
@@ -154,50 +160,49 @@
         }}
       >
         <div>
-          <h2 class="font-semibold">每月的錢怎麼分</h2>
+          <h2 class="font-semibold">每月預算</h2>
           <p class="mt-1 text-caption text-subtle">
-            本月可花 = 預期收入 − 先存起來 − 年繳準備金 − 固定支出待扣 −
-            本月已花
+            本月可花 = 每月預算 − 本月已花 − 固定支出待扣（年繳另由準備金支付）
           </p>
         </div>
 
         <label class="grid gap-1.5">
-          <span class="text-sm font-medium">預期月收入</span>
+          <span class="text-sm font-medium">每月消費預算</span>
           <Input
             inputmode="numeric"
-            placeholder={data.expectedIncome.source === "history"
-              ? `留白：用近 ${data.historyMonths.length} 個月推算的 ${formatCurrency(data.expectedIncome.amount ?? 0)}`
+            placeholder={data.typicalSpending != null
+              ? `過去每月約花 ${formatCurrency(data.typicalSpending)}`
+              : "例如 40000"}
+            bind:value={budgetText}
+          />
+          <span class="text-caption text-subtle">
+            含每月固定支出（訂閱、房租等），不含年繳。{#if data.typicalSpending != null}過去
+              {data.historyMonths.length} 個完整月份每月約花 {formatCurrency(
+                data.typicalSpending,
+              )}，可以設低一點逼自己省。{/if}
+          </span>
+        </label>
+
+        <label class="grid gap-1.5">
+          <span class="text-sm font-medium">預期月收入（選填）</span>
+          <Input
+            inputmode="numeric"
+            placeholder={data.historicalIncome != null
+              ? `留白：用近 ${data.historyMonths.length} 個月推算的 ${formatCurrency(data.historicalIncome)}`
               : "例如 160000"}
             bind:value={incomeText}
           />
-        </label>
-
-        <fieldset class="grid gap-1.5">
-          <legend class="text-sm font-medium">每月先存起來</legend>
-          <div class="flex gap-2">
-            <div
-              class="flex shrink-0 rounded-lg bg-ink/5 p-0.5 text-sm font-semibold"
-            >
-              {#each [["amount", "金額"], ["percent", "收入 %"]] as const as [key, label] (key)}
-                <button
-                  type="button"
-                  class={`h-9 rounded-md px-3 ${savingsType === key ? "bg-steel text-white" : "text-subtle"}`}
-                  aria-pressed={savingsType === key}
-                  onclick={() => (savingsType = key)}>{label}</button
-                >
-              {/each}
-            </div>
-            <Input
-              inputmode="decimal"
-              placeholder={savingsType === "percent" ? "例如 30" : "例如 50000"}
-              aria-label="儲蓄目標"
-              bind:value={savingsText}
-            />
-          </div>
           <span class="text-caption text-subtle">
-            投資也算在這裡：存下來的錢去哪由你決定，不算消費。
+            {#if previewSavings != null && previewSavings < 0}
+              照這個預算和年繳準備，每月還差 {formatCurrency(-previewSavings)}。
+            {:else if previewSavings != null}
+              照這個預算，每月約可存下 {formatCurrency(previewSavings)}（收入 −
+              預算 − 年繳準備金）。
+            {:else}
+              用來估計照預算每月可存下多少。
+            {/if}
           </span>
-        </fieldset>
+        </label>
 
         <label class="grid gap-1.5">
           <span class="text-sm font-medium">一年的年繳大額總額</span>
