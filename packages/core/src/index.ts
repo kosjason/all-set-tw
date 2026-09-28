@@ -724,3 +724,4 @@ export interface SyncActivityDetailsPage {
 export interface SyncReportActivities {
   sources: Partial<Record<ConnectorId, SyncActivityDetailsPage>>;
 }
+export * from "./budget";

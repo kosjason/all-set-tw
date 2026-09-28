@@ -6,7 +6,11 @@ export type PrimaryView =
 
 /** 掛在某個主導覽底下的子頁（頁首顯示「← 返回…」）。 */
 export type DetailView =
-  "investments" | "manual-assets" | "own-accounts" | "transaction-rules";
+  | "investments"
+  | "manual-assets"
+  | "own-accounts"
+  | "transaction-rules"
+  | "budget";
 
 /** `inbox` 是全域收件匣（不佔主導覽）；`more` 是手機「更多」選單。 */
 export type View = PrimaryView | DetailView | "inbox" | "more";

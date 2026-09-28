@@ -8,10 +8,10 @@
 
 ## 目錄
 
-- Tables：36
+- Tables：38
 - Explicit indexes：45
 - Other objects：0
-- Migrations：63
+- Migrations：64
 
 ## Tables
 
@@ -23,6 +23,8 @@
 | [`bank_balance_snapshots`](#bank_balance_snapshots) | 帳戶在特定時間點的餘額快照，供資產總值與歷史圖表計算。 | 15 | 1 | 2 |
 | [`bank_transaction_preferences`](#bank_transaction_preferences) | 使用者對銀行交易計算方式的個別偏好。 | 4 | 1 | 1 |
 | [`bank_transactions`](#bank_transactions) | 銀行帳戶、信用卡與其他存款型連接器同步回來的交易明細。 | 19 | 3 | 7 |
+| [`budget_merchants`](#budget_merchants) | 使用者對商家是否為固定支出的判斷，供「本月可花」預留尚未扣款的固定支出與排除年繳。 | 6 | 0 | 0 |
+| [`budget_settings`](#budget_settings) | 「本月可花」的設定（單列，id 固定為 default）：預期月收入、儲蓄目標與年繳準備金。 | 6 | 0 | 0 |
 | [`classification_categories`](#classification_categories) | 消費分類字典（兩層）與收入子類；id 為穩定契約，須與 packages/core 的 categories.ts 一致。 | 7 | 1 | 1 |
 | [`classification_migration_notes`](#classification_migration_notes) | 分類遷移（0055、0067、0069）紀錄：id 有變動的個別覆寫與使用者規則、因撞名改名的自訂分類，以及保留下來的使用者系統規則 pattern，保留原分類名稱與原 pattern 供人工處理。 | 14 | 0 | 0 |
 | [`classification_overrides`](#classification_overrides) | 使用者對單筆目標資料指定的分類覆寫。 | 6 | 1 | 1 |
@@ -378,6 +380,82 @@ CREATE TABLE "bank_transactions" (
     )
   ),
   UNIQUE (connector_id, account_id, source_id)
+)
+```
+
+### `budget_merchants`
+
+> 用途：使用者對商家是否為固定支出的判斷，供「本月可花」預留尚未扣款的固定支出與排除年繳。
+> 注意：merchant_key 與 merchant_rules 相同（ban:<統編> 或 name:<正規化名稱>），商家來自活動推導，不設 FK。not_fixed 表示使用者確認不是固定支出，不再列入偵測候選。
+
+#### Columns
+
+| 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
+| ---: | --- | --- | --- | :---: | --- | ---: | --- |
+| 1 | `merchant_key` | 商家 key（ban:<統編> 或 name:<正規化名稱>）。 | TEXT | NO | — | 1 | — |
+| 2 | `kind` | monthly 每月固定、annual 年繳（由年繳準備金支付，不扣本月可花）、not_fixed 不是固定支出。 | TEXT | NO | — | — | — |
+| 3 | `display_name` | 確認當時的商家顯示名稱，供設定頁列示。 | TEXT | NO | — | — | — |
+| 4 | `expected_amount` | 每月預期金額（TWD）；NULL 時以近 3 個月該商家每月消費的中位數估計。 | REAL | YES | — | — | — |
+| 5 | `created_at` | 第一次設定的時間。 | TEXT | NO | — | — | — |
+| 6 | `updated_at` | 最後更新的時間。 | TEXT | NO | — | — | — |
+
+#### Foreign keys
+
+—
+
+#### Indexes
+
+—
+
+#### DDL
+
+```sql
+CREATE TABLE budget_merchants (
+  merchant_key TEXT PRIMARY KEY NOT NULL CHECK (length(merchant_key) BETWEEN 1 AND 200),
+  kind TEXT NOT NULL CHECK (kind IN ('monthly', 'annual', 'not_fixed')),
+  display_name TEXT NOT NULL CHECK (length(display_name) BETWEEN 1 AND 200),
+  expected_amount REAL CHECK (expected_amount IS NULL OR expected_amount >= 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)
+```
+
+### `budget_settings`
+
+> 用途：「本月可花」的設定（單列，id 固定為 default）：預期月收入、儲蓄目標與年繳準備金。
+> 注意：本月可花 = 預期月收入 − 儲蓄目標 − 年繳準備金 ÷ 12 − 本月已花（不含年繳商家）− 每月固定支出尚未扣款的部分。沒有這一列時全部視為預設值。
+
+#### Columns
+
+| 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
+| ---: | --- | --- | --- | :---: | --- | ---: | --- |
+| 1 | `id` | 固定為 default（CHECK 限制只能有一列）。 | TEXT | NO | — | 1 | — |
+| 2 | `expected_income` | 預期月收入（TWD）；NULL 時由近 3 個完整月份收入的中位數推算。 | REAL | YES | — | — | — |
+| 3 | `savings_target_type` | 儲蓄目標的單位：amount 固定金額（TWD）或 percent 預期月收入的百分比。 | TEXT | NO | 'amount' | — | — |
+| 4 | `savings_target_value` | 儲蓄目標數值；percent 時介於 0–100。 | REAL | NO | 0 | — | — |
+| 5 | `annual_reserve` | 一年的年繳大額總額（TWD，例如保險、稅、年費）；每月提撥十二分之一。 | REAL | NO | 0 | — | — |
+| 6 | `updated_at` | 設定最後更新的時間。 | TEXT | NO | — | — | — |
+
+#### Foreign keys
+
+—
+
+#### Indexes
+
+—
+
+#### DDL
+
+```sql
+CREATE TABLE budget_settings (
+  id TEXT PRIMARY KEY NOT NULL CHECK (id = 'default'),
+  expected_income REAL CHECK (expected_income IS NULL OR expected_income >= 0),
+  savings_target_type TEXT NOT NULL DEFAULT 'amount' CHECK (savings_target_type IN ('amount', 'percent')),
+  savings_target_value REAL NOT NULL DEFAULT 0 CHECK (
+    savings_target_value >= 0 AND (savings_target_type = 'amount' OR savings_target_value <= 100)
+  ),
+  annual_reserve REAL NOT NULL DEFAULT 0 CHECK (annual_reserve >= 0),
+  updated_at TEXT NOT NULL
 )
 ```
 
@@ -1995,6 +2073,7 @@ Migration 是 schema 演進的 source of truth；若要了解某欄位的變更�
 - [`0067_simplify_spending_categories.sql`](../packages/db/migrations/0067_simplify_spending_categories.sql)
 - [`0068_investment_keywords_exclude_foundation.sql`](../packages/db/migrations/0068_investment_keywords_exclude_foundation.sql)
 - [`0069_donation_category.sql`](../packages/db/migrations/0069_donation_category.sql)
+- [`0070_budget.sql`](../packages/db/migrations/0070_budget.sql)
 
 ## 程式碼導覽
 

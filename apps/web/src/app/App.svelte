@@ -36,6 +36,7 @@
   import "../styles.css";
 
   type PageKey =
+    | "budget"
     | "cards"
     | "transactions"
     | "transaction-rules"
@@ -47,6 +48,7 @@
     | "inbox"
     | "settings";
   type LazyPageModule =
+    | typeof import("@/features/month/BudgetPage.svelte")
     | typeof import("@/features/cards/CardsPage.svelte")
     | typeof import("@/features/activity/ActivityPage.svelte")
     | typeof import("@/features/activity/TransactionRulesPage.svelte")
@@ -59,6 +61,7 @@
     | typeof import("@/features/settings/SettingsPage.svelte");
 
   const pageLoaders = {
+    budget: () => import("@/features/month/BudgetPage.svelte"),
     cards: () => import("@/features/cards/CardsPage.svelte"),
     transactions: () => import("@/features/activity/ActivityPage.svelte"),
     "transaction-rules": () =>
@@ -370,7 +373,11 @@
               <EmptyState title="載入頁面中" body="正在準備內容。" />
             {:then module}
               {#if module}
-                {#if view === "cards"}
+                {#if view === "budget"}
+                  {@const Page =
+                    module.default as typeof import("@/features/month/BudgetPage.svelte").default}
+                  <Page {api} {navigate} />
+                {:else if view === "cards"}
                   {@const Page =
                     module.default as typeof import("@/features/cards/CardsPage.svelte").default}
                   <Page {api} />

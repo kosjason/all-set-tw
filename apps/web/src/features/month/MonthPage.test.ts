@@ -58,6 +58,8 @@ const monthItems: ActivityItem[] = [
 
 interface Options {
   summary?: ActivityMonthSummary;
+  budget?: unknown;
+  week?: (start: string) => unknown;
   cards?: unknown;
   cardsError?: boolean;
   inboxCounts?: { blocking: number; tidy: number };
@@ -106,6 +108,18 @@ function renderMonth(options: Options = {}) {
           ],
           transactions: [],
         });
+      if (path === "/api/budget")
+        return options.budget
+          ? Promise.resolve(options.budget)
+          : Promise.reject(new Error("404"));
+      if (path.startsWith("/api/budget/week"))
+        return options.week
+          ? Promise.resolve(
+              options.week(
+                new URL(path, "http://x").searchParams.get("start")!,
+              ),
+            )
+          : Promise.reject(new Error("404"));
       if (path === "/api/history/net-worth/chart")
         return Promise.resolve([
           {
@@ -299,6 +313,156 @@ describe("month page", () => {
     );
     expect(navigate).toHaveBeenCalledWith("transactions", {
       query: "tab=invoice",
+    });
+  });
+
+  describe("budget and weekly review", () => {
+    const budget = {
+      month,
+      today: `${month}-21`,
+      daysLeft: 10,
+      historyMonths: ["2026-06", "2026-07", "2026-08"],
+      settings: {
+        expectedIncome: null,
+        savingsTargetType: "percent",
+        savingsTargetValue: 25,
+        annualReserve: 12000,
+      },
+      expectedIncome: { amount: 160000, source: "history" },
+      savingsTarget: 40000,
+      monthlyReserve: 1000,
+      spent: 9650,
+      spentFixed: 0,
+      spentFromReserve: 0,
+      fixedRemaining: 390,
+      available: 108960,
+      dailyAllowance: 10896,
+      fixedMerchants: [],
+      excludedMerchants: [],
+      largeMerchants: [],
+      incompleteReasons: [],
+      annualWithoutReserve: false,
+      candidates: [
+        {
+          merchantKey: "name:stream",
+          displayName: "串流影音",
+          categoryId: "entertainment",
+          monthlyAmounts: [390, 390, 390],
+          typicalAmount: 390,
+        },
+      ],
+    };
+    const week = (start: string, overrides: Record<string, unknown> = {}) => ({
+      weekStart: start,
+      weekEnd: start,
+      today: start,
+      complete: false,
+      elapsedDays: 3,
+      total: 450,
+      pendingAmount: 0,
+      byDay: Array.from({ length: 7 }, (_, index) => ({
+        day: `2026-09-${String(21 + index).padStart(2, "0")}`,
+        amount: index === 0 ? 450 : 0,
+      })),
+      baseline: { weeks: 8, median: 1200 },
+      difference: -750,
+      topCategoryIncreases: [],
+      largest: [
+        {
+          id: "coffee",
+          source: "card",
+          day: "2026-09-21",
+          displayName: "咖啡豆專賣",
+          amount: 450,
+          categoryId: "food",
+          pending: false,
+        },
+      ],
+      newMerchants: [],
+      possiblyIncompleteFrom: "2026-09-19",
+      sources: [],
+      incompleteReasons: [],
+      ...overrides,
+    });
+
+    it("shows how much is left this month and links to the settings", async () => {
+      const { navigate } = renderMonth({
+        budget,
+        week: (start) => week(start),
+      });
+      const available = await screen.findByTestId("budget-available");
+      const card = screen.getByTestId("month-budget");
+      expect(available).toHaveTextContent("NT$108,960");
+      expect(card).toHaveTextContent("剩 10 天，每天約可花");
+      expect(card).toHaveTextContent("發現 1 個可能的固定支出");
+      expect(within(card).queryByTestId("budget-no-savings")).toBeNull();
+      await fireEvent.click(within(card).getByRole("button", { name: /設定/ }));
+      expect(navigate).toHaveBeenCalledWith("budget");
+    });
+
+    it("marks overspending instead of a daily allowance", async () => {
+      renderMonth({
+        budget: { ...budget, available: -2000, dailyAllowance: 0 },
+        week: (start) => week(start),
+      });
+      await screen.findByTestId("budget-available");
+      const card = screen.getByTestId("month-budget");
+      expect(card).toHaveTextContent("已超出預算");
+      expect(card).not.toHaveTextContent("每天約可花");
+    });
+
+    it("never claims lower spending while the week is still in progress", async () => {
+      renderMonth({ budget, week: (start) => week(start) });
+      const review = await screen.findByTestId("weekly-review");
+      await fireEvent.click(
+        within(review).getByRole("button", { name: "本週" }),
+      );
+      await waitFor(() => expect(review).toHaveTextContent("目前至少 NT$450"));
+      expect(review).not.toHaveTextContent("少 NT$750");
+      await waitFor(() =>
+        expect(review).toHaveTextContent("照本月可花，一週約 NT$76,272"),
+      );
+    });
+
+    it("does not claim lower spending for last week while its weekend may be incomplete", async () => {
+      renderMonth({
+        budget,
+        week: (start) =>
+          week(start, {
+            complete: true,
+            elapsedDays: 7,
+            total: 700,
+            difference: -500,
+            possiblyIncompleteFrom: "2026-09-26",
+          }),
+      });
+      const review = await screen.findByTestId("weekly-review");
+      await fireEvent.click(
+        within(review).getByRole("button", { name: "上週" }),
+      );
+      await waitFor(() => expect(review).toHaveTextContent("目前至少 NT$700"));
+      expect(review).not.toHaveTextContent("少 NT$500");
+    });
+
+    it("calls out a finished week that cost more than usual", async () => {
+      renderMonth({
+        budget,
+        week: (start) =>
+          week(start, {
+            complete: true,
+            elapsedDays: 7,
+            total: 3000,
+            difference: 1800,
+            possiblyIncompleteFrom: null,
+          }),
+      });
+      const review = await screen.findByTestId("weekly-review");
+      await fireEvent.click(
+        within(review).getByRole("button", { name: "上週" }),
+      );
+      await waitFor(() =>
+        expect(review).toHaveTextContent("比平常一週多 NT$1,800"),
+      );
     });
   });
 });

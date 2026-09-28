@@ -3,6 +3,7 @@ import type { View } from "./types";
 /** 每個 view 的正式 hash 路徑（`#/` 之後、`?` 之前）。 */
 const VIEW_PATHS: Readonly<Record<View, string>> = {
   month: "month",
+  budget: "month/budget",
   transactions: "transactions",
   "transaction-rules": "transactions/rules",
   cards: "cards",
