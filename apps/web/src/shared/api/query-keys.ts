@@ -10,6 +10,9 @@ export const queryKeys = {
   cardsSummary: ["bank", "cards", "summary"] as const,
   cardBills: (issuer: string) => ["bank", "cards", "bills", issuer] as const,
   inbox: ["bank", "inbox"] as const,
+  budget: ["bank", "budget"] as const,
+  weeklyReview: (weekStart: string) =>
+    ["bank", "budget", "week", weekStart] as const,
   investments: ["investments"] as const,
   investmentTransactions: ["investment-transactions"] as const,
   investmentTransactionsRange: (from: string, to: string) =>

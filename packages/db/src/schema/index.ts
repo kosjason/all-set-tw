@@ -9,3 +9,4 @@ export * from "./exchange-rates";
 export * from "./sync";
 export * from "./activity";
 export * from "./merchants";
+export * from "./budget";

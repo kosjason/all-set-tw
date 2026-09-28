@@ -54,6 +54,57 @@ export async function routeNavigationApi(page: Page) {
   );
   // 頁首同步狀態與右側概況欄。
   await page.route("**/api/sync-jobs", (route) => route.fulfill({ json: [] }));
+  // 本月可花與週回顧：沒有收入資料時提示填寫，週回顧沒有消費。
+  await page.route("**/api/budget", (route) =>
+    route.fulfill({
+      json: {
+        month: currentMonth(),
+        today: `${currentMonth()}-01`,
+        daysLeft: 30,
+        historyMonths: [],
+        settings: {
+          expectedIncome: null,
+          savingsTargetType: "amount",
+          savingsTargetValue: 0,
+          annualReserve: 0,
+        },
+        expectedIncome: { amount: null, source: "none" },
+        savingsTarget: 0,
+        monthlyReserve: 0,
+        spent: 0,
+        spentFixed: 0,
+        spentFromReserve: 0,
+        fixedRemaining: 0,
+        available: null,
+        dailyAllowance: null,
+        fixedMerchants: [],
+        candidates: [],
+      },
+    }),
+  );
+  await page.route("**/api/budget/week**", (route) => {
+    const start =
+      new URL(route.request().url()).searchParams.get("start") ?? "2026-09-21";
+    return route.fulfill({
+      json: {
+        weekStart: start,
+        weekEnd: start,
+        today: start,
+        complete: false,
+        elapsedDays: 1,
+        total: 0,
+        pendingAmount: 0,
+        byDay: [],
+        baseline: { weeks: 0, median: null },
+        difference: null,
+        topCategoryIncreases: [],
+        largest: [],
+        newMerchants: [],
+        possiblyIncompleteFrom: null,
+        sources: [],
+      },
+    });
+  });
 }
 
 export async function routeActivityApi(page: Page) {

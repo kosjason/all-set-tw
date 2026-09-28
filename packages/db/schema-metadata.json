@@ -604,6 +604,30 @@
         "activity_id": "來源種類及活動 ID，作為執行內的去重鍵。",
         "snapshot": "供 API 回傳的日期、名稱、原幣金額、變動種類、發票關係與同步時間 JSON 快照。"
       }
+    },
+    "budget_settings": {
+      "description": "「本月可花」的設定（單列，id 固定為 default）：預期月收入、儲蓄目標與年繳準備金。",
+      "notes": "本月可花 = 預期月收入 − 儲蓄目標 − 年繳準備金 ÷ 12 − 本月已花（不含年繳商家）− 每月固定支出尚未扣款的部分。沒有這一列時全部視為預設值。",
+      "columns": {
+        "id": "固定為 default（CHECK 限制只能有一列）。",
+        "expected_income": "預期月收入（TWD）；NULL 時由近 3 個完整月份收入的中位數推算。",
+        "savings_target_type": "儲蓄目標的單位：amount 固定金額（TWD）或 percent 預期月收入的百分比。",
+        "savings_target_value": "儲蓄目標數值；percent 時介於 0–100。",
+        "annual_reserve": "一年的年繳大額總額（TWD，例如保險、稅、年費）；每月提撥十二分之一。",
+        "updated_at": "設定最後更新的時間。"
+      }
+    },
+    "budget_merchants": {
+      "description": "使用者對商家是否為固定支出的判斷，供「本月可花」預留尚未扣款的固定支出與排除年繳。",
+      "notes": "merchant_key 與 merchant_rules 相同（ban:<統編> 或 name:<正規化名稱>），商家來自活動推導，不設 FK。not_fixed 表示使用者確認不是固定支出，不再列入偵測候選。",
+      "columns": {
+        "merchant_key": "商家 key（ban:<統編> 或 name:<正規化名稱>）。",
+        "kind": "monthly 每月固定、annual 年繳（由年繳準備金支付，不扣本月可花）、not_fixed 不是固定支出。",
+        "display_name": "確認當時的商家顯示名稱，供設定頁列示。",
+        "expected_amount": "每月預期金額（TWD）；NULL 時以近 3 個月該商家每月消費的中位數估計。",
+        "created_at": "第一次設定的時間。",
+        "updated_at": "最後更新的時間。"
+      }
     }
   }
 }

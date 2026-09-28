@@ -113,6 +113,11 @@ export const detailLabels: Record<
     description: "無法同步的自有帳戶與卡片，轉入轉出不計入收支。",
     parent: "assets",
   },
+  budget: {
+    label: "可花設定",
+    description: "預期收入、儲蓄目標、年繳準備金與固定支出。",
+    parent: "month",
+  },
   "transaction-rules": {
     label: "自動整理",
     description: "依條件自動分類交易；regex 等進階條件也在這裡。",

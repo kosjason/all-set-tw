@@ -1,11 +1,15 @@
 <!--
   本月（首頁）：月份切換與資料更新時間 → 條件式待處理提示條，下方為分區 dashboard：
-  上排 收支算式（收入 − 消費 ＝ 存下來，其中投資／留在帳戶）｜卡費提醒（7 天內未繳）＋淨資產卡；
+  上排 收支算式（收入 − 消費 ＝ 存下來，其中投資／留在帳戶）｜本月可花（本月才顯示）＋卡費提醒
+  （7 天內未繳）＋淨資產卡；本月另有一整排週回顧；
   中排 消費分類排行｜近 6 月收入／消費；下排 最近交易｜發票對應卡。
   收支數字一律來自 summary API。
 -->
 <script lang="ts">
   import Card from "@/shared/ui/Card.svelte";
+  import { budgetQuery } from "@/data/budget/queries";
+  import BudgetCard from "./components/BudgetCard.svelte";
+  import WeeklyReview from "./components/WeeklyReview.svelte";
   import { ChevronLeft, ChevronRight, CreditCard, Inbox } from "@lucide/svelte";
   import { currentActivityMonthKey } from "@taiwan-fin-hub/core";
   import { createQuery, keepPreviousData } from "@tanstack/svelte-query";
@@ -104,6 +108,7 @@
     })),
   );
   const categoryRows = createQuery(classificationCategoriesQuery(() => api));
+  const budget = createQuery(budgetQuery(() => api));
   const jobs = createQuery(syncJobsQuery(() => api));
   // 卡費提醒：載入失敗時不顯示，不當成本月頁的錯誤。
   const cards = createQuery({
@@ -258,6 +263,14 @@
     </Card>
 
     <div class="grid min-w-0 content-start gap-4 xl:col-span-4 xl:gap-5">
+      {#if selectedMonth === currentMonth}
+        <BudgetCard
+          budget={$budget.data}
+          loading={$budget.isPending}
+          failed={$budget.isError}
+          onOpenSettings={() => navigate("budget")}
+        />
+      {/if}
       {#if reminder}
         <button
           type="button"
@@ -309,6 +322,17 @@
       </Card>
     </div>
   </section>
+
+  {#if selectedMonth === currentMonth}
+    <!-- 週回顧：只看消費，和過去 8 週同一段天數比較 -->
+    <Card class="min-w-0 p-4 md:p-5">
+      <WeeklyReview
+        {api}
+        {navigate}
+        dailyAllowance={$budget.data?.dailyAllowance ?? null}
+      />
+    </Card>
+  {/if}
 
   <!-- 中：消費分類（左）＋近 6 個月趨勢（右） -->
   <section class="grid min-w-0 gap-4 lg:grid-cols-2 xl:grid-cols-12 xl:gap-5">

@@ -691,6 +691,60 @@ export function summarizeActivityMonths(
   });
 }
 
+/** 一筆計入「消費」的活動（TWD，正數為消費、負數為退款沖減）。 */
+export interface SpendingEntry {
+  id: string;
+  source: "bank" | "card" | "invoice";
+  /** 台北日期 YYYY-MM-DD（與月 summary 相同的歸日方式）。 */
+  day: string;
+  amount: number;
+  categoryId: string;
+  merchantKey?: string;
+  displayName: string;
+  pending: boolean;
+}
+
+/**
+ * 取出計入消費的活動，口徑與 {@link summarizeActivityMonths} 的 spending 相同：只看銀行、
+ * 信用卡與發票；排除「不計入」、重複與缺匯率的項目。回傳的金額加總等於月 summary 的 spending。
+ */
+export function activitySpendingEntries(
+  items: Array<
+    SummaryActivity &
+      Pick<ActivityItem, "id" | "title" | "status"> &
+      Partial<Pick<ActivityItem, "merchantKey" | "displayName">>
+  >,
+  rates: Readonly<Record<string, number>>,
+): SpendingEntry[] {
+  const entries: SpendingEntry[] = [];
+  for (const item of items) {
+    if (
+      item.source !== "bank" &&
+      item.source !== "card" &&
+      item.source !== "invoice"
+    )
+      continue;
+    if (item.economicRole === "excluded" || item.duplicateOf) continue;
+    const signed = signedAmount(item);
+    if (signed == null) continue;
+    const amount = toTwd(signed, item.currency, rates);
+    if (amount == null || effectiveRole(item, amount) !== "spending") continue;
+    entries.push({
+      id: item.id,
+      source: item.source,
+      day: activityDateKey(item),
+      amount: round(-amount),
+      categoryId: topLevelCategoryId(
+        item.categoryId ?? UNCATEGORIZED_CATEGORY_ID,
+      ),
+      ...(item.merchantKey ? { merchantKey: item.merchantKey } : {}),
+      displayName: item.displayName || item.title,
+      pending: item.status === "pending",
+    });
+  }
+  return entries;
+}
+
 function roundValues(values: Record<string, number>) {
   return Object.fromEntries(
     Object.entries(values).map(([key, value]) => [key, round(value)]),
