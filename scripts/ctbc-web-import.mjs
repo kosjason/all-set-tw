@@ -1166,9 +1166,13 @@ async function acquireToolLock(lockPath) {
       };
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      const owner = Number(await readFile(lockPath, "utf8").catch(() => ""));
-      if (Number.isInteger(owner) && owner > 0 && processAlive(owner)) {
-        throw new CtbcWebImportError("這個 profile 正在被另一次匯入使用。");
+      const text = await readFile(lockPath, "utf8").catch(() => "");
+      const owner = Number(text);
+      // 內容為空或無法解析時可能是另一次匯入剛建立、尚未寫入 PID，視為使用中。
+      if (!/^\d+$/.test(text) || processAlive(owner)) {
+        throw new CtbcWebImportError(
+          `這個 profile 正在被另一次匯入使用；確定沒有時請刪除 ${lockPath}。`,
+        );
       }
       await rm(lockPath, { force: true });
     }
@@ -1235,7 +1239,7 @@ export async function prepareFixedProfile(profileDir) {
   try {
     if (await chromeUsingProfile(profileDir)) {
       throw new CtbcWebImportError(
-        "這個 profile 已有 Chrome 開著，請先關閉該視窗再執行。",
+        `這個 profile 已有 Chrome 開著，請先關閉該視窗再執行；確定沒有時請刪除 ${path.join(profileDir, "SingletonLock")}。`,
       );
     }
   } catch (error) {
@@ -1388,14 +1392,14 @@ async function run(argv) {
   }
   let browser = null;
   let session = null;
-  let cleaned = false;
-  const cleanup = async () => {
-    if (cleaned) return;
-    cleaned = true;
-    const removed = await closeChrome(browser, profileDir, keepProfile);
-    if (!removed) console.error("無法刪除暫存 Chrome profile，請手動刪除。");
-    await releaseProfile().catch(() => {});
-  };
+  let cleanupPromise = null;
+  // 所有呼叫者等同一次清理，避免中斷處理在 Chrome 關閉、鎖釋放前就結束程序。
+  const cleanup = () =>
+    (cleanupPromise ??= (async () => {
+      const removed = await closeChrome(browser, profileDir, keepProfile);
+      if (!removed) console.error("無法刪除暫存 Chrome profile，請手動刪除。");
+      await releaseProfile().catch(() => {});
+    })());
   let aborting = false;
   const onSignal = () => {
     if (aborting) {
@@ -1422,6 +1426,7 @@ async function run(argv) {
 
     console.log("請在剛開啟的 Chrome 視窗自行登入中國信託網銀。");
     await watcher.waitForTemplate(options.loginTimeoutMinutes * 60_000);
+    if (aborting) return 130;
     session = new PageApiSession(browser, watcher);
     console.log("已偵測到登入，開始唯讀查詢；完成前請勿操作該視窗。");
     await sleep(3_000);

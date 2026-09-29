@@ -677,6 +677,15 @@ test("prepareFixedProfile creates a private directory and rejects unsafe ones", 
       await prepareFixedProfile(fresh)
     )();
 
+    // 鎖檔還沒寫入 PID（空的）時視為使用中；PID 已不存在時視為殘留。
+    const lockFile = path.join(fresh, "ctbc-web-import.lock");
+    await writeFile(lockFile, "");
+    await assert.rejects(prepareFixedProfile(fresh), /另一次匯入/);
+    await writeFile(lockFile, "99999999");
+    await (
+      await prepareFixedProfile(fresh)
+    )();
+
     const open = path.join(root, "open");
     await (
       await prepareFixedProfile(open)
