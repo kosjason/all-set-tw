@@ -5,12 +5,22 @@
 // 資料，再送到 Worker `POST /api/connectors/ctbc/import`。
 //
 // 刻意不做：自動填寫帳密、偽裝瀏覽器、隱藏 webdriver、改 UA 或任何繞過防機器人的手段。
+// `--profile` 指定固定的 Chrome profile 時，使用者可在其中安裝密碼管理器自行填入帳密；
+// 本工具本身仍不讀取或填寫任何登入欄位。
 // Console 只輸出 resource 名稱、回應代碼、筆數與匯入結果；不輸出也不寫檔帳號、金額、
 // 姓名、token 或 seed。
 
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readlink,
+  rm,
+} from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -76,6 +86,7 @@ export function parseArgs(argv, env = {}) {
     port: DEFAULT_DEBUG_PORT,
     loginUrl: DEFAULT_LOGIN_URL,
     loginTimeoutMinutes: DEFAULT_LOGIN_TIMEOUT_MINUTES,
+    profileDir: undefined,
     dryRun: false,
     help: false,
     accessClientId: env.CF_ACCESS_CLIENT_ID?.trim() || undefined,
@@ -109,6 +120,9 @@ export function parseArgs(argv, env = {}) {
       case "--timeout":
         options.loginTimeoutMinutes = Number(read());
         break;
+      case "--profile":
+        options.profileDir = read();
+        break;
       case "--dry-run":
         options.dryRun = true;
         break;
@@ -128,6 +142,13 @@ export function parseArgs(argv, env = {}) {
     options.loginTimeoutMinutes <= 0
   ) {
     throw new CtbcWebImportError("--timeout 必須是正數（分鐘）。");
+  }
+  if (options.profileDir !== undefined) {
+    if (!path.isAbsolute(options.profileDir)) {
+      throw new CtbcWebImportError("--profile 必須是絕對路徑。");
+    }
+    // 去掉結尾斜線與 ..，避免 lstat 跟著連結走，也讓 Chrome 與 pkill 用同一字串。
+    options.profileDir = path.resolve(options.profileDir);
   }
   assertWorkerUrl(options.workerUrl);
   const loginUrl = assertHttpUrl(options.loginUrl, "--login-url");
@@ -150,6 +171,8 @@ export const USAGE = `用法：node scripts/ctbc-web-import.mjs [選項]
   --port <port>       Chrome 遠端除錯埠（預設 ${DEFAULT_DEBUG_PORT}，僅監聽本機）
   --login-url <url>   開啟的中信網銀頁面（預設 ${DEFAULT_LOGIN_URL}）
   --timeout <分鐘>    等待登入的時間（預設 ${DEFAULT_LOGIN_TIMEOUT_MINUTES}）
+  --profile <目錄>    使用固定的 Chrome profile（絕對路徑），結束後保留，可在其中安裝
+                      密碼管理器；未指定時使用暫存 profile 並於結束時刪除
   --dry-run           只查詢並顯示筆數，不送到 Worker
 
 環境變數 CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET：Worker 受 Cloudflare Access
@@ -1000,6 +1023,9 @@ class PageApiSession {
   #watcher;
   #sessionId;
   #template;
+  #queue = Promise.resolve();
+  #aborted = false;
+  #logout;
 
   constructor(cdp, watcher) {
     this.#cdp = cdp;
@@ -1011,7 +1037,27 @@ class PageApiSession {
     };
   }
 
-  async call(resource, rqData) {
+  /** 依序送出請求；中斷或登出後不再送新的查詢。 */
+  call(resource, rqData) {
+    const run = this.#queue.then(() => {
+      if (this.#aborted) throw new CtbcWebImportError("已中斷，停止查詢。");
+      return this.#send(resource, rqData);
+    });
+    this.#queue = run.catch(() => {});
+    return run;
+  }
+
+  /** 排在進行中的請求之後登出；重複呼叫共用同一次登出。 */
+  logout() {
+    if (!this.#logout) {
+      this.#logout = this.#queue.then(() => this.#send(RESOURCES.logout, {}));
+      this.#aborted = true;
+      this.#queue = this.#logout.catch(() => {});
+    }
+    return this.#logout;
+  }
+
+  async #send(resource, rqData) {
     const body = buildRequestBody(this.#template, resource, rqData);
     this.#watcher.markOwnRequest(body.trackingIxd);
     const expression = inPageXhrExpression(
@@ -1094,6 +1140,115 @@ async function assertPortFree(port) {
   );
 }
 
+/** pkill -f 用的樣式：跳脫 regex 字元並限制參數邊界，避免誤殺路徑相近的其他 Chrome。 */
+export function userDataDirPattern(profileDir) {
+  const escaped = profileDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `(^| )--user-data-dir=${escaped}( |$)`;
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+async function acquireToolLock(lockPath) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = await open(lockPath, "wx", 0o600);
+      await handle.writeFile(String(process.pid));
+      await handle.close();
+      return async () => {
+        await rm(lockPath, { force: true });
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      const text = await readFile(lockPath, "utf8").catch(() => "");
+      const owner = Number(text);
+      // 內容為空或無法解析時可能是另一次匯入剛建立、尚未寫入 PID，視為使用中。
+      if (!/^\d+$/.test(text) || processAlive(owner)) {
+        throw new CtbcWebImportError(
+          `這個 profile 正在被另一次匯入使用；確定沒有時請刪除 ${lockPath}。`,
+        );
+      }
+      await rm(lockPath, { force: true });
+    }
+  }
+  throw new CtbcWebImportError("無法取得 profile 鎖定。");
+}
+
+/** Chrome 的 SingletonLock 內容是「主機名稱-PID」；同主機且程序已不存在時視為殘留。 */
+async function chromeUsingProfile(profileDir) {
+  const lockPath = path.join(profileDir, "SingletonLock");
+  let target;
+  try {
+    target = await readlink(lockPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    return true;
+  }
+  const separator = target.lastIndexOf("-");
+  const host = target.slice(0, separator);
+  const pid = Number(target.slice(separator + 1));
+  if (
+    separator > 0 &&
+    host === hostname() &&
+    Number.isInteger(pid) &&
+    pid > 0 &&
+    !processAlive(pid)
+  ) {
+    await rm(lockPath, { force: true });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 建立或檢查固定 profile：必須是目前使用者擁有、其他人無權限的實體目錄，
+ * 取得本工具的鎖定，且沒有 Chrome 正在使用（避免新視窗被轉交給既有 Chrome，
+ * 結束時又誤關它）。回傳釋放鎖定的函式。
+ */
+export async function prepareFixedProfile(profileDir) {
+  try {
+    await mkdir(profileDir, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    throw new CtbcWebImportError(
+      `無法建立 Chrome profile 目錄（${error?.code ?? "unknown"}）。`,
+    );
+  }
+  const stats = await lstat(profileDir);
+  if (!stats.isDirectory()) {
+    throw new CtbcWebImportError(
+      "--profile 必須是實體目錄，不能是連結或檔案。",
+    );
+  }
+  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
+    throw new CtbcWebImportError("--profile 目錄必須屬於目前使用者。");
+  }
+  if ((stats.mode & 0o077) !== 0) {
+    throw new CtbcWebImportError(
+      "--profile 目錄不可讓其他使用者存取，請先執行 chmod 700。",
+    );
+  }
+  const release = await acquireToolLock(
+    path.join(profileDir, "ctbc-web-import.lock"),
+  );
+  try {
+    if (await chromeUsingProfile(profileDir)) {
+      throw new CtbcWebImportError(
+        `這個 profile 已有 Chrome 開著，請先關閉該視窗再執行；確定沒有時請刪除 ${path.join(profileDir, "SingletonLock")}。`,
+      );
+    }
+  } catch (error) {
+    await release();
+    throw error;
+  }
+  return release;
+}
+
 function launchChrome(options, profileDir) {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -1120,7 +1275,7 @@ function launchChrome(options, profileDir) {
   });
 }
 
-async function closeChrome(browser, profileDir) {
+async function closeChrome(browser, profileDir, keepProfile) {
   if (browser) {
     try {
       await browser.send("Browser.close", {}, undefined, 5_000);
@@ -1130,16 +1285,13 @@ async function closeChrome(browser, profileDir) {
     browser.close();
   }
   await new Promise((resolve) => {
-    const child = spawn(
-      "pkill",
-      ["-f", "--", `--user-data-dir=${profileDir}`],
-      {
-        stdio: "ignore",
-      },
-    );
+    const child = spawn("pkill", ["-f", "--", userDataDirPattern(profileDir)], {
+      stdio: "ignore",
+    });
     child.once("error", resolve);
     child.once("exit", resolve);
   });
+  if (keepProfile) return true;
   for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
       await rm(profileDir, { recursive: true, force: true });
@@ -1224,21 +1376,46 @@ async function run(argv) {
     console.error(safeErrorText(error));
     return 1;
   }
-  const profileDir = await mkdtemp(path.join(tmpdir(), "ctbc-web-import-"));
+  const keepProfile = options.profileDir !== undefined;
+  let profileDir;
+  let releaseProfile = async () => {};
+  try {
+    if (keepProfile) {
+      profileDir = options.profileDir;
+      releaseProfile = await prepareFixedProfile(profileDir);
+    } else {
+      profileDir = await mkdtemp(path.join(tmpdir(), "ctbc-web-import-"));
+    }
+  } catch (error) {
+    console.error(safeErrorText(error));
+    return 1;
+  }
   let browser = null;
-  let cleaned = false;
-  const cleanup = async () => {
-    if (cleaned) return;
-    cleaned = true;
-    const removed = await closeChrome(browser, profileDir);
-    if (!removed) console.error("無法刪除暫存 Chrome profile，請手動刪除。");
-  };
+  let session = null;
+  let cleanupPromise = null;
+  // 所有呼叫者等同一次清理，避免中斷處理在 Chrome 關閉、鎖釋放前就結束程序。
+  const cleanup = () =>
+    (cleanupPromise ??= (async () => {
+      const removed = await closeChrome(browser, profileDir, keepProfile);
+      if (!removed) console.error("無法刪除暫存 Chrome profile，請手動刪除。");
+      await releaseProfile().catch(() => {});
+    })());
+  let aborting = false;
   const onSignal = () => {
-    console.error("已中斷，正在關閉 Chrome…");
-    void cleanup().finally(() => process.exit(130));
+    if (aborting) {
+      console.error("正在登出並關閉 Chrome，請稍候…");
+      return;
+    }
+    aborting = true;
+    console.error("已中斷，正在登出並關閉 Chrome…");
+    // 已登入時等進行中的請求結束後登出（最多 5 秒），避免固定 profile 留下網銀 session。
+    const logout = session
+      ? Promise.race([session.logout(), sleep(5_000)]).catch(() => {})
+      : Promise.resolve();
+    void logout.then(() => cleanup()).finally(() => process.exit(130));
   };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
 
   try {
     await launchChrome(options, profileDir);
@@ -1249,10 +1426,11 @@ async function run(argv) {
 
     console.log("請在剛開啟的 Chrome 視窗自行登入中國信託網銀。");
     await watcher.waitForTemplate(options.loginTimeoutMinutes * 60_000);
+    if (aborting) return 130;
+    session = new PageApiSession(browser, watcher);
     console.log("已偵測到登入，開始唯讀查詢；完成前請勿操作該視窗。");
     await sleep(3_000);
 
-    const session = new PageApiSession(browser, watcher);
     let result;
     try {
       result = await collectCtbcPayloads(
@@ -1264,7 +1442,7 @@ async function run(argv) {
       );
     } finally {
       try {
-        const response = await session.call(RESOURCES.logout, {});
+        const response = await session.logout();
         console.log(
           formatResourceLog(RESOURCES.logout, responseCode(response)),
         );
@@ -1292,6 +1470,7 @@ async function run(argv) {
       return 0;
     }
 
+    if (aborting) return 130;
     const formatted = formatImportResult(await postImport(options, result));
     for (const line of formatted.lines) {
       (formatted.ok ? console.log : console.error)(line);
