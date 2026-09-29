@@ -59,6 +59,7 @@ test("parseArgs applies defaults and validates options", () => {
     port: 9333,
     loginUrl: "https://www.ctbcbank.com/twrbc/",
     loginTimeoutMinutes: 10,
+    profileDir: undefined,
     dryRun: false,
     help: false,
     accessClientId: undefined,
@@ -73,6 +74,14 @@ test("parseArgs applies defaults and validates options", () => {
   assert.equal(options.dryRun, true);
   assert.equal(options.accessClientId, "id");
 
+  assert.equal(
+    parseArgs(["--profile", "/Users/me/.ctbc-profile"], {}).profileDir,
+    "/Users/me/.ctbc-profile",
+  );
+  assert.throws(
+    () => parseArgs(["--profile", "relative/dir"], {}),
+    CtbcWebImportError,
+  );
   assert.throws(() => parseArgs(["--bogus"], {}), CtbcWebImportError);
   assert.throws(() => parseArgs(["--worker"], {}), CtbcWebImportError);
   assert.throws(

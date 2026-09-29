@@ -5,11 +5,13 @@
 // 資料，再送到 Worker `POST /api/connectors/ctbc/import`。
 //
 // 刻意不做：自動填寫帳密、偽裝瀏覽器、隱藏 webdriver、改 UA 或任何繞過防機器人的手段。
+// `--profile` 指定固定的 Chrome profile 時，使用者可在其中安裝密碼管理器自行填入帳密；
+// 本工具本身仍不讀取或填寫任何登入欄位。
 // Console 只輸出 resource 名稱、回應代碼、筆數與匯入結果；不輸出也不寫檔帳號、金額、
 // 姓名、token 或 seed。
 
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -76,6 +78,7 @@ export function parseArgs(argv, env = {}) {
     port: DEFAULT_DEBUG_PORT,
     loginUrl: DEFAULT_LOGIN_URL,
     loginTimeoutMinutes: DEFAULT_LOGIN_TIMEOUT_MINUTES,
+    profileDir: undefined,
     dryRun: false,
     help: false,
     accessClientId: env.CF_ACCESS_CLIENT_ID?.trim() || undefined,
@@ -109,6 +112,9 @@ export function parseArgs(argv, env = {}) {
       case "--timeout":
         options.loginTimeoutMinutes = Number(read());
         break;
+      case "--profile":
+        options.profileDir = read();
+        break;
       case "--dry-run":
         options.dryRun = true;
         break;
@@ -128,6 +134,12 @@ export function parseArgs(argv, env = {}) {
     options.loginTimeoutMinutes <= 0
   ) {
     throw new CtbcWebImportError("--timeout 必須是正數（分鐘）。");
+  }
+  if (
+    options.profileDir !== undefined &&
+    !path.isAbsolute(options.profileDir)
+  ) {
+    throw new CtbcWebImportError("--profile 必須是絕對路徑。");
   }
   assertWorkerUrl(options.workerUrl);
   const loginUrl = assertHttpUrl(options.loginUrl, "--login-url");
@@ -150,6 +162,8 @@ export const USAGE = `用法：node scripts/ctbc-web-import.mjs [選項]
   --port <port>       Chrome 遠端除錯埠（預設 ${DEFAULT_DEBUG_PORT}，僅監聽本機）
   --login-url <url>   開啟的中信網銀頁面（預設 ${DEFAULT_LOGIN_URL}）
   --timeout <分鐘>    等待登入的時間（預設 ${DEFAULT_LOGIN_TIMEOUT_MINUTES}）
+  --profile <目錄>    使用固定的 Chrome profile（絕對路徑），結束後保留，可在其中安裝
+                      密碼管理器；未指定時使用暫存 profile 並於結束時刪除
   --dry-run           只查詢並顯示筆數，不送到 Worker
 
 環境變數 CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET：Worker 受 Cloudflare Access
@@ -1120,7 +1134,7 @@ function launchChrome(options, profileDir) {
   });
 }
 
-async function closeChrome(browser, profileDir) {
+async function closeChrome(browser, profileDir, keepProfile) {
   if (browser) {
     try {
       await browser.send("Browser.close", {}, undefined, 5_000);
@@ -1140,6 +1154,7 @@ async function closeChrome(browser, profileDir) {
     child.once("error", resolve);
     child.once("exit", resolve);
   });
+  if (keepProfile) return true;
   for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
       await rm(profileDir, { recursive: true, force: true });
@@ -1224,13 +1239,23 @@ async function run(argv) {
     console.error(safeErrorText(error));
     return 1;
   }
-  const profileDir = await mkdtemp(path.join(tmpdir(), "ctbc-web-import-"));
+  const keepProfile = options.profileDir !== undefined;
+  let profileDir;
+  try {
+    profileDir = keepProfile
+      ? options.profileDir
+      : await mkdtemp(path.join(tmpdir(), "ctbc-web-import-"));
+    if (keepProfile) await mkdir(profileDir, { recursive: true, mode: 0o700 });
+  } catch {
+    console.error("無法建立 Chrome profile 目錄。");
+    return 1;
+  }
   let browser = null;
   let cleaned = false;
   const cleanup = async () => {
     if (cleaned) return;
     cleaned = true;
-    const removed = await closeChrome(browser, profileDir);
+    const removed = await closeChrome(browser, profileDir, keepProfile);
     if (!removed) console.error("無法刪除暫存 Chrome profile，請手動刪除。");
   };
   const onSignal = () => {
