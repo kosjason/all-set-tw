@@ -80,6 +80,10 @@ test("parseArgs applies defaults and validates options", () => {
     parseArgs(["--profile", "/Users/me/.ctbc-profile"], {}).profileDir,
     "/Users/me/.ctbc-profile",
   );
+  assert.equal(
+    parseArgs(["--profile", "/Users/me/.ctbc-profile/"], {}).profileDir,
+    "/Users/me/.ctbc-profile",
+  );
   assert.throws(
     () => parseArgs(["--profile", "relative/dir"], {}),
     CtbcWebImportError,
@@ -654,31 +658,69 @@ test("userDataDirPattern escapes regex characters and anchors the argument", () 
   assert.ok(pattern.test("Chrome --user-data-dir=/Users/me/.ctbc (1)"));
   assert.ok(!pattern.test("Chrome --user-data-dir=/Users/me/.ctbc (1)-old"));
   assert.ok(!pattern.test("Chrome --user-data-dir=/Users/me/Xctbc (1)"));
+  assert.ok(!pattern.test("Chrome x--user-data-dir=/Users/me/.ctbc (1)"));
 });
 
 test("prepareFixedProfile creates a private directory and rejects unsafe ones", async () => {
-  const { mkdtemp, chmod, writeFile, symlink, rm } =
+  const { mkdtemp, chmod, writeFile, symlink, rm, access } =
     await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
+  const { tmpdir, hostname } = await import("node:os");
   const path = (await import("node:path")).default;
   const root = await mkdtemp(path.join(tmpdir(), "ctbc-profile-test-"));
   try {
     const fresh = path.join(root, "fresh");
-    await prepareFixedProfile(fresh);
+    const release = await prepareFixedProfile(fresh);
+    // 同一 profile 已被這次匯入鎖定時，另一次匯入不可使用。
+    await assert.rejects(prepareFixedProfile(fresh), /另一次匯入/);
+    await release();
+    await (
+      await prepareFixedProfile(fresh)
+    )();
 
     const open = path.join(root, "open");
-    await prepareFixedProfile(open);
+    await (
+      await prepareFixedProfile(open)
+    )();
     await chmod(open, 0o755);
     await assert.rejects(prepareFixedProfile(open), CtbcWebImportError);
 
+    // Chrome 仍在執行（PID 存在）時拒絕。
     const locked = path.join(root, "locked");
-    await prepareFixedProfile(locked);
-    await symlink("mini-12345", path.join(locked, "SingletonLock"));
+    await (
+      await prepareFixedProfile(locked)
+    )();
+    await symlink(
+      `${hostname()}-${process.pid}`,
+      path.join(locked, "SingletonLock"),
+    );
     await assert.rejects(prepareFixedProfile(locked), /已有 Chrome 開著/);
+
+    // 同主機、程序已不存在的殘留鎖會被清掉。
+    const stale = path.join(root, "stale");
+    await (
+      await prepareFixedProfile(stale)
+    )();
+    await symlink(`${hostname()}-99999999`, path.join(stale, "SingletonLock"));
+    await (
+      await prepareFixedProfile(stale)
+    )();
+    await assert.rejects(access(path.join(stale, "SingletonLock")));
+
+    // 其他主機的鎖無法判斷，維持拒絕。
+    const remote = path.join(root, "remote");
+    await (
+      await prepareFixedProfile(remote)
+    )();
+    await symlink("other-host-1", path.join(remote, "SingletonLock"));
+    await assert.rejects(prepareFixedProfile(remote), /已有 Chrome 開著/);
 
     const file = path.join(root, "file");
     await writeFile(file, "");
     await assert.rejects(prepareFixedProfile(file), CtbcWebImportError);
+
+    const link = path.join(root, "link");
+    await symlink(fresh, link);
+    await assert.rejects(prepareFixedProfile(link), CtbcWebImportError);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
