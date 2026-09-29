@@ -10,6 +10,8 @@ import {
   formatResourceLog,
   formatStatementMonth,
   parseArgs,
+  prepareFixedProfile,
+  userDataDirPattern,
   pickTemplateHeaders,
   redactMessage,
   RESOURCES,
@@ -642,4 +644,42 @@ test("collectCtbcPayloads keeps unbilled card information", async () => {
   const { call } = fakeBank();
   const result = await collectCtbcPayloads(call);
   assert.ok(Array.isArray(result.payloads.unbilled.rsData.cardInfos));
+});
+
+test("userDataDirPattern escapes regex characters and anchors the argument", () => {
+  const pattern = new RegExp(userDataDirPattern("/Users/me/.ctbc (1)"));
+  assert.ok(
+    pattern.test("Chrome --user-data-dir=/Users/me/.ctbc (1) --no-first-run"),
+  );
+  assert.ok(pattern.test("Chrome --user-data-dir=/Users/me/.ctbc (1)"));
+  assert.ok(!pattern.test("Chrome --user-data-dir=/Users/me/.ctbc (1)-old"));
+  assert.ok(!pattern.test("Chrome --user-data-dir=/Users/me/Xctbc (1)"));
+});
+
+test("prepareFixedProfile creates a private directory and rejects unsafe ones", async () => {
+  const { mkdtemp, chmod, writeFile, symlink, rm } =
+    await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const path = (await import("node:path")).default;
+  const root = await mkdtemp(path.join(tmpdir(), "ctbc-profile-test-"));
+  try {
+    const fresh = path.join(root, "fresh");
+    await prepareFixedProfile(fresh);
+
+    const open = path.join(root, "open");
+    await prepareFixedProfile(open);
+    await chmod(open, 0o755);
+    await assert.rejects(prepareFixedProfile(open), CtbcWebImportError);
+
+    const locked = path.join(root, "locked");
+    await prepareFixedProfile(locked);
+    await symlink("mini-12345", path.join(locked, "SingletonLock"));
+    await assert.rejects(prepareFixedProfile(locked), /已有 Chrome 開著/);
+
+    const file = path.join(root, "file");
+    await writeFile(file, "");
+    await assert.rejects(prepareFixedProfile(file), CtbcWebImportError);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

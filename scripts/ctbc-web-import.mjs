@@ -11,7 +11,7 @@
 // 姓名、token 或 seed。
 
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1108,6 +1108,49 @@ async function assertPortFree(port) {
   );
 }
 
+/** pkill -f 用的樣式：跳脫 regex 字元並限制參數邊界，避免誤殺路徑相近的其他 Chrome。 */
+export function userDataDirPattern(profileDir) {
+  const escaped = profileDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `--user-data-dir=${escaped}( |$)`;
+}
+
+/**
+ * 建立或檢查固定 profile：必須是目前使用者擁有、其他人無權限的實體目錄，
+ * 且沒有 Chrome 正在使用（避免新視窗被轉交給既有 Chrome，結束時又誤關它）。
+ */
+export async function prepareFixedProfile(profileDir) {
+  try {
+    await mkdir(profileDir, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    throw new CtbcWebImportError(
+      `無法建立 Chrome profile 目錄（${error?.code ?? "unknown"}）。`,
+    );
+  }
+  const stats = await lstat(profileDir);
+  if (!stats.isDirectory()) {
+    throw new CtbcWebImportError(
+      "--profile 必須是實體目錄，不能是連結或檔案。",
+    );
+  }
+  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
+    throw new CtbcWebImportError("--profile 目錄必須屬於目前使用者。");
+  }
+  if ((stats.mode & 0o077) !== 0) {
+    throw new CtbcWebImportError(
+      "--profile 目錄不可讓其他使用者存取，請先執行 chmod 700。",
+    );
+  }
+  const locked = await lstat(path.join(profileDir, "SingletonLock")).then(
+    () => true,
+    () => false,
+  );
+  if (locked) {
+    throw new CtbcWebImportError(
+      "這個 profile 已有 Chrome 開著，請先關閉該視窗再執行。",
+    );
+  }
+}
+
 function launchChrome(options, profileDir) {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -1144,13 +1187,9 @@ async function closeChrome(browser, profileDir, keepProfile) {
     browser.close();
   }
   await new Promise((resolve) => {
-    const child = spawn(
-      "pkill",
-      ["-f", "--", `--user-data-dir=${profileDir}`],
-      {
-        stdio: "ignore",
-      },
-    );
+    const child = spawn("pkill", ["-f", "--", userDataDirPattern(profileDir)], {
+      stdio: "ignore",
+    });
     child.once("error", resolve);
     child.once("exit", resolve);
   });
@@ -1242,15 +1281,18 @@ async function run(argv) {
   const keepProfile = options.profileDir !== undefined;
   let profileDir;
   try {
-    profileDir = keepProfile
-      ? options.profileDir
-      : await mkdtemp(path.join(tmpdir(), "ctbc-web-import-"));
-    if (keepProfile) await mkdir(profileDir, { recursive: true, mode: 0o700 });
-  } catch {
-    console.error("無法建立 Chrome profile 目錄。");
+    if (keepProfile) {
+      profileDir = options.profileDir;
+      await prepareFixedProfile(profileDir);
+    } else {
+      profileDir = await mkdtemp(path.join(tmpdir(), "ctbc-web-import-"));
+    }
+  } catch (error) {
+    console.error(safeErrorText(error));
     return 1;
   }
   let browser = null;
+  let session = null;
   let cleaned = false;
   const cleanup = async () => {
     if (cleaned) return;
@@ -1259,8 +1301,14 @@ async function run(argv) {
     if (!removed) console.error("無法刪除暫存 Chrome profile，請手動刪除。");
   };
   const onSignal = () => {
-    console.error("已中斷，正在關閉 Chrome…");
-    void cleanup().finally(() => process.exit(130));
+    console.error("已中斷，正在登出並關閉 Chrome…");
+    // 已登入時先嘗試登出，避免固定 profile 留下仍有效的網銀 session。
+    const logout = session
+      ? Promise.race([session.call(RESOURCES.logout, {}), sleep(5_000)]).catch(
+          () => {},
+        )
+      : Promise.resolve();
+    void logout.then(() => cleanup()).finally(() => process.exit(130));
   };
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
@@ -1277,7 +1325,7 @@ async function run(argv) {
     console.log("已偵測到登入，開始唯讀查詢；完成前請勿操作該視窗。");
     await sleep(3_000);
 
-    const session = new PageApiSession(browser, watcher);
+    session = new PageApiSession(browser, watcher);
     let result;
     try {
       result = await collectCtbcPayloads(
