@@ -754,44 +754,54 @@ test("prepareFixedProfile creates a private directory and rejects unsafe ones", 
 
 test("AuthTokenTracker keeps the newest token regardless of classification order", () => {
   const tracker = new AuthTokenTracker();
+  const send = (key) => {
+    tracker.begin(key);
+    return tracker.nextSeq();
+  };
   // 頁面請求 A 帶 T1 送出，但取 postData 較慢；頁面請求 B 的回應先帶回 T2。
-  const aRequest = tracker.nextSeq();
-  const bRequest = tracker.nextSeq();
+  const aRequest = send("s:a");
+  const bRequest = send("s:b");
   tracker.classify("s:b", "page", "T1", bRequest);
-  const bResponse = tracker.nextSeq();
-  tracker.response("s:b", "T2", bResponse);
+  tracker.response("s:b", "T2", tracker.nextSeq());
   assert.equal(tracker.current, "T2");
   // A 晚分類，header 的舊 T1 不能蓋掉 T2。
   tracker.classify("s:a", "page", "T1", aRequest);
   assert.equal(tracker.current, "T2");
 
   // 回應比分類先到：暫存，分類成頁面請求後才套用。
-  const cRequest = tracker.nextSeq();
+  const cRequest = send("s:c");
   tracker.response("s:c", "T3", tracker.nextSeq());
   assert.equal(tracker.current, "T2");
   tracker.classify("s:c", "page", "T2", cRequest);
   assert.equal(tracker.current, "T3");
 
-  // 工具自己的請求回應也算最新；登入或無關請求的回應丟棄。
-  tracker.classify("s:own", "own");
-  tracker.response("s:own", "T4", tracker.nextSeq());
+  // 回應與結束都早於分類：暫存的 token 不可被清掉。
+  const dRequest = send("s:d");
+  tracker.response("s:d", "T4", tracker.nextSeq());
+  tracker.finished("s:d");
+  tracker.classify("s:d", "page", "T3", dRequest);
   assert.equal(tracker.current, "T4");
+  // 分類後已清除，晚到的事件不再套用。
+  tracker.response("s:d", "late", tracker.nextSeq());
+  assert.equal(tracker.current, "T4");
+
+  // 工具自己的請求回應也算；登入或無關請求的回應丟棄；未登記的請求不追蹤。
+  send("s:own");
+  tracker.classify("s:own", "own");
+  tracker.response("s:own", "T5", tracker.nextSeq());
+  assert.equal(tracker.current, "T5");
+  send("s:login");
   tracker.response("s:login", "X", tracker.nextSeq());
   tracker.classify("s:login", "ignored");
-  assert.equal(tracker.current, "T4");
-
-  // 不同分頁相同 requestId 分開追蹤。
-  tracker.classify("t1:9", "ignored");
-  tracker.classify("t2:9", "page", undefined, tracker.nextSeq());
-  tracker.response("t2:9", "T5", tracker.nextSeq());
+  tracker.response("s:unknown", "Y", tracker.nextSeq());
+  tracker.finished("s:unknown");
   assert.equal(tracker.current, "T5");
 
-  // XHR 直接回報的 token 視為最新。
-  tracker.note("T6");
-  assert.equal(tracker.current, "T6");
-  tracker.finished("s:c");
-  tracker.response("s:c", "late", tracker.nextSeq());
-  assert.equal(tracker.current, "T6");
-  tracker.classify("s:c", "ignored");
+  // 不同分頁相同 requestId 分開追蹤。
+  send("t1:9");
+  tracker.classify("t1:9", "ignored");
+  const t2 = send("t2:9");
+  tracker.classify("t2:9", "page", undefined, t2);
+  tracker.response("t2:9", "T6", tracker.nextSeq());
   assert.equal(tracker.current, "T6");
 });

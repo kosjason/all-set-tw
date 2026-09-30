@@ -942,8 +942,10 @@ export class AuthTokenTracker {
   #seq = 0;
   #current = null;
   #currentSeq = -1;
+  /** key → null（已送出、尚未分類）或 page／own／ignored。 */
   #kinds = new Map();
   #pending = new Map();
+  #finishedBeforeClassify = new Set();
 
   get current() {
     return this.#current;
@@ -955,11 +957,16 @@ export class AuthTokenTracker {
     return this.#seq;
   }
 
-  /** 直接記錄一個 token（例如工具自己的 XHR 回應），視為目前最新。 */
+  /** 記錄一個 token；未指定序號時視為目前最新。 */
   note(token, seq = this.nextSeq()) {
     if (!token || seq <= this.#currentSeq) return;
     this.#current = token;
     this.#currentSeq = seq;
+  }
+
+  /** 網銀請求事件抵達時同步登記，之後的回應與結束事件才會被追蹤。 */
+  begin(key) {
+    this.#kinds.set(key, null);
   }
 
   /** kind：page（頁面自己的網銀請求）、own（工具發出）、ignored（登入或無關請求）。 */
@@ -969,20 +976,26 @@ export class AuthTokenTracker {
     const pending = this.#pending.get(key);
     this.#pending.delete(key);
     if (pending && kind !== "ignored") this.note(pending.token, pending.seq);
+    if (this.#finishedBeforeClassify.delete(key)) this.#kinds.delete(key);
   }
 
   response(key, token, seq) {
-    if (!token) return;
+    if (!token || !this.#kinds.has(key)) return;
     const kind = this.#kinds.get(key);
-    if (kind === undefined) {
+    if (kind === null) {
       this.#pending.set(key, { token, seq });
     } else if (kind !== "ignored") {
       this.note(token, seq);
     }
   }
 
-  /** 請求結束（完成或失敗）時清除關聯資料。 */
+  /** 請求結束（完成或失敗）時清除關聯資料；尚未分類時保留暫存的回應 token 到分類完成。 */
   finished(key) {
+    if (!this.#kinds.has(key)) return;
+    if (this.#kinds.get(key) === null) {
+      this.#finishedBeforeClassify.add(key);
+      return;
+    }
     this.#kinds.delete(key);
     this.#pending.delete(key);
   }
@@ -1079,6 +1092,7 @@ class RequestTemplateWatcher {
     const request = params.request;
     if (!request || !isEbmwResourceUrl(request.url)) return;
     const key = requestKey(sessionId, params.requestId);
+    this.tokens.begin(key);
     const ignore = () => this.tokens.classify(key, "ignored");
     if (request.method !== "POST") return ignore();
     let postData = request.postData;
@@ -1199,9 +1213,14 @@ class PageApiSession {
         `${resource} 請求失敗（HTTP ${isRecord(result) ? Number(result.status) || 0 : 0}）。`,
       );
     }
-    if (typeof result.authToken === "string" && result.authToken) {
+    // 回應 token 已由 Network.responseReceived 依抵達順序記錄；這裡只在沒有追蹤到任何
+    // token 時備援，避免較晚回到的 evaluate 結果蓋掉頁面較新的 token。
+    if (
+      typeof result.authToken === "string" &&
+      result.authToken &&
+      !this.#watcher.tokens.current
+    ) {
       this.#template.headers["x-auth-token"] = result.authToken;
-      this.#watcher.tokens.note(result.authToken);
     }
     try {
       const parsed = JSON.parse(String(result.text));

@@ -430,8 +430,9 @@ depositTransactionsUnavailable?: boolean }`，上限 5 MB；zod 只驗證各回�
   `Content-Type`、`Accept`；之後以 `Runtime.evaluate` 在同一頁面內用 XHR 發出請求，
   讓頁面既有的安全機制照常處理。每次只替換 `resource`、`rqData`、`trackingIxd`、
   `txnIxd`、`clientTime`，以及 `x-auth-token`：`AuthTokenTracker` 追蹤頁面自己的網銀請求
-  header、`Network.responseReceived` 與工具 XHR 回應帶的 token，以事件抵達序號排序、
-  以「CDP session + requestId」識別請求，每次送出前改用最新值。
+  header 與 `Network.responseReceived`（含工具自己請求的回應）帶的 token，以事件抵達
+  序號排序、以「CDP session + requestId」識別請求；回應或請求結束早於分類時，暫存到分類
+  完成。每次送出前改用最新值；XHR 結果的 token 只在尚未追蹤到任何 token 時備援。
 - 偵測到登入後先等最多 `--deposit-wait` 秒（預設 60，0 不等），讓使用者點進存款交易
   明細頁；看到頁面自己的 `qu002/011` 查詢參數即開始，逾時照常繼續。請求依序送出；
   中斷時登出排在進行中請求之後（最多 5 秒），之後不再查詢、不送出匯入。
