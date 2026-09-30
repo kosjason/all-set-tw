@@ -28,6 +28,7 @@ export const DEFAULT_WORKER_URL = "http://localhost:8797";
 export const DEFAULT_DEBUG_PORT = 9333;
 export const DEFAULT_LOGIN_URL = "https://www.ctbcbank.com/twrbc/";
 export const DEFAULT_LOGIN_TIMEOUT_MINUTES = 10;
+export const DEFAULT_DEPOSIT_WAIT_SECONDS = 60;
 
 export const EBMW_RESOURCE_PATH =
   "/IB/api/adapters/IB_Adapter/resource/ebmwResource";
@@ -87,6 +88,7 @@ export function parseArgs(argv, env = {}) {
     loginUrl: DEFAULT_LOGIN_URL,
     loginTimeoutMinutes: DEFAULT_LOGIN_TIMEOUT_MINUTES,
     profileDir: undefined,
+    depositWaitSeconds: DEFAULT_DEPOSIT_WAIT_SECONDS,
     dryRun: false,
     help: false,
     accessClientId: env.CF_ACCESS_CLIENT_ID?.trim() || undefined,
@@ -123,6 +125,9 @@ export function parseArgs(argv, env = {}) {
       case "--profile":
         options.profileDir = read();
         break;
+      case "--deposit-wait":
+        options.depositWaitSeconds = Number(read());
+        break;
       case "--dry-run":
         options.dryRun = true;
         break;
@@ -142,6 +147,12 @@ export function parseArgs(argv, env = {}) {
     options.loginTimeoutMinutes <= 0
   ) {
     throw new CtbcWebImportError("--timeout 必須是正數（分鐘）。");
+  }
+  if (
+    !Number.isInteger(options.depositWaitSeconds) ||
+    options.depositWaitSeconds < 0
+  ) {
+    throw new CtbcWebImportError("--deposit-wait 必須是 0 以上的整數（秒）。");
   }
   if (options.profileDir !== undefined) {
     if (!path.isAbsolute(options.profileDir)) {
@@ -173,6 +184,8 @@ export const USAGE = `用法：node scripts/ctbc-web-import.mjs [選項]
   --timeout <分鐘>    等待登入的時間（預設 ${DEFAULT_LOGIN_TIMEOUT_MINUTES}）
   --profile <目錄>    使用固定的 Chrome profile（絕對路徑），結束後保留，可在其中安裝
                       密碼管理器；未指定時使用暫存 profile 並於結束時刪除
+  --deposit-wait <秒> 登入後等待使用者點進存款交易明細頁的秒數，以沿用頁面的
+                      查詢參數（預設 ${DEFAULT_DEPOSIT_WAIT_SECONDS}，0 表示不等待）
   --dry-run           只查詢並顯示筆數，不送到 Worker
 
 環境變數 CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET：Worker 受 Cloudflare Access
@@ -918,9 +931,13 @@ class RequestTemplateWatcher {
   #attached = new Set();
   #ownTrackingIds = new Set();
   #waiters = [];
+  #pageRequestIds = new Set();
+  #responseTokens = new Map();
   template = null;
   templateSessionId = null;
   observedDepositQuery = null;
+  /** 頁面自己最近一次請求或回應帶的 x-auth-token；使用者操作頁面時 token 可能更新。 */
+  latestAuthToken = null;
 
   constructor(cdp) {
     this.#cdp = cdp;
@@ -932,6 +949,9 @@ class RequestTemplateWatcher {
     );
     this.#cdp.on("Network.requestWillBeSent", (params, sessionId) =>
       this.#onRequest(params, sessionId),
+    );
+    this.#cdp.on("Network.responseReceived", (params) =>
+      this.#onResponse(params),
     );
     await this.#cdp.send("Target.setDiscoverTargets", { discover: true });
     const { targetInfos = [] } = await this.#cdp.send("Target.getTargets");
@@ -953,6 +973,27 @@ class RequestTemplateWatcher {
         resolve(template);
       });
     });
+  }
+
+  /** 等使用者點進存款交易明細頁；看到頁面的查詢參數即回傳 true，逾時或中斷回傳 false。 */
+  async waitForDepositQuery(timeoutMs, shouldStop = () => false) {
+    const deadline = Date.now() + timeoutMs;
+    while (!this.observedDepositQuery && !shouldStop()) {
+      if (Date.now() >= deadline) return false;
+      await sleep(250);
+    }
+    return Boolean(this.observedDepositQuery);
+  }
+
+  #onResponse(params) {
+    const token = headerValue(params.response?.headers, "x-auth-token");
+    if (!token) return;
+    if (this.#pageRequestIds.has(params.requestId)) {
+      this.latestAuthToken = token;
+    } else {
+      // 請求事件可能還在取 postData；分類完成後再套用。
+      this.#responseTokens.set(params.requestId, token);
+    }
   }
 
   async #attach(targetInfo) {
@@ -995,7 +1036,19 @@ class RequestTemplateWatcher {
     }
     if (!isRecord(body) || typeof body.resource !== "string") return;
     if (LOGIN_RESOURCE_PATTERN.test(body.resource)) return;
-    if (this.#ownTrackingIds.has(body.trackingIxd)) return;
+    if (this.#ownTrackingIds.has(body.trackingIxd)) {
+      this.#responseTokens.delete(params.requestId);
+      return;
+    }
+
+    this.#pageRequestIds.add(params.requestId);
+    const requestToken = headerValue(request.headers, "x-auth-token");
+    if (requestToken) this.latestAuthToken = requestToken;
+    const responseToken = this.#responseTokens.get(params.requestId);
+    if (responseToken) {
+      this.latestAuthToken = responseToken;
+      this.#responseTokens.delete(params.requestId);
+    }
 
     if (
       body.resource === RESOURCES.depositTransactions &&
@@ -1026,6 +1079,7 @@ class PageApiSession {
   #queue = Promise.resolve();
   #aborted = false;
   #logout;
+  #started = false;
 
   constructor(cdp, watcher) {
     this.#cdp = cdp;
@@ -1058,6 +1112,13 @@ class PageApiSession {
   }
 
   async #send(resource, rqData) {
+    if (!this.#started) {
+      // 使用者在等待期間操作過頁面時，改用頁面最新的 token。
+      this.#started = true;
+      if (this.#watcher.latestAuthToken) {
+        this.#template.headers["x-auth-token"] = this.#watcher.latestAuthToken;
+      }
+    }
     const body = buildRequestBody(this.#template, resource, rqData);
     this.#watcher.markOwnRequest(body.trackingIxd);
     const expression = inPageXhrExpression(
@@ -1428,7 +1489,22 @@ async function run(argv) {
     await watcher.waitForTemplate(options.loginTimeoutMinutes * 60_000);
     if (aborting) return 130;
     session = new PageApiSession(browser, watcher);
-    console.log("已偵測到登入，開始唯讀查詢；完成前請勿操作該視窗。");
+    if (options.depositWaitSeconds > 0 && !watcher.observedDepositQuery) {
+      console.log(
+        `已偵測到登入。請在 ${options.depositWaitSeconds} 秒內點進任一存款帳戶的交易明細（沒點也會繼續）。`,
+      );
+      const observed = await watcher.waitForDepositQuery(
+        options.depositWaitSeconds * 1_000,
+        () => aborting,
+      );
+      if (aborting) return 130;
+      console.log(
+        observed
+          ? "已取得存款明細查詢參數。"
+          : "未偵測到存款明細頁，改用預設查詢參數。",
+      );
+    }
+    console.log("開始唯讀查詢；完成前請勿操作該視窗。");
     await sleep(3_000);
 
     let result;
@@ -1495,6 +1571,16 @@ function safeErrorText(error) {
 // ---------------------------------------------------------------------------
 // 小工具
 // ---------------------------------------------------------------------------
+
+function headerValue(headers, name) {
+  if (!isRecord(headers)) return undefined;
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === name && typeof value === "string" && value) {
+      return value;
+    }
+  }
+  return undefined;
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

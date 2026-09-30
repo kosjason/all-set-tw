@@ -62,6 +62,7 @@ test("parseArgs applies defaults and validates options", () => {
     loginUrl: "https://www.ctbcbank.com/twrbc/",
     loginTimeoutMinutes: 10,
     profileDir: undefined,
+    depositWaitSeconds: 60,
     dryRun: false,
     help: false,
     accessClientId: undefined,
@@ -86,6 +87,15 @@ test("parseArgs applies defaults and validates options", () => {
   );
   assert.throws(
     () => parseArgs(["--profile", "relative/dir"], {}),
+    CtbcWebImportError,
+  );
+  assert.equal(parseArgs(["--deposit-wait", "0"], {}).depositWaitSeconds, 0);
+  assert.throws(
+    () => parseArgs(["--deposit-wait", "-1"], {}),
+    CtbcWebImportError,
+  );
+  assert.throws(
+    () => parseArgs(["--deposit-wait", "1.5"], {}),
     CtbcWebImportError,
   );
   assert.throws(() => parseArgs(["--bogus"], {}), CtbcWebImportError);
