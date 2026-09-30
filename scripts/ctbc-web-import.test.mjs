@@ -9,6 +9,7 @@ import {
   formatImportResult,
   formatResourceLog,
   formatStatementMonth,
+  AuthTokenTracker,
   parseArgs,
   prepareFixedProfile,
   userDataDirPattern,
@@ -98,6 +99,12 @@ test("parseArgs applies defaults and validates options", () => {
     () => parseArgs(["--deposit-wait", "1.5"], {}),
     CtbcWebImportError,
   );
+  for (const value of ["", "0x3c", "1e2", " 60", "601"]) {
+    assert.throws(
+      () => parseArgs([`--deposit-wait=${value}`], {}),
+      CtbcWebImportError,
+    );
+  }
   assert.throws(() => parseArgs(["--bogus"], {}), CtbcWebImportError);
   assert.throws(() => parseArgs(["--worker"], {}), CtbcWebImportError);
   assert.throws(
@@ -743,4 +750,48 @@ test("prepareFixedProfile creates a private directory and rejects unsafe ones", 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("AuthTokenTracker keeps the newest token regardless of classification order", () => {
+  const tracker = new AuthTokenTracker();
+  // 頁面請求 A 帶 T1 送出，但取 postData 較慢；頁面請求 B 的回應先帶回 T2。
+  const aRequest = tracker.nextSeq();
+  const bRequest = tracker.nextSeq();
+  tracker.classify("s:b", "page", "T1", bRequest);
+  const bResponse = tracker.nextSeq();
+  tracker.response("s:b", "T2", bResponse);
+  assert.equal(tracker.current, "T2");
+  // A 晚分類，header 的舊 T1 不能蓋掉 T2。
+  tracker.classify("s:a", "page", "T1", aRequest);
+  assert.equal(tracker.current, "T2");
+
+  // 回應比分類先到：暫存，分類成頁面請求後才套用。
+  const cRequest = tracker.nextSeq();
+  tracker.response("s:c", "T3", tracker.nextSeq());
+  assert.equal(tracker.current, "T2");
+  tracker.classify("s:c", "page", "T2", cRequest);
+  assert.equal(tracker.current, "T3");
+
+  // 工具自己的請求回應也算最新；登入或無關請求的回應丟棄。
+  tracker.classify("s:own", "own");
+  tracker.response("s:own", "T4", tracker.nextSeq());
+  assert.equal(tracker.current, "T4");
+  tracker.response("s:login", "X", tracker.nextSeq());
+  tracker.classify("s:login", "ignored");
+  assert.equal(tracker.current, "T4");
+
+  // 不同分頁相同 requestId 分開追蹤。
+  tracker.classify("t1:9", "ignored");
+  tracker.classify("t2:9", "page", undefined, tracker.nextSeq());
+  tracker.response("t2:9", "T5", tracker.nextSeq());
+  assert.equal(tracker.current, "T5");
+
+  // XHR 直接回報的 token 視為最新。
+  tracker.note("T6");
+  assert.equal(tracker.current, "T6");
+  tracker.finished("s:c");
+  tracker.response("s:c", "late", tracker.nextSeq());
+  assert.equal(tracker.current, "T6");
+  tracker.classify("s:c", "ignored");
+  assert.equal(tracker.current, "T6");
 });

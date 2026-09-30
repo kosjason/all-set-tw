@@ -420,19 +420,26 @@ depositTransactionsUnavailable?: boolean }`，上限 5 MB；zod 只驗證各回�
   已設定與上次匯入時間；排程預設停用，不會以空帳密自動登入。解析失敗或沒有任何帳戶時
   回 `CTBC_IMPORT_INVALID`，不寫入資料，錯誤訊息固定、不含原始資料。
 - 本機工具 `scripts/ctbc-web-import.mjs`（`npm run ctbc:web-import`）以
-  `open -na "Google Chrome"` 開一般 Chrome（暫存 `--user-data-dir`、
-  `--remote-debugging-port`），不加任何 automation 旗標，也不啟用 `Runtime` domain。
+  `open -na "Google Chrome"` 開一般 Chrome（`--remote-debugging-port`；預設為暫存
+  `--user-data-dir`。`--profile` 指定固定目錄時須為目前使用者擁有、權限 700 的實體目錄，
+  並以 `ctbc-web-import.lock` 與 Chrome 的 `SingletonLock` 確認沒有其他匯入或 Chrome
+  正在使用；同主機且 PID 已不存在的鎖視為殘留），不加任何 automation 旗標，也不啟用 `Runtime` domain。
   它以 CDP `Network.requestWillBeSent` 取得登入後第一個
   `/IB/api/adapters/IB_Adapter/resource/ebmwResource` 請求作為模板（忽略 `ot001` 登入請求，
   不解析其 body），header 只保留 `x-auth-token`、`X-Channel-Id`、`X-Requested-With`、
   `Content-Type`、`Accept`；之後以 `Runtime.evaluate` 在同一頁面內用 XHR 發出請求，
   讓頁面既有的安全機制照常處理。每次只替換 `resource`、`rqData`、`trackingIxd`、
-  `txnIxd`、`clientTime`。
+  `txnIxd`、`clientTime`，以及 `x-auth-token`：`AuthTokenTracker` 追蹤頁面自己的網銀請求
+  header、`Network.responseReceived` 與工具 XHR 回應帶的 token，以事件抵達序號排序、
+  以「CDP session + requestId」識別請求，每次送出前改用最新值。
+- 偵測到登入後先等最多 `--deposit-wait` 秒（預設 60，0 不等），讓使用者點進存款交易
+  明細頁；看到頁面自己的 `qu002/011` 查詢參數即開始，逾時照常繼續。請求依序送出；
+  中斷時登出排在進行中請求之後（最多 5 秒），之後不再查詢、不送出匯入。
 - 網銀 resource 與行動版格式相同、前綴為 `twrbc-`：`deposit/qu001/010`、
   `deposit/qu002/010`、`deposit/qu002/011`、`card/qu002/010|011|016`、
   `card/qu006/010|011|015`、`card/qu041/010|015`；`card/qu046/010` 在網銀回 `9991`，
-  不呼叫。結束時呼叫 `general/ot002/010` 登出（失敗不影響結果），再關閉 Chrome 並刪除
-  暫存 profile。未出帳回應的 `cardInfos`（有未出帳消費的卡與合計）會隨 `allItems` 一起送出。
+  不呼叫。結束時呼叫 `general/ot002/010` 登出（失敗不影響結果），再關閉 Chrome；暫存
+  profile 會刪除，`--profile` 的固定目錄保留。未出帳回應的 `cardInfos`（有未出帳消費的卡與合計）會隨 `allItems` 一起送出。
 - 帳單 `card/qu002/010` 的 `billData.<幣別>.<YYYY/MM>` 只有最新一期附 `bills` 明細，其他
   月份只有 `summary`。網銀帳單頁選月份時送 `card/qu002/011` `{curCode, month}`
   （`month` 即 `billData` 的鍵，例如 `2026/08`），分頁為 `card/qu002/016`
