@@ -28,6 +28,8 @@ export const DEFAULT_WORKER_URL = "http://localhost:8797";
 export const DEFAULT_DEBUG_PORT = 9333;
 export const DEFAULT_LOGIN_URL = "https://www.ctbcbank.com/twrbc/";
 export const DEFAULT_LOGIN_TIMEOUT_MINUTES = 10;
+export const DEFAULT_DEPOSIT_WAIT_SECONDS = 60;
+const MAX_DEPOSIT_WAIT_SECONDS = 600;
 
 export const EBMW_RESOURCE_PATH =
   "/IB/api/adapters/IB_Adapter/resource/ebmwResource";
@@ -87,6 +89,7 @@ export function parseArgs(argv, env = {}) {
     loginUrl: DEFAULT_LOGIN_URL,
     loginTimeoutMinutes: DEFAULT_LOGIN_TIMEOUT_MINUTES,
     profileDir: undefined,
+    depositWaitSeconds: DEFAULT_DEPOSIT_WAIT_SECONDS,
     dryRun: false,
     help: false,
     accessClientId: env.CF_ACCESS_CLIENT_ID?.trim() || undefined,
@@ -123,6 +126,13 @@ export function parseArgs(argv, env = {}) {
       case "--profile":
         options.profileDir = read();
         break;
+      case "--deposit-wait": {
+        const value = read();
+        options.depositWaitSeconds = /^\d{1,3}$/.test(value)
+          ? Number(value)
+          : Number.NaN;
+        break;
+      }
       case "--dry-run":
         options.dryRun = true;
         break;
@@ -142,6 +152,15 @@ export function parseArgs(argv, env = {}) {
     options.loginTimeoutMinutes <= 0
   ) {
     throw new CtbcWebImportError("--timeout 必須是正數（分鐘）。");
+  }
+  if (
+    !Number.isInteger(options.depositWaitSeconds) ||
+    options.depositWaitSeconds < 0 ||
+    options.depositWaitSeconds > MAX_DEPOSIT_WAIT_SECONDS
+  ) {
+    throw new CtbcWebImportError(
+      `--deposit-wait 必須是 0 到 ${MAX_DEPOSIT_WAIT_SECONDS} 的整數（秒）。`,
+    );
   }
   if (options.profileDir !== undefined) {
     if (!path.isAbsolute(options.profileDir)) {
@@ -173,6 +192,8 @@ export const USAGE = `用法：node scripts/ctbc-web-import.mjs [選項]
   --timeout <分鐘>    等待登入的時間（預設 ${DEFAULT_LOGIN_TIMEOUT_MINUTES}）
   --profile <目錄>    使用固定的 Chrome profile（絕對路徑），結束後保留，可在其中安裝
                       密碼管理器；未指定時使用暫存 profile 並於結束時刪除
+  --deposit-wait <秒> 登入後等待使用者點進存款交易明細頁的秒數，以沿用頁面的
+                      查詢參數（預設 ${DEFAULT_DEPOSIT_WAIT_SECONDS}，0 表示不等待）
   --dry-run           只查詢並顯示筆數，不送到 Worker
 
 環境變數 CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET：Worker 受 Cloudflare Access
@@ -912,6 +933,74 @@ class CdpConnection {
   }
 }
 
+/**
+ * 追蹤網銀請求與回應的 x-auth-token。事件一到就配發遞增序號，只有序號較新的 token
+ * 能覆蓋目前值，避免分類較慢的舊請求蓋掉較新的回應 token。請求以
+ * 「CDP session + requestId」識別；分類前先到的回應 token 暫存，分類後套用或丟棄。
+ */
+export class AuthTokenTracker {
+  #seq = 0;
+  #current = null;
+  #currentSeq = -1;
+  /** key → null（已送出、尚未分類）或 page／own／ignored。 */
+  #kinds = new Map();
+  #pending = new Map();
+  #finishedBeforeClassify = new Set();
+
+  get current() {
+    return this.#current;
+  }
+
+  /** 事件抵達時同步呼叫，取得排序用序號。 */
+  nextSeq() {
+    this.#seq += 1;
+    return this.#seq;
+  }
+
+  /** 記錄一個 token；未指定序號時視為目前最新。 */
+  note(token, seq = this.nextSeq()) {
+    if (!token || seq <= this.#currentSeq) return;
+    this.#current = token;
+    this.#currentSeq = seq;
+  }
+
+  /** 網銀請求事件抵達時同步登記，之後的回應與結束事件才會被追蹤。 */
+  begin(key) {
+    this.#kinds.set(key, null);
+  }
+
+  /** kind：page（頁面自己的網銀請求）、own（工具發出）、ignored（登入或無關請求）。 */
+  classify(key, kind, requestToken, requestSeq) {
+    this.#kinds.set(key, kind);
+    if (kind === "page") this.note(requestToken, requestSeq);
+    const pending = this.#pending.get(key);
+    this.#pending.delete(key);
+    if (pending && kind !== "ignored") this.note(pending.token, pending.seq);
+    if (this.#finishedBeforeClassify.delete(key)) this.#kinds.delete(key);
+  }
+
+  response(key, token, seq) {
+    if (!token || !this.#kinds.has(key)) return;
+    const kind = this.#kinds.get(key);
+    if (kind === null) {
+      this.#pending.set(key, { token, seq });
+    } else if (kind !== "ignored") {
+      this.note(token, seq);
+    }
+  }
+
+  /** 請求結束（完成或失敗）時清除關聯資料；尚未分類時保留暫存的回應 token 到分類完成。 */
+  finished(key) {
+    if (!this.#kinds.has(key)) return;
+    if (this.#kinds.get(key) === null) {
+      this.#finishedBeforeClassify.add(key);
+      return;
+    }
+    this.#kinds.delete(key);
+    this.#pending.delete(key);
+  }
+}
+
 /** 監看所有分頁的網銀 API 請求，取得登入後模板並記住頁面自己的存款明細查詢參數。 */
 class RequestTemplateWatcher {
   #cdp;
@@ -921,6 +1010,8 @@ class RequestTemplateWatcher {
   template = null;
   templateSessionId = null;
   observedDepositQuery = null;
+  /** 頁面與工具最新的 x-auth-token；使用者操作頁面時 token 可能更新。 */
+  tokens = new AuthTokenTracker();
 
   constructor(cdp) {
     this.#cdp = cdp;
@@ -931,8 +1022,16 @@ class RequestTemplateWatcher {
       this.#attach(targetInfo),
     );
     this.#cdp.on("Network.requestWillBeSent", (params, sessionId) =>
-      this.#onRequest(params, sessionId),
+      this.#onRequest(params, sessionId, this.tokens.nextSeq()),
     );
+    this.#cdp.on("Network.responseReceived", (params, sessionId) =>
+      this.#onResponse(params, sessionId, this.tokens.nextSeq()),
+    );
+    for (const event of ["Network.loadingFinished", "Network.loadingFailed"]) {
+      this.#cdp.on(event, (params, sessionId) =>
+        this.tokens.finished(requestKey(sessionId, params.requestId)),
+      );
+    }
     await this.#cdp.send("Target.setDiscoverTargets", { discover: true });
     const { targetInfos = [] } = await this.#cdp.send("Target.getTargets");
     await Promise.all(targetInfos.map((info) => this.#attach(info)));
@@ -955,6 +1054,25 @@ class RequestTemplateWatcher {
     });
   }
 
+  /** 等使用者點進存款交易明細頁；看到頁面的查詢參數即回傳 true，逾時或中斷回傳 false。 */
+  async waitForDepositQuery(timeoutMs, shouldStop = () => false) {
+    const deadline = Date.now() + timeoutMs;
+    while (!this.observedDepositQuery && !shouldStop()) {
+      if (Date.now() >= deadline) return false;
+      await sleep(250);
+    }
+    return Boolean(this.observedDepositQuery);
+  }
+
+  #onResponse(params, sessionId, seq) {
+    if (!isEbmwResourceUrl(params.response?.url ?? "")) return;
+    this.tokens.response(
+      requestKey(sessionId, params.requestId),
+      headerValue(params.response?.headers, "x-auth-token"),
+      seq,
+    );
+  }
+
   async #attach(targetInfo) {
     if (targetInfo?.type !== "page" || this.#attached.has(targetInfo.targetId))
       return;
@@ -970,10 +1088,13 @@ class RequestTemplateWatcher {
     }
   }
 
-  async #onRequest(params, sessionId) {
+  async #onRequest(params, sessionId, seq) {
     const request = params.request;
-    if (!request || request.method !== "POST") return;
-    if (!isEbmwResourceUrl(request.url)) return;
+    if (!request || !isEbmwResourceUrl(request.url)) return;
+    const key = requestKey(sessionId, params.requestId);
+    this.tokens.begin(key);
+    const ignore = () => this.tokens.classify(key, "ignored");
+    if (request.method !== "POST") return ignore();
     let postData = request.postData;
     if (postData === undefined && request.hasPostData) {
       try {
@@ -983,19 +1104,28 @@ class RequestTemplateWatcher {
           sessionId,
         ));
       } catch {
-        return;
+        return ignore();
       }
     }
-    if (typeof postData !== "string") return;
+    if (typeof postData !== "string") return ignore();
     let body;
     try {
       body = JSON.parse(postData);
     } catch {
+      return ignore();
+    }
+    if (!isRecord(body) || typeof body.resource !== "string") return ignore();
+    if (LOGIN_RESOURCE_PATTERN.test(body.resource)) return ignore();
+    if (this.#ownTrackingIds.has(body.trackingIxd)) {
+      this.tokens.classify(key, "own");
       return;
     }
-    if (!isRecord(body) || typeof body.resource !== "string") return;
-    if (LOGIN_RESOURCE_PATTERN.test(body.resource)) return;
-    if (this.#ownTrackingIds.has(body.trackingIxd)) return;
+    this.tokens.classify(
+      key,
+      "page",
+      headerValue(request.headers, "x-auth-token"),
+      seq,
+    );
 
     if (
       body.resource === RESOURCES.depositTransactions &&
@@ -1058,6 +1188,9 @@ class PageApiSession {
   }
 
   async #send(resource, rqData) {
+    // 每次送出前改用最新 token；使用者或頁面自己的請求都可能讓 token 更新。
+    const latest = this.#watcher.tokens.current;
+    if (latest) this.#template.headers["x-auth-token"] = latest;
     const body = buildRequestBody(this.#template, resource, rqData);
     this.#watcher.markOwnRequest(body.trackingIxd);
     const expression = inPageXhrExpression(
@@ -1080,7 +1213,13 @@ class PageApiSession {
         `${resource} 請求失敗（HTTP ${isRecord(result) ? Number(result.status) || 0 : 0}）。`,
       );
     }
-    if (typeof result.authToken === "string" && result.authToken) {
+    // 回應 token 已由 Network.responseReceived 依抵達順序記錄；這裡只在沒有追蹤到任何
+    // token 時備援，避免較晚回到的 evaluate 結果蓋掉頁面較新的 token。
+    if (
+      typeof result.authToken === "string" &&
+      result.authToken &&
+      !this.#watcher.tokens.current
+    ) {
       this.#template.headers["x-auth-token"] = result.authToken;
     }
     try {
@@ -1401,6 +1540,7 @@ async function run(argv) {
       await releaseProfile().catch(() => {});
     })());
   let aborting = false;
+  let signalLogout = Promise.resolve();
   const onSignal = () => {
     if (aborting) {
       console.error("正在登出並關閉 Chrome，請稍候…");
@@ -1409,10 +1549,10 @@ async function run(argv) {
     aborting = true;
     console.error("已中斷，正在登出並關閉 Chrome…");
     // 已登入時等進行中的請求結束後登出（最多 5 秒），避免固定 profile 留下網銀 session。
-    const logout = session
+    signalLogout = session
       ? Promise.race([session.logout(), sleep(5_000)]).catch(() => {})
       : Promise.resolve();
-    void logout.then(() => cleanup()).finally(() => process.exit(130));
+    void signalLogout.then(() => cleanup()).finally(() => process.exit(130));
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
@@ -1428,7 +1568,22 @@ async function run(argv) {
     await watcher.waitForTemplate(options.loginTimeoutMinutes * 60_000);
     if (aborting) return 130;
     session = new PageApiSession(browser, watcher);
-    console.log("已偵測到登入，開始唯讀查詢；完成前請勿操作該視窗。");
+    if (options.depositWaitSeconds > 0 && !watcher.observedDepositQuery) {
+      console.log(
+        `已偵測到登入。請在 ${options.depositWaitSeconds} 秒內點進任一存款帳戶的交易明細（沒點也會繼續）。`,
+      );
+      const observed = await watcher.waitForDepositQuery(
+        options.depositWaitSeconds * 1_000,
+        () => aborting,
+      );
+      if (aborting) return 130;
+      console.log(
+        observed
+          ? "已取得存款明細查詢參數。"
+          : "未偵測到存款明細頁，改用預設查詢參數。",
+      );
+    }
+    console.log("開始唯讀查詢；完成前請勿操作該視窗。");
     await sleep(3_000);
 
     let result;
@@ -1482,6 +1637,8 @@ async function run(argv) {
   } finally {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
+    // 中斷時等登出送完（最多 5 秒）再關閉 Chrome。
+    await signalLogout;
     await cleanup();
   }
 }
@@ -1495,6 +1652,20 @@ function safeErrorText(error) {
 // ---------------------------------------------------------------------------
 // 小工具
 // ---------------------------------------------------------------------------
+
+function requestKey(sessionId, requestId) {
+  return `${sessionId ?? ""}:${requestId}`;
+}
+
+function headerValue(headers, name) {
+  if (!isRecord(headers)) return undefined;
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === name && typeof value === "string" && value) {
+      return value;
+    }
+  }
+  return undefined;
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
