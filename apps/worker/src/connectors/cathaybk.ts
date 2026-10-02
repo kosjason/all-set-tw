@@ -881,7 +881,12 @@ export async function dismissCathaySystemMessageIfPresent(
     }
   }
   if (clicks === 0) return false;
-  await page.waitForSelector(CATHAY_LOGIN_MESSAGE, {
+  // `.show` 在淡出開始時就移除；等視窗與遮罩真正隱藏，避免接著點登入欄位時被遮罩攔截。
+  await page.waitForSelector("#divSystemLoginMsgList", {
+    hidden: true,
+    timeout: 5000,
+  });
+  await page.waitForSelector(".modal-backdrop", {
     hidden: true,
     timeout: 5000,
   });

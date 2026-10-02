@@ -88,10 +88,14 @@ describe("Cathay system message modal", () => {
       "#divSystemLoginMsgList.show button.btn-fill",
     );
     expect(dismissButton.click).toHaveBeenCalledOnce();
-    expect(page.waitForSelector).toHaveBeenLastCalledWith(
-      "#divSystemLoginMsgList.show",
+    expect(page.waitForSelector).toHaveBeenCalledWith(
+      "#divSystemLoginMsgList",
       { hidden: true, timeout: 5000 },
     );
+    expect(page.waitForSelector).toHaveBeenLastCalledWith(".modal-backdrop", {
+      hidden: true,
+      timeout: 5000,
+    });
   });
 
   it("clicks through multiple login messages until the modal closes", async () => {
