@@ -853,17 +853,35 @@ async function dismissInterstitialIfPresent(
   return hasWarning as boolean;
 }
 
+const CATHAY_LOGIN_MESSAGE = "#divSystemLoginMsgList.show";
+const MAX_CATHAY_LOGIN_MESSAGES = 10;
+
+/**
+ * 登入頁的系統公告可能有多則（標題顯示 1/3 等）：`btn-fill` 在前幾則是「下一則」、
+ * 最後一則才是「我知道了」並關閉視窗，因此逐則點擊直到視窗關閉。
+ */
 export async function dismissCathaySystemMessageIfPresent(
   page: Pick<CathayLoginPage, "$" | "waitForSelector">,
 ): Promise<boolean> {
-  const dismissButton = await page.$(
-    "#divSystemLoginMsgList.show button.btn-fill",
-  );
-  if (!dismissButton) return false;
-
-  console.log("[cathaybk] dismissing system message modal");
-  await dismissButton.click();
-  await page.waitForSelector("#divSystemLoginMsgList.show", {
+  let clicks = 0;
+  while (clicks < MAX_CATHAY_LOGIN_MESSAGES) {
+    const button = await page.$(`${CATHAY_LOGIN_MESSAGE} button.btn-fill`);
+    if (!button) break;
+    if (clicks === 0) console.log("[cathaybk] dismissing system message modal");
+    await button.click();
+    clicks += 1;
+    try {
+      await page.waitForSelector(CATHAY_LOGIN_MESSAGE, {
+        hidden: true,
+        timeout: 1000,
+      });
+      break;
+    } catch {
+      // 換到下一則公告，繼續點。
+    }
+  }
+  if (clicks === 0) return false;
+  await page.waitForSelector(CATHAY_LOGIN_MESSAGE, {
     hidden: true,
     timeout: 5000,
   });
