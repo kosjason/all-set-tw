@@ -89,9 +89,48 @@ describe("Cathay system message modal", () => {
     );
     expect(dismissButton.click).toHaveBeenCalledOnce();
     expect(page.waitForSelector).toHaveBeenCalledWith(
-      "#divSystemLoginMsgList.show",
+      "#divSystemLoginMsgList",
       { hidden: true, timeout: 5000 },
     );
+    expect(page.waitForSelector).toHaveBeenLastCalledWith(".modal-backdrop", {
+      hidden: true,
+      timeout: 5000,
+    });
+  });
+
+  it("clicks through multiple login messages until the modal closes", async () => {
+    // 三則公告：前兩次點擊是「下一則」，視窗仍開著；第三次「我知道了」才關閉。
+    let shown = 3;
+    const button = {
+      click: vi.fn(async () => {
+        shown -= 1;
+      }),
+    };
+    const page = {
+      $: vi.fn(async () => (shown > 0 ? button : null)),
+      waitForSelector: vi.fn(async () => {
+        if (shown > 0) throw new Error("Waiting failed: 1000ms exceeded");
+        return null;
+      }),
+    } as unknown as Parameters<typeof dismissCathaySystemMessageIfPresent>[0];
+
+    await expect(dismissCathaySystemMessageIfPresent(page)).resolves.toBe(true);
+    expect(button.click).toHaveBeenCalledTimes(3);
+  });
+
+  it("gives up after too many login messages", async () => {
+    const button = { click: vi.fn().mockResolvedValue(undefined) };
+    const page = {
+      $: vi.fn().mockResolvedValue(button),
+      waitForSelector: vi
+        .fn()
+        .mockRejectedValue(new Error("Waiting failed: timeout")),
+    };
+
+    await expect(dismissCathaySystemMessageIfPresent(page)).rejects.toThrow(
+      "Waiting failed",
+    );
+    expect(button.click).toHaveBeenCalledTimes(10);
   });
 
   it("does nothing when the login message is not visible", async () => {
