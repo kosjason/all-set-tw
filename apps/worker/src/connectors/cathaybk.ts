@@ -2,6 +2,7 @@ import { launchBrowserWithRetry } from "./browser.js";
 import puppeteer, {
   type Browser,
   type CookieParam,
+  type HTTPRequest,
   type Page,
 } from "@cloudflare/puppeteer";
 import type {
@@ -19,6 +20,12 @@ import {
   deriveCathayDepositCounterparty,
   maskCathayDepositRaw,
 } from "./cathaybk-deposit-counterparty.js";
+import {
+  cathayReplayInPage,
+  describeCathayTransferQuery,
+  replayableHeaders,
+  rewriteCathayTransferQuery,
+} from "./cathaybk-transfer-query.js";
 
 const LOGIN_URL = "https://www.cathaybk.com.tw/MyBank/";
 const DEPOSIT_OVERVIEW_URL =
@@ -1132,793 +1139,6 @@ async function scrapeDomAccounts(page: Page): Promise<DomAccount[]> {
   });
 }
 
-const CHINESE_DIGITS: Record<string, number> = {
-  一: 1,
-  二: 2,
-  兩: 2,
-  三: 3,
-  四: 4,
-  五: 5,
-  六: 6,
-  七: 7,
-  八: 8,
-  九: 9,
-};
-
-function parseCathayCount(text: string): number | undefined {
-  if (/^\d+$/.test(text)) return Number(text);
-  // 一、三、十、十二、二十
-  const match = /^([一二兩三四五六七八九])?(十)?([一二三四五六七八九])?$/.exec(
-    text,
-  );
-  if (!match || (!match[1] && !match[2])) return undefined;
-  if (!match[2]) return match[3] ? undefined : CHINESE_DIGITS[match[1]!];
-  const tens = match[1] ? CHINESE_DIGITS[match[1]]! : 1;
-  const ones = match[3] ? CHINESE_DIGITS[match[3]]! : 0;
-  return tens * 10 + ones;
-}
-
-/**
- * 把期間選項文字換算成天數，例如「近 90 天」「近3個月」「近三個月」「近1年」「近一週」。
- * 無法辨識時回傳 undefined。
- */
-export function cathayPeriodDays(label: string): number | undefined {
-  const text = label.replace(/\s+/g, "");
-  const match =
-    /^(?:近|最近|前)?(\d+|[一二兩三四五六七八九十]+)(天|日|週|周|星期|個?月|年)(?:內)?$/.exec(
-      text,
-    );
-  if (!match) return undefined;
-  const count = parseCathayCount(match[1]!);
-  if (!count) return undefined;
-  const unit = match[2]!;
-  if (unit === "天" || unit === "日") return count;
-  if (unit === "週" || unit === "周" || unit === "星期") return count * 7;
-  if (unit.endsWith("月")) return count * 30;
-  return count * 365;
-}
-
-/**
- * 選出涵蓋所需天數的最短期間；都不夠長時選最長的。回傳選項索引，沒有可辨識的選項時回傳 -1。
- */
-export function pickCathayPeriodOption(
-  options: readonly string[],
-  days: number,
-): number {
-  let best = -1;
-  let bestDays = 0;
-  options.forEach((option, index) => {
-    const optionDays = cathayPeriodDays(option);
-    if (optionDays === undefined) return;
-    const bestCovers = best >= 0 && bestDays >= days;
-    const covers = optionDays >= days;
-    if (
-      best < 0 ||
-      (covers && (!bestCovers || optionDays < bestDays)) ||
-      (!covers && !bestCovers && optionDays > bestDays)
-    ) {
-      best = index;
-      bestDays = optionDays;
-    }
-  });
-  return best;
-}
-
-/**
- * 頁面內的彈出視窗操作（Chakra modal 或 aria-modal 的 dialog）；必須自給自足。
- * "count" 回傳看得到的視窗數（同一視窗不重複計算）；"close" 先點 × 關閉鈕，沒有時只點
- * 「我知道了／關閉／稍後再說」這類不會同意任何事的按鈕，回傳點了哪一類。
- */
-export function cathayModalPageAction(action: string): unknown {
-  const hidden = (element: HTMLElement) => {
-    for (
-      let node: HTMLElement | null = element;
-      node;
-      node = node.parentElement
-    ) {
-      if (node.getAttribute?.("aria-hidden") === "true") return true;
-    }
-    if (typeof getComputedStyle === "function") {
-      const style = getComputedStyle(element);
-      if (style.visibility === "hidden" || style.display === "none")
-        return true;
-    }
-    return typeof element.getClientRects === "function"
-      ? element.getClientRects().length === 0
-      : element.offsetParent === null;
-  };
-  const found = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "[class*='chakra-modal__content-container'], [role='dialog'][aria-modal='true'], [role='alertdialog'][aria-modal='true']",
-    ),
-  ).filter((element) => !hidden(element));
-  // Chakra 的 container 內還有 role=dialog，只留最外層，避免同一視窗算兩次。
-  const dialogs = found.filter(
-    (element) =>
-      !found.some(
-        (other) =>
-          other !== element &&
-          typeof other.contains === "function" &&
-          other.contains(element),
-      ),
-  );
-  if (action === "count") return dialogs.length;
-  const buttons = dialogs.flatMap((dialog) =>
-    Array.from(dialog.querySelectorAll<HTMLElement>("button")).filter(
-      (button) => !hidden(button),
-    ),
-  );
-  const closeIcon = buttons.find(
-    (button) =>
-      /(^|[\s_-])chakra-modal__close-btn(\s|$)/.test(
-        button.getAttribute("class") ?? "",
-      ) || /^(Close|關閉)$/.test(button.getAttribute("aria-label") ?? ""),
-  );
-  if (closeIcon) {
-    closeIcon.click();
-    return "close-icon";
-  }
-  const dismiss = buttons.find((button) =>
-    /^(我知道了|知道了|關閉|稍後再說|下次再說|×)$/.test(
-      (button.textContent ?? "").replace(/\s+/g, ""),
-    ),
-  );
-  if (dismiss) {
-    dismiss.click();
-    return "dismiss-label";
-  }
-  return "none";
-}
-
-/**
- * 交易明細頁改版後會跳出彈出視窗蓋住頁面（實測點擊命中
- * `chakra-modal__content-container`），鍵盤焦點也被鎖在視窗內，導致帳號與期間選單
- * 都操作不了。操作選單前先關閉：Escape → × 或安全按鈕；仍關不掉就交給後續流程，
- * 由選單診斷失敗或期間降級處理。log 不記任何視窗或按鈕文字。
- */
-export async function dismissCathayTransactionModals(
-  page: Pick<Page, "evaluate" | "keyboard">,
-  timeoutMs = 2000,
-): Promise<{ before: number; after: number; method?: string }> {
-  const count = async () =>
-    Number(
-      await page.evaluate(cathayModalPageAction, "count").catch(() => 0),
-    ) || 0;
-  const before = await count();
-  if (before === 0) return { before, after: 0 };
-  await page.keyboard.press("Escape").catch(() => null);
-  let after = await pollPage(count, (value) => value === 0, timeoutMs);
-  let method = "escape";
-  if (after > 0) {
-    method = String(
-      await page.evaluate(cathayModalPageAction, "close").catch(() => "none"),
-    );
-    if (method !== "none") {
-      after = await pollPage(count, (value) => value === 0, timeoutMs);
-    }
-  }
-  console.log(
-    JSON.stringify({
-      event: "cathaybk_modal_detected",
-      before,
-      after,
-      dismissed: after === 0,
-      method,
-    }),
-  );
-  return { before, after, method };
-}
-
-type CathayCombobox = "account" | "period";
-
-/**
- * 頁面內的 combobox 操作；puppeteer 會序列化函式原始碼，因此必須自給自足。
- * 選項只取看得到、最內層的元素，依序從 aria-controls／aria-owns、react-select 的
- * `<id>-option-N`、所在容器、整頁讀取；class 以完整字詞比對（`-option`、`__option`）。
- */
-export function cathayComboboxPageAction(
-  // "expanded" | "has-options" | "texts" | "mark-control" | "label" | "click-account" | "click-text"
-  kind: string,
-  action: string,
-  arg = "",
-): unknown {
-  const normalize = (value: string) => value.replace(/\s+/g, "");
-  const visible = (element: HTMLElement) => element.offsetParent !== null;
-  const classOf = (element: HTMLElement) =>
-    typeof element.getAttribute === "function"
-      ? (element.getAttribute("class") ?? "")
-      : "";
-  const isOption = (element: HTMLElement) =>
-    (typeof element.getAttribute === "function" &&
-      element.getAttribute("role") === "option") ||
-    /-option-/.test(element.id ?? "") ||
-    /(^|[\s_-])option(\s|$)/.test(classOf(element));
-  const innermost = (elements: HTMLElement[]) =>
-    elements.filter(
-      (element) =>
-        !elements.some(
-          (other) =>
-            other !== element &&
-            typeof element.contains === "function" &&
-            element.contains(other),
-        ),
-    );
-  const collect = (root: Element | Document) =>
-    innermost(
-      Array.from(
-        root.querySelectorAll<HTMLElement>(
-          "[role='option'], [id*='-option-'], [class*='option']",
-        ),
-      ).filter((element) => isOption(element) && visible(element)),
-    );
-  const labelOf = (element: HTMLElement) => {
-    let node: HTMLElement | null = element;
-    for (let depth = 0; depth < 5 && node; depth += 1) {
-      node = node.parentElement;
-      const text = normalize(node?.innerText ?? "");
-      if (text) return text;
-    }
-    return "";
-  };
-  const input = document.querySelector<HTMLElement>(
-    `[data-cathay-combobox="${kind}"]`,
-  );
-  const options = (): HTMLElement[] => {
-    if (!input) return [];
-    for (const name of ["aria-controls", "aria-owns"]) {
-      const id = input.getAttribute(name);
-      const list = id ? document.getElementById(id) : null;
-      if (list) {
-        const found = collect(list);
-        if (found.length) return found;
-      }
-    }
-    const prefix = /^(.*)-input$/.exec(input.id ?? "")?.[1];
-    if (prefix) {
-      const found = collect(document).filter((option) =>
-        (option.id ?? "").startsWith(`${prefix}-option-`),
-      );
-      if (found.length) return found;
-    }
-    // 往上找到 react-select 的 container 為止（最多 5 層），不爬到整頁。
-    let node: HTMLElement | null = input.parentElement;
-    for (let depth = 0; node && depth < 5; depth += 1) {
-      if (typeof node.querySelectorAll === "function") {
-        const found = collect(node);
-        if (found.length) return found;
-      }
-      // react-select 的外層 container；不要停在內部的 input／value／indicators container。
-      if (
-        classOf(node)
-          .split(/\s+/)
-          .some(
-            (token) =>
-              /container$/i.test(token) &&
-              !/(input|value|indicators)[-_]?container$/i.test(token),
-          )
-      ) {
-        break;
-      }
-      node = node.parentElement;
-    }
-    // 整頁只在選單確定展開時才讀，避免頁面其他地方的選項讓人誤判選單已開。
-    return input.getAttribute("aria-expanded") === "true"
-      ? collect(document)
-      : [];
-  };
-  if (action === "expanded")
-    return input?.getAttribute("aria-expanded") ?? null;
-  if (action === "has-options") return options().length > 0;
-  if (action === "texts") {
-    return options().map((option) =>
-      (option.textContent ?? "").replace(/\s+/g, " ").trim(),
-    );
-  }
-  if (action === "label") return input ? labelOf(input) : "";
-  if (action === "mark-control") {
-    for (const element of Array.from(
-      document.querySelectorAll<HTMLElement>(`[data-cathay-control="${kind}"]`),
-    )) {
-      delete element.dataset.cathayControl;
-    }
-    let node: HTMLElement | null = input?.parentElement ?? null;
-    for (let depth = 0; node && depth < 6; depth += 1) {
-      if (/(^|[\s_-])control(\s|$)/i.test(classOf(node))) {
-        node.dataset.cathayControl = kind;
-        return true;
-      }
-      node = node.parentElement;
-    }
-    return false;
-  }
-  const option = options().find((candidate) => {
-    const text = normalize(candidate.textContent ?? "");
-    // 帳號選項以完整帳號比對，避免一個帳號落在另一個帳號裡。
-    return action === "click-account"
-      ? text.match(/\d{10,}/)?.[0] === arg
-      : text === normalize(arg);
-  });
-  option?.click();
-  return Boolean(option);
-}
-
-/** 頁面內：選單結構診斷，只有數量、屬性有無與 class 字詞（不含使用者文字）。 */
-export function cathayMenuStructure(kind: string) {
-  const safeClass = (element: Element | null) =>
-    (element?.getAttribute("class") ?? "")
-      .split(/\s+/)
-      .filter(
-        (token) => /^[A-Za-z0-9_-]{1,40}$/.test(token) && !/\d{6,}/.test(token),
-      )
-      .join(" ")
-      .slice(0, 80);
-  const count = (selector: string) =>
-    document.querySelectorAll(selector).length;
-  const input = document.querySelector<HTMLElement>(
-    `[data-cathay-combobox="${kind}"]`,
-  );
-  const control = document.querySelector<HTMLElement>(
-    `[data-cathay-control="${kind}"]`,
-  );
-  let hit: { tag: string; class: string; insideControl: boolean } | null = null;
-  if (control && typeof control.getBoundingClientRect === "function") {
-    const rect = control.getBoundingClientRect();
-    const target = document.elementFromPoint(
-      rect.left + rect.width / 2,
-      rect.top + rect.height / 2,
-    );
-    hit = target
-      ? {
-          tag: target.tagName,
-          class: safeClass(target),
-          insideControl: control.contains(target),
-        }
-      : null;
-  }
-  return {
-    marked: Boolean(input),
-    expanded: input?.getAttribute("aria-expanded") ?? null,
-    readOnly: input ? input.hasAttribute("readonly") : null,
-    disabled: input
-      ? input.hasAttribute("disabled") ||
-        input.getAttribute("aria-disabled") === "true"
-      : null,
-    hasAriaControls: input ? input.hasAttribute("aria-controls") : null,
-    hasActiveDescendant: input
-      ? input.hasAttribute("aria-activedescendant")
-      : null,
-    controlMarked: Boolean(control),
-    hit,
-    roleOptionCount: count("[role='option']"),
-    idOptionCount: count("[id*='-option-']"),
-    classOptionCount: count("[class*='option']"),
-    listboxCount: count("[role='listbox']"),
-    menuRoleCount: count("[role='menu'], [role='menuitem']"),
-    hasPopupCount: count("[aria-haspopup]"),
-    comboboxCount: count("[role='combobox']"),
-    inputComboboxCount: count("input[role='combobox']"),
-    selectOptionCounts: Array.from(document.querySelectorAll("select"))
-      .slice(0, 5)
-      .map((select) => select.querySelectorAll("option").length),
-    iframeCount: count("iframe"),
-    shadowHostCount: Array.from(document.querySelectorAll<HTMLElement>("*"))
-      .slice(0, 5000)
-      .filter((element) => Boolean(element.shadowRoot)).length,
-    ancestorClasses: (() => {
-      const chain: string[] = [];
-      let node: HTMLElement | null = input?.parentElement ?? null;
-      for (let depth = 0; node && depth < 6; depth += 1) {
-        chain.push(safeClass(node));
-        node = node.parentElement;
-      }
-      return chain;
-    })(),
-  };
-}
-
-type ComboboxPage = Pick<Page, "focus" | "keyboard" | "evaluate" | "click">;
-type ComboboxTimeouts = { keyboardMs: number; openMs: number; labelMs: number };
-const COMBOBOX_TIMEOUTS: ComboboxTimeouts = {
-  keyboardMs: 2000,
-  openMs: 5000,
-  labelMs: 2000,
-};
-
-/**
- * 打開 combobox：先 focus＋ArrowDown；沒出現選項且選單沒有展開時，才用滑鼠點
- * react-select control（已展開時再點會把選單關掉）。國泰 2026-10 改版後鍵盤開不了選單。
- * 失敗時回傳鍵盤後與點擊後的結構診斷。
- */
-async function openCathayCombobox(
-  page: ComboboxPage,
-  kind: CathayCombobox,
-  timeouts: ComboboxTimeouts,
-): Promise<{ opened: boolean; diagnostics?: Record<string, unknown> }> {
-  const hasOptions = () =>
-    pollPage(
-      () => page.evaluate(cathayComboboxPageAction, kind, "has-options"),
-      (value) => value === true,
-      timeouts.keyboardMs,
-    );
-  await page.focus(`[data-cathay-combobox="${kind}"]`);
-  await page.keyboard.press("ArrowDown");
-  if ((await hasOptions()) === true) return { opened: true };
-  const afterKeyboard = await page
-    .evaluate(cathayMenuStructure, kind)
-    .catch(() => null);
-  const expanded = await page.evaluate(
-    cathayComboboxPageAction,
-    kind,
-    "expanded",
-  );
-  if (
-    expanded !== "true" &&
-    (await page.evaluate(cathayComboboxPageAction, kind, "mark-control"))
-  ) {
-    await page.click(`[data-cathay-control="${kind}"]`).catch(() => null);
-    const opened = await pollPage(
-      () => page.evaluate(cathayComboboxPageAction, kind, "has-options"),
-      (value) => value === true,
-      timeouts.openMs,
-    );
-    if (opened === true) return { opened: true };
-  }
-  const afterClick = await page
-    .evaluate(cathayMenuStructure, kind)
-    .catch(() => null);
-  return { opened: false, diagnostics: { afterKeyboard, afterClick } };
-}
-
-/**
- * The transaction page uses react-select comboboxes. Mark the combobox by the
- * text its control shows, open the menu, click the matching option and read the
- * control back to confirm the selection was applied.
- */
-export async function chooseCathayComboboxOptionWithDiagnostics(
-  page: ComboboxPage,
-  kind: CathayCombobox,
-  optionMatch: string,
-  timeouts: ComboboxTimeouts = COMBOBOX_TIMEOUTS,
-): Promise<{ selected: boolean; diagnostics?: Record<string, unknown> }> {
-  const marked = await page.evaluate((target: CathayCombobox) => {
-    // react-select keeps the input empty and renders the chosen label in the
-    // surrounding control, so identify each combobox by that control's text.
-    const labelOf = (input: HTMLInputElement) => {
-      let node: HTMLElement | null = input;
-      for (let depth = 0; depth < 5 && node; depth += 1) {
-        node = node.parentElement;
-        const text = (node?.innerText ?? "").replace(/\s+/g, "");
-        if (text) return text;
-      }
-      return "";
-    };
-    for (const element of Array.from(
-      document.querySelectorAll<HTMLElement>(
-        `[data-cathay-combobox="${target}"]`,
-      ),
-    )) {
-      delete element.dataset.cathayCombobox;
-    }
-    const input = Array.from(
-      document.querySelectorAll<HTMLInputElement>("input[role='combobox']"),
-    ).find((candidate) => {
-      const label = labelOf(candidate);
-      return target === "period"
-        ? /^近\d+(天|個?月|年)$/.test(label)
-        : /\d{10,}/.test(label);
-    });
-    if (!input) return false;
-    input.dataset.cathayCombobox = target;
-    return true;
-  }, kind);
-  if (!marked) return { selected: false, diagnostics: { marked: false } };
-
-  const open = await openCathayCombobox(page, kind, timeouts);
-  if (!open.opened) return { selected: false, diagnostics: open.diagnostics };
-  const clicked = await page.evaluate(
-    cathayComboboxPageAction,
-    kind,
-    kind === "account" ? "click-account" : "click-text",
-    optionMatch,
-  );
-  if (!clicked) {
-    return {
-      selected: false,
-      diagnostics: {
-        opened: true,
-        clicked: false,
-        structure: await page
-          .evaluate(cathayMenuStructure, kind)
-          .catch(() => null),
-      },
-    };
-  }
-  // 回讀控制項，確認選取真的套用（帳號比對完整帳號，期間比對結尾）。
-  const target = optionMatch.replace(/\s+/g, "");
-  const applied = (value: unknown) =>
-    typeof value === "string" &&
-    (kind === "account"
-      ? value.match(/\d{10,}/)?.[0] === target
-      : value.endsWith(target));
-  const label = await pollPage(
-    () => page.evaluate(cathayComboboxPageAction, kind, "label"),
-    applied,
-    timeouts.labelMs,
-  );
-  return applied(label)
-    ? { selected: true }
-    : {
-        selected: false,
-        diagnostics: { opened: true, clicked: true, applied: false },
-      };
-}
-
-export async function chooseCathayComboboxOption(
-  page: ComboboxPage,
-  kind: CathayCombobox,
-  optionMatch: string,
-  timeouts: ComboboxTimeouts = COMBOBOX_TIMEOUTS,
-): Promise<boolean> {
-  return (
-    await chooseCathayComboboxOptionWithDiagnostics(
-      page,
-      kind,
-      optionMatch,
-      timeouts,
-    )
-  ).selected;
-}
-
-/**
- * 帳號選單比對失敗時的診斷：只回傳數量與「數字段長度」形狀（例如 [3,3,6]），
- * 不回傳任何帳號或名稱文字。在頁面內執行，必須自給自足。
- */
-export function cathayAccountSelectorShape(accountLength: number) {
-  // 只留 4 位以上的數字段（帳號分段），避免透露「1,234,567」這類金額的位數。
-  const shape = (text: string) =>
-    (text.match(/\d+/g) ?? [])
-      .map((digits) => digits.length)
-      .filter((length) => length >= 4)
-      .slice(0, 10);
-  const labelOf = (input: HTMLElement) => {
-    let node: HTMLElement | null = input;
-    for (let depth = 0; depth < 5 && node; depth += 1) {
-      node = node.parentElement;
-      const text = (node?.innerText ?? "").replace(/\s+/g, "");
-      if (text) return text;
-    }
-    return "";
-  };
-  const comboboxes = Array.from(
-    document.querySelectorAll<HTMLInputElement>("input[role='combobox']"),
-  );
-  const options = Array.from(
-    document.querySelectorAll<HTMLElement>("[role='option'], [id*='-option-']"),
-  );
-  return {
-    accountLength,
-    markedAccount: comboboxes.some(
-      (input) => input.dataset.cathayCombobox === "account",
-    ),
-    comboboxLabelShapes: comboboxes
-      .slice(0, 5)
-      .map((input) => shape(labelOf(input))),
-    optionCount: options.length,
-    visibleOptionCount: options.filter((option) => option.offsetParent !== null)
-      .length,
-    optionShapes: options
-      .slice(0, 10)
-      .map((option) => shape(option.textContent ?? "")),
-  };
-}
-
-type CathayPeriodResult =
-  | { status: "selected"; label: string }
-  | { status: "partial"; label: string; warning: string }
-  | { status: "default"; warning: string };
-
-/** 只記錄能換算成期間的選項文字，其他一律遮蔽，避免誤選其他選單時把帳號等寫進 log。 */
-export function redactCathayPeriodOptions(options: readonly string[]) {
-  return options
-    .slice(0, 20)
-    .map((option) =>
-      cathayPeriodDays(option) !== undefined ? option : "[redacted]",
-    );
-}
-
-/**
- * 在頁面內標記期間選單；puppeteer 會序列化函式原始碼，因此必須自給自足。
- * 優先挑目前顯示文字本身就是期間的 combobox，找不到再退回寬鬆條件。讀選項、點擊與回讀
- * 都改用 `cathayComboboxPageAction`，與帳號選單共用同一套範圍規則。
- */
-export function cathayPeriodPageAction(
-  // 目前只有 "mark"；puppeteer 的型別要求參數為 string。
-  action: string,
-): unknown {
-  const normalize = (value: string) => value.replace(/\s+/g, "");
-  const labelOf = (input: HTMLElement) => {
-    let node: HTMLElement | null = input;
-    for (let depth = 0; depth < 5 && node; depth += 1) {
-      node = node.parentElement;
-      const text = normalize(node?.innerText ?? "");
-      if (text) return text;
-    }
-    return "";
-  };
-  if (action === "mark") {
-    for (const element of Array.from(
-      document.querySelectorAll<HTMLElement>('[data-cathay-combobox="period"]'),
-    )) {
-      delete element.dataset.cathayCombobox;
-    }
-    const inputs = Array.from(
-      document.querySelectorAll<HTMLInputElement>("input[role='combobox']"),
-    );
-    // 優先挑目前顯示文字本身就是期間的選單，找不到再退回寬鬆條件。
-    const input =
-      inputs.find((candidate) =>
-        /^(?:近|最近|前)?(?:\d+|[一二兩三四五六七八九十]+)(?:天|日|週|周|星期|個?月|年)(?:內)?$/.test(
-          labelOf(candidate),
-        ),
-      ) ??
-      inputs.find((candidate) => {
-        const label = labelOf(candidate);
-        return !/\d{10,}/.test(label) && /(天|週|周|月|年)/.test(label);
-      });
-    if (!input) return false;
-    input.dataset.cathayCombobox = "period";
-    return true;
-  }
-  return false;
-}
-
-async function pollPage<T>(
-  read: () => Promise<T>,
-  done: (value: T) => boolean,
-  timeoutMs: number,
-): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  let value = await read();
-  while (!done(value) && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    value = await read();
-  }
-  return value;
-}
-
-/** 開啟期間選單、在 Node 端挑選項目、點擊後回讀控制項文字確認真的選上。 */
-export async function chooseCathayPeriodOption(
-  page: Pick<Page, "evaluate" | "focus" | "keyboard" | "click">,
-  days: number,
-  timeouts = { keyboardMs: 2000, optionsMs: 5000, labelMs: 2000 },
-): Promise<{
-  found: boolean;
-  options: string[];
-  chosen?: string;
-  applied?: boolean;
-  structure?: unknown;
-}> {
-  if (!(await page.evaluate(cathayPeriodPageAction, "mark"))) {
-    // 找不到期間選單時也附結構（數量與屬性），以判斷是否改成非 react-select 元件。
-    const structure = await page
-      .evaluate(cathayMenuStructure, "period")
-      .catch(() => undefined);
-    return { found: false, options: [], structure };
-  }
-  const readOptions = async (timeoutMs: number) =>
-    (await pollPage(
-      () => page.evaluate(cathayComboboxPageAction, "period", "texts"),
-      (value) => Array.isArray(value) && value.length > 0,
-      timeoutMs,
-    )) as string[];
-  await page.focus('[data-cathay-combobox="period"]');
-  await page.keyboard.press("ArrowDown");
-  let options = await readOptions(timeouts.keyboardMs);
-  // 鍵盤開不了選單時改用滑鼠點 react-select control。
-  // 已展開時再點會把選單關掉，因此只在沒有展開時點。
-  let afterKeyboard: unknown;
-  if (options.length === 0) {
-    afterKeyboard = await page
-      .evaluate(cathayMenuStructure, "period")
-      .catch(() => undefined);
-    if (
-      (await page.evaluate(cathayComboboxPageAction, "period", "expanded")) !==
-        "true" &&
-      (await page.evaluate(cathayComboboxPageAction, "period", "mark-control"))
-    ) {
-      await page.click('[data-cathay-control="period"]').catch(() => null);
-      options = await readOptions(timeouts.optionsMs);
-    }
-  }
-  // 沒點到選項一律按 Escape 關閉選單：選單若其實開著卻讀不到選項，留著會讓之後的
-  // 帳號選單讀到期間選項。react-select 預設 Escape 不清除已選的值。
-  if (options.length === 0) {
-    const afterClick = await page
-      .evaluate(cathayMenuStructure, "period")
-      .catch(() => undefined);
-    await page.keyboard.press("Escape").catch(() => null);
-    return { found: true, options, structure: { afterKeyboard, afterClick } };
-  }
-  const index = pickCathayPeriodOption(options, days);
-  const chosen = index >= 0 ? options[index] : undefined;
-  if (
-    !chosen ||
-    !(await page.evaluate(
-      cathayComboboxPageAction,
-      "period",
-      "click-text",
-      chosen,
-    ))
-  ) {
-    await page.keyboard.press("Escape").catch(() => null);
-    return { found: true, options };
-  }
-  const target = chosen.replace(/\s+/g, "");
-  // 寬鬆後備選中的選單，外層文字可能帶標題（例如「查詢期間近90天」），以結尾比對。
-  const matches = (value: unknown) =>
-    typeof value === "string" && value.endsWith(target);
-  const label = await pollPage(
-    () => page.evaluate(cathayComboboxPageAction, "period", "label"),
-    matches,
-    timeouts.labelMs,
-  );
-  return { found: true, options, chosen, applied: matches(label) };
-}
-
-/**
- * 選擇交易期間。國泰改版導致選單或選項無法辨識、或點擊後沒有生效時，不讓整次同步失敗：
- * 沿用頁面預設期間繼續並回傳警告，log 只記錄像期間的選項文字。
- */
-async function selectTransactionPeriod(
-  page: Page,
-  days: number,
-): Promise<CathayPeriodResult> {
-  let result: Awaited<ReturnType<typeof chooseCathayPeriodOption>>;
-  try {
-    result = await chooseCathayPeriodOption(page, days);
-  } catch (error) {
-    // 被登出照樣失敗；頁面重繪等暫時性錯誤改用預設期間繼續。
-    assertCathayNotLoggedOut(page);
-    console.warn(
-      JSON.stringify({
-        event: "cathaybk_period_selection_failed",
-        errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR",
-      }),
-    );
-    return {
-      status: "default",
-      warning: "國泰存款明細的期間無法設定，本次只取得頁面預設期間的交易。",
-    };
-  }
-  const chosenDays = result.chosen
-    ? cathayPeriodDays(result.chosen)
-    : undefined;
-  if (result.chosen && result.applied && chosenDays !== undefined) {
-    console.log(`[cathaybk] set period to "${result.chosen}"`);
-    if (chosenDays < days) {
-      return {
-        status: "partial",
-        label: result.chosen,
-        warning: `國泰存款明細最長只能查「${result.chosen}」，較早的交易可能未取得。`,
-      };
-    }
-    return { status: "selected", label: result.chosen };
-  }
-  console.warn(
-    JSON.stringify({
-      event: "cathaybk_period_option_unrecognized",
-      comboboxFound: result.found,
-      clicked: Boolean(result.chosen),
-      options: redactCathayPeriodOptions(result.options),
-      ...(result.structure ? { structure: result.structure } : {}),
-    }),
-  );
-  return {
-    status: "default",
-    warning: "國泰存款明細的期間選單改版，本次只取得頁面預設期間的交易。",
-  };
-}
-
 function waitForDepositTransactions(page: Page) {
   return page
     .waitForResponse(
@@ -1990,15 +1210,34 @@ async function scrapeDeposits(
     });
   }
 
-  // Open the transaction page once from the first account, then switch
-  // accounts in place: returning to the overview between accounts makes
-  // Cathay end the session (/OnlineBanking/Logout/SystemError).
-  let detailPageOpen = false;
-  for (const acct of accounts) {
-    const sourceId = `bank:cathaybk:${acct.acctNo}`;
-    if (!detailPageOpen) {
-      // Opening the page queries the default 30 days; consume that response
-      // so it cannot be mistaken for this account's own query below.
+  // 改版後明細頁會跳出彈出視窗蓋住帳號與期間選單。改為：從第一個帳戶進入明細頁，
+  // 記下頁面自動送出的查詢請求作範本，再改寫帳號與日期在同一頁面內重送。不回到總覽頁：
+  // 在帳戶之間重開總覽，國泰會結束工作階段（/OnlineBanking/Logout/SystemError）。
+  const first = accounts[0];
+  // closure 內寫入，用物件屬性存放以免型別被收窄成 null。
+  const capture: {
+    template: {
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      postData: string;
+    } | null;
+  } = { template: null };
+  let initialResponse: TransferDetailResponse | null = null;
+  if (first) {
+    const onRequest = (request: HTTPRequest) => {
+      if (capture.template || !request.url().includes(API_DEPOSIT_TX)) return;
+      const postData = request.postData();
+      if (typeof postData !== "string") return;
+      capture.template = {
+        url: request.url(),
+        method: request.method(),
+        headers: request.headers(),
+        postData,
+      };
+    };
+    page.on("request", onRequest);
+    try {
       const initialQuery = waitForDepositTransactions(page);
       const clicked = await page.evaluate((acctNo: string) => {
         const btn = Array.from(
@@ -2006,76 +1245,44 @@ async function scrapeDeposits(
         ).find((b) => b.textContent?.trim() === acctNo);
         btn?.click();
         return Boolean(btn);
-      }, acct.acctNo);
-      if (!clicked) {
+      }, first.acctNo);
+      if (clicked) {
+        await page
+          .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
+          .catch(() => null);
+        const response = await initialQuery;
+        initialResponse = response
+          ? ((await response
+              .json()
+              .catch(() => null)) as TransferDetailResponse | null)
+          : null;
+      } else {
         console.log(
-          `[cathaybk] no button found for account ${maskAccountNumber(acct.acctNo)}`,
-        );
-        continue;
-      }
-      await page
-        .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
-        .catch(() => null);
-      await initialQuery;
-      await page
-        .waitForFunction(
-          () => document.querySelectorAll("input[role='combobox']").length > 0,
-          { timeout: 15000 },
-        )
-        .catch(() => null);
-      detailPageOpen = true;
-    } else {
-      await dismissCathayTransactionModals(page);
-      const choice = await chooseCathayComboboxOptionWithDiagnostics(
-        page,
-        "account",
-        acct.acctNo,
-      );
-      if (!choice.selected) {
-        assertCathayNotLoggedOut(page);
-        console.warn(
-          JSON.stringify({
-            event: "cathaybk_account_selector_unmatched",
-            ...(await page
-              .evaluate(cathayAccountSelectorShape, acct.acctNo.length)
-              .catch(() => ({ unavailable: true }))),
-            ...choice.diagnostics,
-          }),
-        );
-        await page.keyboard.press("Escape").catch(() => null);
-        throw new Error(
-          "Cathay Bank account was not found in the transaction account selector.",
+          `[cathaybk] no button found for account ${maskAccountNumber(first.acctNo)}`,
         );
       }
+    } finally {
+      page.off("request", onRequest);
     }
     assertCathayNotLoggedOut(page);
+  }
+  const captured = capture.template;
+  console.log(
+    JSON.stringify({
+      event: "cathaybk_transfer_query_template",
+      captured: Boolean(captured),
+      ...(captured
+        ? { request: describeCathayTransferQuery(captured.postData) }
+        : {}),
+      initialResponse: Boolean(initialResponse),
+    }),
+  );
 
-    await dismissCathayTransactionModals(page);
-    const period = await selectTransactionPeriod(page, lookbackDays);
-    if (period.status !== "selected" && !warnings.includes(period.warning)) {
-      warnings.push(period.warning);
-    }
-    // Let any query triggered by switching the selectors settle first.
-    await page
-      .waitForNetworkIdle({ idleTime: 500, timeout: 10000 })
-      .catch(() => null);
-    const txRsp = waitForDepositTransactions(page);
-    await page.evaluate(() => {
-      const btn = Array.from(
-        document.querySelectorAll<HTMLButtonElement>("button"),
-      ).find((b) => b.textContent?.trim() === "查詢");
-      btn?.click();
-    });
-    const response = await txRsp;
-    assertCathayNotLoggedOut(page);
-    if (!response) {
-      throw new Error("Cathay Bank transaction query did not respond.");
-    }
-    const txData = (await response.json().catch(() => {
-      throw new Error("Cathay Bank transaction response was not JSON.");
-    })) as TransferDetailResponse;
-
-    const datas = txData.content?.datas ?? [];
+  const addWarning = (warning: string) => {
+    if (!warnings.includes(warning)) warnings.push(warning);
+  };
+  for (const [index, acct] of accounts.entries()) {
+    const sourceId = `bank:cathaybk:${acct.acctNo}`;
     // The API zero-pads the account number (e.g. 16 digits for a 12-digit
     // account shown on the page). Every entry must belong to this account.
     const belongsToAccount = (accountNumber: string | undefined) => {
@@ -2085,16 +1292,84 @@ async function scrapeDeposits(
         /^0*$/.test(digits.slice(0, -acct.acctNo.length))
       );
     };
-    if (!datas.every((data) => belongsToAccount(data.accountNumber))) {
-      throw new Error(
-        "Cathay Bank returned transactions for a different account.",
-      );
+    const ownDatas = (data: TransferDetailResponse | null) => {
+      const datas = data?.content?.datas;
+      if (!Array.isArray(datas)) return undefined;
+      return datas.every((entry) => belongsToAccount(entry.accountNumber))
+        ? datas
+        : undefined;
+    };
+
+    let datas: NonNullable<TransferDetailResponse["content"]>["datas"];
+    let period = "default";
+    if (captured && first) {
+      const rewrite = rewriteCathayTransferQuery(captured.postData, {
+        fromAccount: first.acctNo,
+        toAccount: acct.acctNo,
+        fromCurrency: first.currency,
+        toCurrency: acct.currency,
+        lookbackDays,
+      });
+      if (index === 0 || rewrite.accountReplaced) {
+        const replay = await page
+          .evaluate(
+            cathayReplayInPage,
+            captured.url,
+            captured.method,
+            replayableHeaders(captured.headers),
+            rewrite.body,
+          )
+          .catch(() => null);
+        assertCathayNotLoggedOut(page);
+        let parsed: TransferDetailResponse | null = null;
+        try {
+          parsed =
+            replay && replay.status === 200
+              ? (JSON.parse(replay.text) as TransferDetailResponse)
+              : null;
+        } catch {
+          parsed = null;
+        }
+        datas = ownDatas(parsed);
+        if (datas)
+          period = rewrite.datesExtended ? `${lookbackDays}d` : "default";
+        if (datas && !rewrite.datesExtended) {
+          addWarning(
+            "國泰存款明細無法指定期間，本次只取得頁面預設期間的交易。",
+          );
+        }
+        if (!datas) {
+          console.warn(
+            JSON.stringify({
+              event: "cathaybk_transfer_query_replay_failed",
+              status: replay?.status ?? null,
+              parsed: Boolean(parsed),
+              accountReplaced: rewrite.accountReplaced,
+              datesExtended: rewrite.datesExtended,
+            }),
+          );
+        }
+      }
     }
+    // 第一個帳戶重送失敗時，退回頁面自己查到的預設期間。
+    if (!datas && index === 0) {
+      datas = ownDatas(initialResponse);
+      if (datas) {
+        addWarning("國泰存款明細無法指定期間，本次只取得頁面預設期間的交易。");
+      }
+    }
+    if (!datas) {
+      addWarning("國泰部分存款帳戶的交易明細未取得，本次只更新餘額。");
+      console.log(
+        `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: transactions unavailable`,
+      );
+      continue;
+    }
+
     const details: TransferDetail[] = datas.flatMap((d) => d.details ?? []);
     console.log(
-      `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: ${details.length} tx (period=${period.status === "default" ? "default" : period.label})`,
+      `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: ${details.length} tx (period=${period})`,
     );
-
     appendCathayDepositTransactions(
       bankTransactions,
       details,
