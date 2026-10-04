@@ -3,6 +3,7 @@ import {
   pairCtbcTransactions,
 } from "@taiwan-fin-hub/connectors";
 import type { SyncWriteRecord } from "./persistence";
+import { carryRoleOverrideAndNoteStatements } from "./transaction-merge";
 
 type Row = Record<string, unknown> & {
   id: string;
@@ -250,6 +251,8 @@ export async function prepareCtbcAuthorizationWrite(
         AND NOT EXISTS (SELECT 1 FROM invoice_transaction_preferences existing WHERE existing.transaction_id = json_extract(link.value, '$.id') AND existing.decision = 'linked')`,
         )
         .bind(linksJson),
+      // 已入帳那筆會被刪除，使用者設在它上面的角色與備註搬到保留下來的這筆。
+      ...carryRoleOverrideAndNoteStatements(db, linksJson, "$.posted", "$.id"),
       db
         .prepare(
           `UPDATE bank_transactions SET matched_transaction_id = NULL
@@ -275,6 +278,22 @@ export async function prepareCtbcAuthorizationWrite(
         WHERE transaction_id IN (SELECT json_extract(value, '$.posted') FROM json_each(?))`,
         )
         .bind(linksJson),
+      db
+        .prepare(
+          `DELETE FROM activity_role_overrides
+        WHERE target_kind = 'bank_transaction'
+          AND target_id IN (SELECT json_extract(value, '$.posted') FROM json_each(?))
+          AND target_id NOT IN (SELECT json_extract(value, '$.id') FROM json_each(?))`,
+        )
+        .bind(linksJson, linksJson),
+      db
+        .prepare(
+          `DELETE FROM activity_notes
+        WHERE target_kind = 'bank_transaction'
+          AND target_id IN (SELECT json_extract(value, '$.posted') FROM json_each(?))
+          AND target_id NOT IN (SELECT json_extract(value, '$.id') FROM json_each(?))`,
+        )
+        .bind(linksJson, linksJson),
       db
         .prepare(
           `DELETE FROM bank_transactions

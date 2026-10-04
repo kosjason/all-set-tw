@@ -139,6 +139,12 @@ npm run verify:web
 
 資料查詢在 `data/budget/`，query key 以 `bank` 開頭，隨交易與同步一起失效。
 
+本月頁右欄（本月可花下方）另有 `components/AdvancesCard`「代墊待收回」：依對象列出還欠多少／多給
+多少（不分月份，資料來自 `data/advances/` 的 `GET /api/activity/advances`，query key 以 `bank` 開頭），
+點開可看各筆代墊與收回；已結清的對象只顯示人數，沒有任何代墊時不顯示。交易頁選「代墊」或「收回代墊」
+時，`RoleReasonDialog` 要求填寫對象（以已用過的對象名稱為建議），列上與明細以「代墊 · 對象」標示；
+收件匣的快速選單不提供這兩個角色。
+
 可花設定為子頁 `features/month/BudgetPage`（`#/month/budget`，上層為本月）：
 
 - 每月消費預算（提示過去每月約花多少）、預期月收入（選填，留白為推算，用來預覽照預算可存下多少）、

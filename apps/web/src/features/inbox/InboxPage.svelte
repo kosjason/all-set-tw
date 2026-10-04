@@ -15,6 +15,7 @@
   import {
     ECONOMIC_ROLE_CHOICES,
     ECONOMIC_ROLE_CHOICE_LABELS,
+    ECONOMIC_ROLES_ASKING_COUNTERPARTY,
     activityRoleTarget,
     roleOverridePath,
   } from "@/data/activity/roles";
@@ -38,7 +39,10 @@
   const inbox = createQuery(inboxQuery(() => api));
   const groups = $derived(groupInboxItems($inbox.data));
   const unavailableLabels = { sync: "同步", cards: "信用卡", activity: "交易" };
-  const roleOptions = ECONOMIC_ROLE_CHOICES.map((role) => ({
+  // 代墊需要填對象，收件匣的快速選單不提供，請到交易明細設定。
+  const roleOptions = ECONOMIC_ROLE_CHOICES.filter(
+    (role) => !ECONOMIC_ROLES_ASKING_COUNTERPARTY.has(role),
+  ).map((role) => ({
     value: role,
     label: ECONOMIC_ROLE_CHOICE_LABELS[role],
   }));

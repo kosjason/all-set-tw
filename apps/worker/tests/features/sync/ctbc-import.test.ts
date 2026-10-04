@@ -130,6 +130,15 @@ class SqliteD1 {
     this.database.exec(readFileSync(`${MIGRATIONS_DIRECTORY}/${file}`, "utf8"));
   }
 
+  /** 套用 `fromMigration`（含）之後的所有 migration，模擬舊資料升級到最新 schema。 */
+  applyMigrationsFrom(fromMigration: string) {
+    for (const file of readdirSync(MIGRATIONS_DIRECTORY)
+      .filter((name) => name.endsWith(".sql") && name >= fromMigration)
+      .sort()) {
+      this.applyMigration(file);
+    }
+  }
+
   prepare(sql: string) {
     return new SqliteStatement(this, sql);
   }
@@ -586,7 +595,7 @@ describe("importCtbcPayloads after the per-card account migration", () => {
               '${legacyAccount}:${postedSourceId}', 'shopping',
               '2026-09-15', '2026-09-15');
     `);
-    db.applyMigration(SPLIT_MIGRATION);
+    db.applyMigrationsFrom(SPLIT_MIGRATION);
     return {
       db,
       env: {

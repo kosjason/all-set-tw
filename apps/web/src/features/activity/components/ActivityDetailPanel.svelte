@@ -217,13 +217,15 @@
         </div>
         <Badge variant="secondary" class="mt-3"
           >{showsRoleInsteadOfCategory(item) && item.economicRole
-            ? ECONOMIC_ROLE_LABELS[item.economicRole]
+            ? item.advanceCounterparty
+              ? `${ECONOMIC_ROLE_LABELS[item.economicRole]} · ${item.advanceCounterparty}`
+              : ECONOMIC_ROLE_LABELS[item.economicRole]
             : categoryOptionText(category)}</Badge
         >
         {#if item.economicRole === "excluded"}<Badge
             variant="secondary"
             class="ml-2 mt-3">{excludedStatusLabel(item)}</Badge
-          >{:else if item.excludedFromCalculation}<Badge
+          >{:else if item.excludedFromCalculation && excluded}<Badge
             variant="secondary"
             class="ml-2 mt-3">已排除計算</Badge
           >{/if}

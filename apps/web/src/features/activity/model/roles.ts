@@ -11,6 +11,7 @@ export {
   ECONOMIC_ROLE_CHOICES,
   ECONOMIC_ROLE_CHOICE_LABELS,
   ECONOMIC_ROLE_LABELS,
+  ECONOMIC_ROLES_ASKING_COUNTERPARTY,
   ECONOMIC_ROLES_ASKING_REASON,
   activityNoteTarget,
   activityRoleTarget,
@@ -36,6 +37,8 @@ const ROLE_BADGE_TONE: Record<
   own_transfer: "transfer",
   card_payment: "muted",
   excluded: "muted",
+  advance: "transfer",
+  reimbursement: "transfer",
 };
 
 export function needsReview(item: ActivityItem) {
@@ -60,7 +63,9 @@ export function activityRoleBadges(
   )
     badges.push({
       key: item.economicRole,
-      label: ECONOMIC_ROLE_LABELS[item.economicRole],
+      label: item.advanceCounterparty
+        ? `${ECONOMIC_ROLE_LABELS[item.economicRole]} · ${item.advanceCounterparty}`
+        : ECONOMIC_ROLE_LABELS[item.economicRole],
       tone: ROLE_BADGE_TONE[item.economicRole],
     });
   if (needsReview(item))
@@ -88,6 +93,9 @@ export function showsRoleInsteadOfCategory(item: ActivityItem) {
  * 「不計入」（使用者指定、作廢發票）。
  */
 export function isExcludedActivity(item: ActivityItem) {
+  // 代墊／收回代墊是使用者明確指定的角色，不因舊的「排除統計計算」而顯示成不計入。
+  if (item.economicRole === "advance" || item.economicRole === "reimbursement")
+    return false;
   return (
     Boolean(item.excludedFromCalculation) || item.economicRole === "excluded"
   );

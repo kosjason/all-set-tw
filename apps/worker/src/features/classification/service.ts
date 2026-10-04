@@ -35,6 +35,8 @@ const ROLE_LABELS: Record<EconomicRole, string> = {
   investment: "投資",
   card_payment: "繳卡費",
   excluded: "不計入",
+  advance: "代墊",
+  reimbursement: "收回代墊",
 };
 
 function asEconomicRole(value: string | null | undefined) {

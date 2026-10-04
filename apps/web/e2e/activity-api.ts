@@ -54,6 +54,18 @@ export async function routeNavigationApi(page: Page) {
   );
   // 頁首同步狀態與右側概況欄。
   await page.route("**/api/sync-jobs", (route) => route.fulfill({ json: [] }));
+  // 代墊待收回：沒有任何代墊時本月頁不顯示卡片。
+  await page.route("**/api/activity/advances", (route) =>
+    route.fulfill({
+      json: {
+        since: null,
+        counterparties: [],
+        outstanding: {},
+        complete: true,
+        incompleteReasons: [],
+      },
+    }),
+  );
   // 本月可花與週回顧：沒有收入資料時提示填寫，週回顧沒有消費。
   await page.route("**/api/budget", (route) =>
     route.fulfill({

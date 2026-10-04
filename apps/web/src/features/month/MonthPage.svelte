@@ -9,6 +9,8 @@
   import Card from "@/shared/ui/Card.svelte";
   import { budgetQuery } from "@/data/budget/queries";
   import BudgetCard from "./components/BudgetCard.svelte";
+  import AdvancesCard from "./components/AdvancesCard.svelte";
+  import { advancesQuery } from "@/data/advances/queries";
   import WeeklyReview from "./components/WeeklyReview.svelte";
   import { ChevronLeft, ChevronRight, CreditCard, Inbox } from "@lucide/svelte";
   import { currentActivityMonthKey } from "@taiwan-fin-hub/core";
@@ -116,6 +118,8 @@
     })),
   );
   const jobs = createQuery(syncJobsQuery(() => api));
+  // 代墊待收回不分月份；載入失敗時不顯示，不當成本月頁的錯誤。
+  const advances = createQuery({ ...advancesQuery(() => api), retry: false });
   // 卡費提醒：載入失敗時不顯示，不當成本月頁的錯誤。
   const cards = createQuery({
     ...cardsSummaryQuery(() => api),
@@ -276,6 +280,9 @@
           failed={$budget.isError}
           onOpenSettings={() => navigate("budget")}
         />
+      {/if}
+      {#if $advances.data && $advances.data.counterparties.length > 0}
+        <AdvancesCard advances={$advances.data} />
       {/if}
       {#if reminder}
         <button

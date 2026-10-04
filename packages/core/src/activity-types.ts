@@ -117,6 +117,8 @@ export interface ActivityItem {
   duplicateOf?: EconomicRoleFields["duplicateOf"];
   investmentEventKind?: EconomicRoleFields["investmentEventKind"];
   roleReason?: EconomicRoleFields["roleReason"];
+  /** 角色為代墊／收回代墊時的對象。 */
+  advanceCounterparty?: string | null;
   /** 發票的去重狀態；只有伺服器推導的發票項目才有。 */
   matchStatus?: InvoiceMatchStatus;
   /** 發票已合併的交易 id；未合併為 null。 */

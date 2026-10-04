@@ -1,4 +1,5 @@
 import type { SyncWriteRecord } from "./persistence";
+import { carryRoleOverrideAndNoteStatements } from "./transaction-merge";
 import {
   matchSinopacAuthorizations,
   type SinopacMatchTransaction,
@@ -208,6 +209,12 @@ export async function prepareSinopacAuthorizationWrite(
         )`,
         )
         .bind(newLinksJson, newLinksJson, newLinksJson),
+      ...carryRoleOverrideAndNoteStatements(
+        db,
+        newLinksJson,
+        "$.id",
+        "$.matched_transaction_id",
+      ),
     ],
   };
 }

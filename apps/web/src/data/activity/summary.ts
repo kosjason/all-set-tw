@@ -33,7 +33,13 @@ export function activitySummaryEquation(
 }
 
 export interface ActivitySummaryExcludedPart extends CashFlowExcludedPart {
-  key: "ownTransfer" | "cardPayment" | "duplicateExcluded" | "excluded";
+  key:
+    | "ownTransfer"
+    | "cardPayment"
+    | "duplicateExcluded"
+    | "excluded"
+    | "advance"
+    | "reimbursement";
 }
 
 /**
@@ -53,6 +59,12 @@ export function activitySummaryExcludedParts(
       amount: summary.duplicateExcluded,
     },
     { key: "excluded", label: "不計入", amount: summary.excludedAmount ?? 0 },
+    { key: "advance", label: "代墊", amount: summary.advanceAmount ?? 0 },
+    {
+      key: "reimbursement",
+      label: "收回代墊",
+      amount: summary.reimbursementAmount ?? 0,
+    },
   ];
   return parts.filter((part) => part.amount > 0);
 }

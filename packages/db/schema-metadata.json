@@ -12,15 +12,16 @@
       }
     },
     "activity_role_overrides": {
-      "description": "使用者對活動經濟角色（收入／消費／投資／自有移轉／繳卡費／不計入）的覆寫與重複標記。",
-      "notes": "經濟角色在讀取時由交易、分類、自有帳戶與發票配對推導，不改寫 bank_transactions 或 invoices；只有使用者確認的結果存在此表，因此規則或自有帳戶變動後過去月份會自動重算。target_kind + target_id 為多型參照（bank_transaction／invoice），不設 FK；找不到對應活動的覆寫不影響任何金額。有 duplicate_of 的活動仍會列出，但不計入任何金額。",
+      "description": "使用者對活動經濟角色（收入／消費／投資／自有移轉／繳卡費／不計入／代墊／收回代墊）的覆寫與重複標記。",
+      "notes": "經濟角色在讀取時由交易、分類、自有帳戶與發票配對推導，不改寫 bank_transactions 或 invoices；只有使用者確認的結果存在此表，因此規則或自有帳戶變動後過去月份會自動重算。target_kind + target_id 為多型參照（bank_transaction／invoice），不設 FK；找不到對應活動的覆寫不影響任何金額。有 duplicate_of 的活動仍會列出，但不計入任何金額。 0073 新增 advance（代墊，待收回）與 reimbursement（收回代墊），兩者不計入收入與消費，依 counterparty 累計待收回餘額。",
       "columns": {
         "target_kind": "被覆寫的活動種類：bank_transaction 或 invoice。",
         "target_id": "被覆寫活動的 id（bank_transactions.id 或 invoices.id）。",
-        "economic_role": "使用者指定的經濟角色：spending、income、own_transfer、investment、card_payment 或 excluded（不計入：沒有實際付款、已退款作廢、測試等；0063 起）。",
+        "economic_role": "使用者指定的經濟角色：spending、income、own_transfer、investment、card_payment、excluded（不計入：沒有實際付款、已退款作廢、測試等；0063 起）、advance（代墊）或 reimbursement（收回代墊）（0073 起）。",
         "review_status": "覆寫一律為 confirmed（CHECK 限制）。",
         "duplicate_of_kind": "此活動是另一筆活動的重複時，那筆活動的種類；與 duplicate_of_id 同時為 NULL 或同時有值。",
         "duplicate_of_id": "被重複的活動 id；不可指向自己。NULL 時沿用推導出的重複關係（例如已配對的發票）。",
+        "counterparty": "代墊對象（0073）：只有 advance／reimbursement 必須有值，其他角色必須為 NULL；API 正規化為 NFKC、去頭尾空白、合併連續空白，1–40 字。",
         "created_at": "覆寫建立的時間。",
         "updated_at": "覆寫最後更新的時間。"
       }

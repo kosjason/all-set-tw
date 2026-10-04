@@ -1,4 +1,5 @@
 import type { SyncWriteRecord } from "./persistence";
+import { carryRoleOverrideAndNoteStatements } from "./transaction-merge";
 
 export type EsunCardRow = {
   id: string;
@@ -176,5 +177,6 @@ export async function prepareEsunAuthorizationWrite(
         )`,
       )
       .bind(linksJson, linksJson, linksJson),
+    ...carryRoleOverrideAndNoteStatements(db, linksJson, "$.id", "$.posted"),
   ];
 }

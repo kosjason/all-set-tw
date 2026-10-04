@@ -16,6 +16,14 @@ test.beforeEach(async ({ page }) => {
     else if (path === "/api/investment-transactions") body = [];
     else if (path === "/api/invoices") body = [];
     else if (path === "/api/activity/invoice-mappings") body = [];
+    else if (path === "/api/activity/advances")
+      body = {
+        since: null,
+        counterparties: [],
+        outstanding: {},
+        complete: true,
+        incompleteReasons: [],
+      };
     else if (path === "/api/manual-assets") body = [];
     else if (path === "/api/exchange-rates") body = [];
     else if (path === "/api/classification/categories") body = [];

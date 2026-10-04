@@ -436,6 +436,10 @@ describe("summarizeActivityMonths", () => {
       duplicateExcluded: 1000,
       excludedAmount: 0,
       excludedCount: 0,
+      advanceAmount: 0,
+      advanceCount: 0,
+      reimbursementAmount: 0,
+      reimbursementCount: 0,
       spendingByCategory: { misc: 800, other: 27500 },
       spendingBySubcategory: {
         "user:pet": 1000,
