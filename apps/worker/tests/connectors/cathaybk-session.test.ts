@@ -20,6 +20,7 @@ import {
   createCathaybkConnector,
   cathayAccountSelectorShape,
   cathayMenuStructure,
+  chooseCathayComboboxOptionWithDiagnostics,
   cathayPeriodDays,
   chooseCathayPeriodOption,
   dismissCathaySystemMessageIfPresent,
@@ -1104,101 +1105,6 @@ describe("Cathay trusted device state", () => {
   });
 });
 
-describe("Cathay transaction page comboboxes", () => {
-  function combobox(label: string) {
-    const input = {
-      dataset: {} as Record<string, string>,
-      parentElement: null as unknown,
-    };
-    input.parentElement = { innerText: label, parentElement: null };
-    return input;
-  }
-
-  it.each([
-    ["period", "近 90 天", 0],
-    ["account", "123456789012", 1],
-  ] as const)(
-    "finds the %s selector by its react-select label and picks the option",
-    async (kind, match, expectedIndex) => {
-      const inputs = [
-        combobox("近 30 天"),
-        combobox("123456789012 活期儲蓄薪資轉帳存款"),
-      ];
-      const option = { textContent: "", click: vi.fn() };
-      option.textContent =
-        kind === "period" ? "近 90 天" : "123456789012 證券活期儲蓄存款";
-      vi.stubGlobal("document", {
-        querySelectorAll: (selector: string) =>
-          selector.includes("combobox") ? inputs : [option],
-      });
-      const page = {
-        evaluate: vi.fn(
-          async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
-            fn(...args),
-        ),
-        focus: vi.fn().mockResolvedValue(undefined),
-        keyboard: { press: vi.fn().mockResolvedValue(undefined) },
-        waitForFunction: vi.fn().mockResolvedValue(undefined),
-      };
-
-      await expect(
-        chooseCathayComboboxOption(page as never, kind, match),
-      ).resolves.toBe(true);
-      expect(inputs[expectedIndex]!.dataset.cathayCombobox).toBe(kind);
-      expect(page.focus).toHaveBeenCalledWith(
-        `[data-cathay-combobox="${kind}"]`,
-      );
-      expect(page.keyboard.press).toHaveBeenCalledWith("ArrowDown");
-      expect(option.click).toHaveBeenCalledOnce();
-    },
-  );
-
-  it("matches account options by the whole account number", async () => {
-    const input = combobox("123456789012 活期儲蓄薪資轉帳存款");
-    const longer = { textContent: "1234567890123 其他帳戶", click: vi.fn() };
-    const exact = { textContent: "123456789012 子帳戶", click: vi.fn() };
-    vi.stubGlobal("document", {
-      querySelectorAll: (selector: string) =>
-        selector.includes("combobox") ? [input] : [longer, exact],
-    });
-    const page = {
-      evaluate: vi.fn(
-        async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
-          fn(...args),
-      ),
-      focus: vi.fn().mockResolvedValue(undefined),
-      keyboard: { press: vi.fn().mockResolvedValue(undefined) },
-      waitForFunction: vi.fn().mockResolvedValue(undefined),
-    };
-
-    await expect(
-      chooseCathayComboboxOption(page as never, "account", "123456789012"),
-    ).resolves.toBe(true);
-    expect(longer.click).not.toHaveBeenCalled();
-    expect(exact.click).toHaveBeenCalledOnce();
-  });
-
-  it("reports a missing selector without touching the page", async () => {
-    vi.stubGlobal("document", {
-      querySelectorAll: () => [combobox("其他欄位")],
-    });
-    const page = {
-      evaluate: vi.fn(
-        async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
-          fn(...args),
-      ),
-      focus: vi.fn(),
-      keyboard: { press: vi.fn() },
-      waitForFunction: vi.fn(),
-    };
-
-    await expect(
-      chooseCathayComboboxOption(page as never, "period", "近 90 天"),
-    ).resolves.toBe(false);
-    expect(page.focus).not.toHaveBeenCalled();
-  });
-});
-
 describe("Cathay credit card overview", () => {
   const overview = [
     "信用卡 > 信用卡帳戶總覽",
@@ -1437,7 +1343,7 @@ describe("Cathay period combobox", () => {
 
     await expect(
       chooseCathayPeriodOption(page as never, 90, fast),
-    ).resolves.toEqual({ found: true, options: [] });
+    ).resolves.toMatchObject({ found: true, options: [] });
     expect(page.keyboard.press).toHaveBeenLastCalledWith("Escape");
   });
 
@@ -1533,82 +1439,282 @@ it("describes the account selector without exposing account text", () => {
   expect(JSON.stringify(shape)).not.toMatch(/王小明|1234|活期/);
 });
 
-describe("Cathay combobox opening fallback", () => {
-  it("clicks the react-select control when the keyboard does not open the menu", async () => {
-    let open = false;
-    const control = {
-      dataset: {} as Record<string, string>,
-      getAttribute: (name: string) =>
-        name === "class" ? "css-13cymwt-control" : null,
-      parentElement: null,
-      innerText: "123456789012 活期存款",
-    };
-    const input = {
-      dataset: {} as Record<string, string>,
-      parentElement: control,
-    };
-    const option = {
-      textContent: "123456789012 活期儲蓄存款",
-      click: vi.fn(),
-    };
-    vi.stubGlobal("document", {
-      querySelector: (selector: string) =>
-        selector.includes("data-cathay-combobox") ? input : null,
-      querySelectorAll: (selector: string) => {
-        if (selector.includes("combobox")) return [input];
-        // 改版後選項沒有 role／id，只有 react-select 的 class 命名。
-        if (selector.includes("[class*='option']") && open) return [option];
-        return [];
-      },
+/** 小型假 DOM：支援 combobox 流程用到的屬性選擇器。 */
+type FakeNode = {
+  tag: string;
+  id: string;
+  attrs: Record<string, string>;
+  dataset: Record<string, string | undefined>;
+  textContent: string;
+  innerText: string;
+  offsetParent: unknown;
+  parentElement: FakeNode | null;
+  children: FakeNode[];
+  click: ReturnType<typeof vi.fn>;
+  getAttribute: (name: string) => string | null;
+  hasAttribute: (name: string) => boolean;
+  contains: (other: FakeNode) => boolean;
+  querySelectorAll: (selector: string) => FakeNode[];
+  querySelector: (selector: string) => FakeNode | null;
+};
+
+function fakeNode(
+  tag: string,
+  attrs: Record<string, string> = {},
+  text = "",
+): FakeNode {
+  const node: FakeNode = {
+    tag,
+    id: attrs.id ?? "",
+    attrs,
+    dataset: {},
+    textContent: text,
+    innerText: text,
+    offsetParent: {},
+    parentElement: null,
+    children: [],
+    click: vi.fn(),
+    getAttribute: (name) => {
+      if (name.startsWith("data-")) {
+        const key = name
+          .slice(5)
+          .replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+        return node.dataset[key] ?? null;
+      }
+      return node.attrs[name] ?? null;
+    },
+    hasAttribute: (name) => node.getAttribute(name) !== null,
+    contains: (other) =>
+      node.children.some((child) => child === other || child.contains(other)),
+    querySelectorAll: (selector) =>
+      descendants(node).filter((candidate) => matches(candidate, selector)),
+    querySelector: (selector) => node.querySelectorAll(selector)[0] ?? null,
+  };
+  return node;
+}
+
+function append(parent: FakeNode, ...children: FakeNode[]) {
+  for (const child of children) {
+    child.parentElement = parent;
+    parent.children.push(child);
+  }
+  return parent;
+}
+
+function descendants(node: FakeNode): FakeNode[] {
+  return node.children.flatMap((child) => [child, ...descendants(child)]);
+}
+
+function matches(node: FakeNode, selector: string): boolean {
+  return selector.split(",").some((part) => {
+    const simple = part.trim();
+    if (simple === "*") return true;
+    const tag = /^[a-z]+/.exec(simple)?.[0];
+    if (tag && node.tag !== tag) return false;
+    return Array.from(
+      simple.matchAll(/\[([\w-]+)(?:([*]?=)['"]([^'"]*)['"])?\]/g),
+    ).every(([, name, op, value]) => {
+      const actual = node.getAttribute(name!);
+      if (!op) return actual !== null;
+      if (actual === null) return false;
+      return op === "=" ? actual === value : actual.includes(value!);
     });
-    const page = {
-      evaluate: vi.fn(
-        async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
-          fn(...args),
-      ),
-      focus: vi.fn().mockResolvedValue(undefined),
-      keyboard: { press: vi.fn().mockResolvedValue(undefined) },
-      click: vi.fn(async () => {
-        open = true;
-      }),
-      waitForFunction: vi
-        .fn()
-        .mockRejectedValueOnce(new Error("timeout"))
-        .mockResolvedValueOnce(undefined),
-    };
+  });
+}
+
+function fakeDocument(root: FakeNode) {
+  return {
+    querySelectorAll: (selector: string) => root.querySelectorAll(selector),
+    querySelector: (selector: string) => root.querySelector(selector),
+    getElementById: (id: string) =>
+      descendants(root).find((node) => node.id === id) ?? null,
+    elementFromPoint: () => null,
+  };
+}
+
+function comboboxPage(onClick?: (selector: string) => void) {
+  return {
+    evaluate: vi.fn(
+      async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
+        fn(...args),
+    ),
+    focus: vi.fn().mockResolvedValue(undefined),
+    keyboard: { press: vi.fn().mockResolvedValue(undefined) },
+    click: vi.fn(async (selector: string) => onClick?.(selector)),
+  };
+}
+
+const quick = { keyboardMs: 0, openMs: 0, labelMs: 0 };
+
+/** 帳號 combobox：control（含顯示文字）> input；選項放在 menu 裡。 */
+function accountSelector(selected: string) {
+  const root = fakeNode("div");
+  const container = fakeNode("div", { class: "css-b62m3t-container" });
+  const control = fakeNode(
+    "div",
+    { class: "css-13cymwt-control" },
+    `${selected} 活期儲蓄存款`,
+  );
+  const input = fakeNode("input", {
+    role: "combobox",
+    id: "account-select",
+  });
+  append(control, input);
+  append(container, control);
+  append(root, container);
+  const select = (text: string) => {
+    control.innerText = text;
+    control.textContent = text;
+  };
+  return { root, container, control, input, select };
+}
+
+describe("Cathay account combobox", () => {
+  it("opens with the keyboard, picks the whole account number and confirms it", async () => {
+    const { root, container, input, select } = accountSelector("111111111111");
+    const menu = fakeNode("div", { class: "css-26l3qy-menu" });
+    const longer = fakeNode(
+      "div",
+      { role: "option", id: "react-select-2-option-0" },
+      "1234567890123 其他帳戶",
+    );
+    const exact = fakeNode(
+      "div",
+      { role: "option", id: "react-select-2-option-1" },
+      "123456789012 子帳戶",
+    );
+    exact.click = vi.fn(() => select("123456789012 子帳戶"));
+    append(menu, longer, exact);
+    append(container, menu);
+    vi.stubGlobal("document", fakeDocument(root));
+    const page = comboboxPage();
 
     await expect(
-      chooseCathayComboboxOption(page as never, "account", "123456789012"),
+      chooseCathayComboboxOption(
+        page as never,
+        "account",
+        "123456789012",
+        quick,
+      ),
+    ).resolves.toBe(true);
+    expect(input.dataset.cathayCombobox).toBe("account");
+    expect(longer.click).not.toHaveBeenCalled();
+    expect(exact.click).toHaveBeenCalledOnce();
+    expect(page.click).not.toHaveBeenCalled();
+  });
+
+  it("clicks the control when the keyboard does not open the menu", async () => {
+    const { root, container, control, select } =
+      accountSelector("111111111111");
+    // 改版後選項沒有 role／id，只有 react-select 的 class 命名；之前留下的隱藏選項不算。
+    const stale = fakeNode(
+      "div",
+      { class: "css-1n7v3ny-option" },
+      "123456789012",
+    );
+    stale.offsetParent = null;
+    append(container, stale);
+    const option = fakeNode(
+      "div",
+      { class: "css-d7l1ni-option" },
+      "123456789012 活期儲蓄存款",
+    );
+    option.click = vi.fn(() => select("123456789012 活期儲蓄存款"));
+    const menu = fakeNode("div", { class: "css-26l3qy-menu" });
+    vi.stubGlobal("document", fakeDocument(root));
+    const page = comboboxPage(() => {
+      append(menu, option);
+      append(container, menu);
+    });
+
+    await expect(
+      chooseCathayComboboxOption(
+        page as never,
+        "account",
+        "123456789012",
+        quick,
+      ),
     ).resolves.toBe(true);
     expect(control.dataset.cathayControl).toBe("account");
     expect(page.click).toHaveBeenCalledWith('[data-cathay-control="account"]');
+    expect(stale.click).not.toHaveBeenCalled();
     expect(option.click).toHaveBeenCalledOnce();
   });
 
-  it("reports menu structure with counts and class names only", () => {
-    const input = {
-      getAttribute: (name: string) =>
-        name === "aria-expanded" ? "false" : null,
-      hasAttribute: () => true,
-    };
-    const menu = { getAttribute: () => "css-26l3qy-menu" };
-    vi.stubGlobal("document", {
-      querySelector: (selector: string) =>
-        selector.includes("data-cathay-combobox") ? input : null,
-      querySelectorAll: (selector: string) =>
-        selector === "[class*='menu']" ? [menu] : [],
-    });
+  it("does not click an already expanded control and reports diagnostics", async () => {
+    const { root, input } = accountSelector("111111111111");
+    input.attrs["aria-expanded"] = "true";
+    vi.stubGlobal("document", fakeDocument(root));
+    const page = comboboxPage();
 
-    expect(cathayMenuStructure("account")).toEqual({
-      expanded: "false",
-      readOnly: true,
-      controlMarked: false,
-      roleOptionCount: 0,
-      idOptionCount: 0,
-      classOptionCount: 0,
-      listboxCount: 0,
-      menuClasses: ["css-26l3qy-menu"],
-      optionClasses: [],
+    const result = await chooseCathayComboboxOptionWithDiagnostics(
+      page as never,
+      "account",
+      "123456789012",
+      quick,
+    );
+    expect(result.selected).toBe(false);
+    expect(page.click).not.toHaveBeenCalled();
+    expect(result.diagnostics).toMatchObject({
+      afterKeyboard: { expanded: "true", marked: true },
     });
+    expect(JSON.stringify(result.diagnostics)).not.toMatch(/1111|活期/);
+  });
+
+  it("fails when the click does not change the selected account", async () => {
+    const { root, container } = accountSelector("111111111111");
+    const menu = fakeNode("div", { class: "css-26l3qy-menu" });
+    append(
+      menu,
+      fakeNode("div", { role: "option" }, "123456789012 活期儲蓄存款"),
+    );
+    append(container, menu);
+    vi.stubGlobal("document", fakeDocument(root));
+
+    await expect(
+      chooseCathayComboboxOptionWithDiagnostics(
+        comboboxPage() as never,
+        "account",
+        "123456789012",
+        quick,
+      ),
+    ).resolves.toMatchObject({
+      selected: false,
+      diagnostics: { clicked: true, applied: false },
+    });
+  });
+
+  it("reports a missing selector without opening anything", async () => {
+    const root = fakeNode("div");
+    append(root, fakeNode("input", { role: "combobox" }));
+    vi.stubGlobal("document", fakeDocument(root));
+    const page = comboboxPage();
+
+    await expect(
+      chooseCathayComboboxOption(
+        page as never,
+        "account",
+        "123456789012",
+        quick,
+      ),
+    ).resolves.toBe(false);
+    expect(page.focus).not.toHaveBeenCalled();
+  });
+
+  it("describes the menu structure with counts and class words only", () => {
+    const { root, input } = accountSelector("123456789012");
+    input.dataset.cathayCombobox = "account";
+    input.attrs["aria-expanded"] = "false";
+    vi.stubGlobal("document", fakeDocument(root));
+
+    const structure = cathayMenuStructure("account");
+    expect(structure).toMatchObject({
+      marked: true,
+      expanded: "false",
+      roleOptionCount: 0,
+      selectOptionCounts: [],
+      ancestorClasses: ["css-13cymwt-control", "css-b62m3t-container", ""],
+    });
+    expect(JSON.stringify(structure)).not.toMatch(/1234|活期/);
   });
 });
