@@ -40,7 +40,8 @@ export function mergeLegacyTransactionStatements(
           OR old_category.category_id = new_category.category_id)
         AND (old_invoice.invoice_id IS NULL OR new_invoice.invoice_id IS NULL)
         AND (old_role.target_id IS NULL OR new_role.target_id IS NULL
-          OR old_role.economic_role = new_role.economic_role)
+          OR (old_role.economic_role = new_role.economic_role
+            AND lower(old_role.counterparty) IS lower(new_role.counterparty)))
     )`;
   return [
     `INSERT INTO bank_transaction_preferences
@@ -61,13 +62,13 @@ export function mergeLegacyTransactionStatements(
     // a plain override once both rows are the same transaction.
     `INSERT INTO activity_role_overrides
       (target_kind, target_id, economic_role, review_status, duplicate_of_kind,
-       duplicate_of_id, created_at, updated_at)
+       duplicate_of_id, counterparty, created_at, updated_at)
       SELECT 'bank_transaction', m.new_id, p.economic_role, p.review_status,
         CASE WHEN p.duplicate_of_kind = 'bank_transaction' AND p.duplicate_of_id = m.new_id
           THEN NULL ELSE p.duplicate_of_kind END,
         CASE WHEN p.duplicate_of_kind = 'bank_transaction' AND p.duplicate_of_id = m.new_id
           THEN NULL ELSE p.duplicate_of_id END,
-        p.created_at, p.updated_at
+        p.counterparty, p.created_at, p.updated_at
       FROM merges m JOIN activity_role_overrides p
         ON p.target_kind = 'bank_transaction' AND p.target_id = m.old_id
       WHERE true ON CONFLICT(target_kind, target_id) DO NOTHING`,
@@ -109,4 +110,58 @@ export function mergeLegacyTransactionStatements(
     const prepared = db.prepare(`${mapping} ${statement}`);
     return bindings.length > 0 ? prepared.bind(...bindings) : prepared;
   });
+}
+
+/**
+ * 即時消費入帳時，把使用者在舊交易上設定的經濟角色（含代墊對象）與備註搬到新交易。
+ * `links` 為 JSON 陣列，`fromPath`／`toPath` 指出每個元素中舊／新交易 id 的 JSON path。
+ * 兩邊都有角色時以較新（updated_at）的設定為準；備註兩邊不同時合併保留。
+ */
+export function carryRoleOverrideAndNoteStatements(
+  db: D1Database,
+  links: string,
+  fromPath: string,
+  toPath: string,
+) {
+  const from = `json_extract(link.value, '${fromPath}')`;
+  const to = `json_extract(link.value, '${toPath}')`;
+  return [
+    db
+      .prepare(
+        `INSERT INTO activity_role_overrides
+      (target_kind, target_id, economic_role, review_status, duplicate_of_kind,
+       duplicate_of_id, counterparty, created_at, updated_at)
+      SELECT 'bank_transaction', ${to}, p.economic_role, p.review_status,
+        CASE WHEN p.duplicate_of_kind = 'bank_transaction' AND p.duplicate_of_id = ${to}
+          THEN NULL ELSE p.duplicate_of_kind END,
+        CASE WHEN p.duplicate_of_kind = 'bank_transaction' AND p.duplicate_of_id = ${to}
+          THEN NULL ELSE p.duplicate_of_id END,
+        p.counterparty, p.created_at, p.updated_at
+      FROM json_each(?) link JOIN activity_role_overrides p
+        ON p.target_kind = 'bank_transaction' AND p.target_id = ${from}
+      WHERE ${to} IS NOT NULL AND ${to} <> ${from}
+      ON CONFLICT(target_kind, target_id) DO UPDATE SET
+        economic_role = excluded.economic_role,
+        review_status = excluded.review_status,
+        duplicate_of_kind = excluded.duplicate_of_kind,
+        duplicate_of_id = excluded.duplicate_of_id,
+        counterparty = excluded.counterparty,
+        updated_at = excluded.updated_at
+      WHERE excluded.updated_at > activity_role_overrides.updated_at`,
+      )
+      .bind(links),
+    db
+      .prepare(
+        `INSERT INTO activity_notes (target_kind, target_id, note, created_at, updated_at)
+      SELECT 'bank_transaction', ${to}, p.note, p.created_at, p.updated_at
+      FROM json_each(?) link JOIN activity_notes p
+        ON p.target_kind = 'bank_transaction' AND p.target_id = ${from}
+      WHERE ${to} IS NOT NULL AND ${to} <> ${from}
+      ON CONFLICT(target_kind, target_id) DO UPDATE SET
+        note = substr(activity_notes.note || char(10) || excluded.note, 1, 1000),
+        updated_at = excluded.updated_at
+      WHERE activity_notes.note <> excluded.note`,
+      )
+      .bind(links),
+  ];
 }

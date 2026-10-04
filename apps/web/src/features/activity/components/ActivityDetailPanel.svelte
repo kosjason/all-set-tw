@@ -123,8 +123,11 @@
   }: ActivityDetailPanelProps = $props();
   const invoiceCurrency = $derived(invoice?.currency ?? "TWD");
   const amount = $derived(activityDisplayAmount(item));
+  // 已併入另一筆的重複項目不能改角色；但使用者自己在它上面設過角色（例如先在發票上標代墊，
+  // 之後才配對到刷卡）時仍可修改或恢復，否則設定會被卡住。
   const roleEditable = $derived(
-    activityRoleTarget(item) != null && !item.duplicateOf,
+    activityRoleTarget(item) != null &&
+      (!item.duplicateOf || item.roleReason === "override"),
   );
   const reviewing = $derived(needsReview(item));
   const roleReason = $derived(activityRoleReasonLabel(item));
@@ -217,13 +220,15 @@
         </div>
         <Badge variant="secondary" class="mt-3"
           >{showsRoleInsteadOfCategory(item) && item.economicRole
-            ? ECONOMIC_ROLE_LABELS[item.economicRole]
+            ? item.advanceCounterparty
+              ? `${ECONOMIC_ROLE_LABELS[item.economicRole]} · ${item.advanceCounterparty}`
+              : ECONOMIC_ROLE_LABELS[item.economicRole]
             : categoryOptionText(category)}</Badge
         >
         {#if item.economicRole === "excluded"}<Badge
             variant="secondary"
             class="ml-2 mt-3">{excludedStatusLabel(item)}</Badge
-          >{:else if item.excludedFromCalculation}<Badge
+          >{:else if item.excludedFromCalculation && excluded}<Badge
             variant="secondary"
             class="ml-2 mt-3">已排除計算</Badge
           >{/if}
@@ -277,7 +282,8 @@
               >
                 若這張發票不是那筆交易，請在下方「發票配對」選擇分開記錄。
               </p>{/if}
-          {:else if roleEditable && item.economicRole}
+          {/if}
+          {#if roleEditable && item.economicRole}
             <div
               class="mt-3 flex flex-wrap gap-2"
               role="group"
@@ -298,7 +304,7 @@
             {#if reviewing}<p class="mt-2 text-caption text-amber-900">
                 系統無法確定這筆的角色，選擇後就會確認並重新計算本月收支。
               </p>{/if}
-          {:else if item.economicRole}
+          {:else if !item.duplicateOf && item.economicRole}
             <p class="mt-2">
               <Badge variant="secondary"
                 >{ECONOMIC_ROLE_LABELS[item.economicRole]}</Badge
@@ -474,7 +480,8 @@
               >{/if}
           </div>
 
-          {#if item.transactionId}<label
+          <!-- 代墊／收回代墊已明確不計入收支，舊的排除設定對它沒有作用，不顯示。 -->
+          {#if item.transactionId && item.economicRole !== "advance" && item.economicRole !== "reimbursement"}<label
               class="flex cursor-pointer items-center justify-between gap-4 py-4"
             >
               <span>

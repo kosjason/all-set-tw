@@ -80,6 +80,7 @@ const NON_MERGEABLE_SOURCES = new Set<ClassificationSource>([
 /** 使用者或系統已確認角色時，商家規則角色不覆蓋。 */
 const PROTECTED_ROLE_REASONS = new Set<EconomicRoleFields["roleReason"]>([
   "override",
+  "invoice_override",
   "calculation_preference",
   "own_account",
   "unsynced_card",

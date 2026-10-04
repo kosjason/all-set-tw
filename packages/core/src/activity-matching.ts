@@ -273,13 +273,16 @@ export function matchInvoicesToTransactions<I extends MatchingInvoice>(
   // A top-up moves money into the user's own e-wallet; the purchase it later
   // funds carries the invoice, so a top-up is never an automatic counterpart.
   // Foreign transaction fees and non-spending roles never carry an invoice.
+  // 代墊也是一筆實際付款（只是不算自己的消費），仍要與發票配對，否則發票會被當成另一筆消費。
   const eligibleTransactions = transactions.filter(
     (transaction) =>
       !isStoredValueTopUp(transaction) &&
       !isForeignTransactionFee(transaction) &&
-      transaction.excludedFromCalculation !== true &&
+      (transaction.excludedFromCalculation !== true ||
+        transaction.economicRole === "advance") &&
       (transaction.economicRole == null ||
-        transaction.economicRole === "spending"),
+        transaction.economicRole === "spending" ||
+        transaction.economicRole === "advance"),
   );
   // 同一筆消費重複開立的外幣發票：每組先只讓第一張參與配對；配到後才讓下一張
   // 找下一筆付款（真的付了兩次時兩張都配得到），其餘標為 repeat。

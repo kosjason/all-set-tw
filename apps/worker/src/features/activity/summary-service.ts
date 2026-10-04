@@ -14,6 +14,7 @@ import {
   type ActivitySummaryIncompleteReason,
   type EconomicRoleFields,
   type EconomicRoleOverride,
+  carryInvoiceAdvancesToTransactions,
 } from "@taiwan-fin-hub/core";
 import { listBankAccounts } from "../bank/repository";
 import { normalizeBankAccountDisplay } from "../bank/display";
@@ -148,7 +149,7 @@ export async function loadRoleActivities(
   );
   const monthSet = new Set(months);
   const built = buildActivityItems(
-    transactions,
+    carryInvoiceAdvancesToTransactions(transactions, invoiceRoles),
     invoices,
     trades,
     accountMap,

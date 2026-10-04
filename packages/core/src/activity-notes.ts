@@ -53,6 +53,8 @@ export interface ActivityExportItem {
   categorySource: CategorySource;
   economicRole: EconomicRole | null;
   reviewStatus: ReviewStatus | null;
+  /** 代墊／收回代墊的對象；其他角色為 null。 */
+  advanceCounterparty: string | null;
   note: string | null;
   itemsPreview: string[];
   /** 帳戶顯示名稱，例如「玉山銀行 信用卡 …1234」；發票為「電子發票」。 */

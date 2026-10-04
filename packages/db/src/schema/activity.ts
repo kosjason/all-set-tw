@@ -1,5 +1,11 @@
 import { sql } from "drizzle-orm";
-import { sqliteTable, text, primaryKey, check } from "drizzle-orm/sqlite-core";
+import {
+  sqliteTable,
+  text,
+  primaryKey,
+  check,
+  index,
+} from "drizzle-orm/sqlite-core";
 
 // SQL migrations remain authoritative for schema shape and constraints.
 
@@ -14,11 +20,15 @@ export const activityRoleOverrides = sqliteTable(
       .default(sql`'confirmed'`),
     duplicateOfKind: text("duplicate_of_kind"),
     duplicateOfId: text("duplicate_of_id"),
+    counterparty: text("counterparty"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.targetKind, table.targetId] }),
+    index("idx_activity_role_overrides_counterparty")
+      .on(table.counterparty)
+      .where(sql`counterparty IS NOT NULL`),
     check(
       "activity_role_overrides_check_1",
       sql`target_kind IN ('bank_transaction', 'invoice')`,
@@ -26,7 +36,10 @@ export const activityRoleOverrides = sqliteTable(
     check(
       "activity_role_overrides_check_2",
       sql`
-    economic_role IN ('spending', 'income', 'own_transfer', 'investment', 'card_payment', 'excluded')
+    economic_role IN (
+      'spending', 'income', 'own_transfer', 'investment', 'card_payment', 'excluded',
+      'advance', 'reimbursement'
+    )
   `,
     ),
     check("activity_role_overrides_check_3", sql`review_status = 'confirmed'`),
@@ -43,6 +56,17 @@ export const activityRoleOverrides = sqliteTable(
     check(
       "activity_role_overrides_check_6",
       sql`NOT (duplicate_of_kind = target_kind AND duplicate_of_id = target_id)`,
+    ),
+    check(
+      "activity_role_overrides_check_7",
+      sql`
+    counterparty IS NULL
+    OR (counterparty = trim(counterparty) AND length(counterparty) BETWEEN 1 AND 40)
+  `,
+    ),
+    check(
+      "activity_role_overrides_check_8",
+      sql`(economic_role IN ('advance', 'reimbursement')) = (counterparty IS NOT NULL)`,
     ),
   ],
 );

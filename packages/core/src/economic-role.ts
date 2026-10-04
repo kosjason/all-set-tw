@@ -36,6 +36,9 @@ import {
  * - card_payment：繳已同步信用卡的卡費（銀行端扣款與卡片端入帳）
  * - excluded：不計入（沒有實際付款、已退款作廢、測試等）；列表仍列出，但不計入
  *   summary 的任何收支欄位，只另計 excludedAmount／excludedCount。
+ * - advance：代墊（幫別人付、等對方還）；reimbursement：收回代墊（對方還的錢）。兩者都
+ *   不計入收入與消費，只另計 advance／reimbursement 金額，並依對象（advanceCounterparty）
+ *   累計待收回餘額。
  */
 export const ECONOMIC_ROLES = [
   "spending",
@@ -44,12 +47,14 @@ export const ECONOMIC_ROLES = [
   "investment",
   "card_payment",
   "excluded",
+  "advance",
+  "reimbursement",
 ] as const;
 export type EconomicRole = (typeof ECONOMIC_ROLES)[number];
 
 /**
- * 分類規則與商家規則可指定的角色（不含 excluded：「不計入」只針對個別活動，
- * 由 override 或作廢發票判定）。
+ * 分類規則與商家規則可指定的角色（不含 excluded、advance、reimbursement：這些只針對
+ * 個別活動，由使用者 override 或作廢發票判定）。
  */
 export const RULE_ECONOMIC_ROLES = [
   "spending",
@@ -67,7 +72,36 @@ export const ECONOMIC_ROLE_LABELS: Readonly<Record<EconomicRole, string>> = {
   investment: "投資",
   card_payment: "繳卡費",
   excluded: "不計入",
+  advance: "代墊",
+  reimbursement: "收回代墊",
 };
+
+/** 需要指定對象（advanceCounterparty）的角色。 */
+export const ADVANCE_ROLES = ["advance", "reimbursement"] as const;
+export type AdvanceRole = (typeof ADVANCE_ROLES)[number];
+export function isAdvanceRole(
+  role: EconomicRole | null | undefined,
+): role is AdvanceRole {
+  return role === "advance" || role === "reimbursement";
+}
+
+/** 代墊對象名稱上限（正規化後的字元數）。 */
+export const ADVANCE_COUNTERPARTY_MAX_LENGTH = 40;
+
+/**
+ * 正規化代墊對象名稱：NFKC（全半形一致）、去頭尾空白、連續空白合併為一個。
+ * 空字串或超過上限回傳 null。
+ */
+export function normalizeAdvanceCounterparty(
+  name: string | null | undefined,
+): string | null {
+  if (typeof name !== "string") return null;
+  const normalized = name.normalize("NFKC").trim().replace(/\s+/g, " ");
+  if (!normalized) return null;
+  return [...normalized].length <= ADVANCE_COUNTERPARTY_MAX_LENGTH
+    ? normalized
+    : null;
+}
 
 export const REVIEW_STATUSES = ["auto", "confirmed", "needs_review"] as const;
 export type ReviewStatus = (typeof REVIEW_STATUSES)[number];
@@ -90,6 +124,11 @@ export interface ActivityRef {
 /** 角色的判定依據，供畫面說明與除錯；不影響金額。 */
 export type EconomicRoleReason =
   | "override"
+  /**
+   * 使用者在已配對的發票上指定了代墊，角色帶到這筆交易；設定仍存在發票上，
+   * 交易本身沒有 override（不能從交易「恢復自動判斷」）。
+   */
+  | "invoice_override"
   | "calculation_preference"
   | "own_account"
   | "unsynced_card"
@@ -126,6 +165,8 @@ export interface EconomicRoleFields {
   duplicateOf: ActivityRef | null;
   investmentEventKind: InvestmentEventKind | null;
   roleReason: EconomicRoleReason;
+  /** 角色為代墊／收回代墊時的對象；其他角色不帶此欄。 */
+  advanceCounterparty?: string | null;
 }
 
 export interface EconomicRoleOverride {
@@ -134,6 +175,8 @@ export interface EconomicRoleOverride {
   economicRole: EconomicRole;
   reviewStatus: "confirmed";
   duplicateOf: ActivityRef | null;
+  /** 代墊對象；只有 advance／reimbursement 有值。 */
+  counterparty: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -362,7 +405,11 @@ export function tradeEconomicRole(trade: {
  */
 export function applyEconomicRoleOverride(
   fields: EconomicRoleFields,
-  override?: Pick<EconomicRoleOverride, "economicRole" | "duplicateOf"> | null,
+  override?:
+    | (Pick<EconomicRoleOverride, "economicRole" | "duplicateOf"> & {
+        counterparty?: string | null;
+      })
+    | null,
 ): EconomicRoleFields {
   if (!override) return fields;
   return {
@@ -374,6 +421,9 @@ export function applyEconomicRoleOverride(
         ? fields.investmentEventKind
         : null,
     roleReason: "override",
+    ...(isAdvanceRole(override.economicRole)
+      ? { advanceCounterparty: override.counterparty ?? null }
+      : {}),
   };
 }
 
@@ -409,7 +459,8 @@ export function deriveInvoiceEconomicRoles<I extends MatchingInvoice>(
   const unmatchedSpending = transactions.filter(
     (transaction) =>
       !matches.transactionToInvoice.has(transaction.id) &&
-      transaction.economicRole === "spending" &&
+      (transaction.economicRole === "spending" ||
+        transaction.economicRole === "advance") &&
       transaction.duplicateOf == null &&
       transaction.currency === "TWD" &&
       transaction.amount < 0 &&
@@ -481,6 +532,14 @@ export interface ActivityMonthSummary {
   excludedAmount: number;
   /** 角色為「不計入」的活動筆數（含缺匯率者）。 */
   excludedCount: number;
+  /**
+   * 代墊淨額（TWD）：付出為正、代墊的退款為負。不計入收入與消費；不含重複項目。
+   */
+  advanceAmount: number;
+  advanceCount: number;
+  /** 收回代墊淨額（TWD）：收到為正。不計入收入與消費；不含重複項目。 */
+  reimbursementAmount: number;
+  reimbursementCount: number;
   /**
    * 頂層消費分類 id → 消費淨額（新分類體系；`other` 為未分類，使用者自訂分類
    * 歸入 `misc`）。
@@ -593,6 +652,10 @@ export function summarizeActivityMonths(
         duplicateExcluded: 0,
         excludedAmount: 0,
         excludedCount: 0,
+        advanceAmount: 0,
+        advanceCount: 0,
+        reimbursementAmount: 0,
+        reimbursementCount: 0,
         spendingByCategory: {} as Record<string, number>,
         spendingBySubcategory: {} as Record<string, number>,
         complete: true,
@@ -635,6 +698,17 @@ export function summarizeActivityMonths(
     }
     if (item.duplicateOf) {
       summary.duplicateExcluded += Math.abs(amount);
+      continue;
+    }
+    // 代墊／收回代墊在重複判斷之後才計，避免發票與刷卡兩邊都算；不進收入與消費。
+    if (item.economicRole === "advance") {
+      summary.advanceAmount -= amount;
+      summary.advanceCount += 1;
+      continue;
+    }
+    if (item.economicRole === "reimbursement") {
+      summary.reimbursementAmount += amount;
+      summary.reimbursementCount += 1;
       continue;
     }
     summary.activityCount += 1;
@@ -683,6 +757,8 @@ export function summarizeActivityMonths(
       },
       duplicateExcluded: round(summary.duplicateExcluded),
       excludedAmount: round(summary.excludedAmount),
+      advanceAmount: round(summary.advanceAmount),
+      reimbursementAmount: round(summary.reimbursementAmount),
       spendingByCategory: roundValues(summary.spendingByCategory),
       spendingBySubcategory: roundValues(summary.spendingBySubcategory),
       missingCurrencies: [...summary.missingCurrencies].sort(),
@@ -765,4 +841,146 @@ function completeness(
     (reason) => reasons.has(reason),
   );
   return { complete: incompleteReasons.length === 0, incompleteReasons };
+}
+
+/** 一筆代墊或收回代墊。 */
+export interface AdvanceEntry {
+  id: string;
+  source: "bank" | "card" | "invoice";
+  /** 台北日期 YYYY-MM-DD。 */
+  day: string;
+  role: AdvanceRole;
+  displayName: string;
+  currency: string;
+  /** 原幣帶正負號金額（付出為負、收到為正）。 */
+  amount: number;
+  /** 對待收回餘額的影響（原幣）：付出代墊為正、收回或代墊退款為負。 */
+  receivableDelta: number;
+  pending: boolean;
+}
+
+export interface AdvanceCounterpartySummary {
+  name: string;
+  /** 依幣別的待收回餘額：正數為對方尚欠，負數為對方多給（有餘額）。不跨幣別相抵。 */
+  balances: Record<string, number>;
+  /** 依幣別的代墊淨額（付出為正）。 */
+  advanced: Record<string, number>;
+  /** 依幣別的收回淨額（收到為正）。 */
+  reimbursed: Record<string, number>;
+  lastDay: string;
+  entries: AdvanceEntry[];
+}
+
+/**
+ * 依對象彙總代墊與收回代墊（不分月份，傳入全部相關活動）。只看銀行、信用卡與發票，
+ * 略過重複項目與沒有對象的項目；對象名稱不分大小寫合併，顯示最近一筆的寫法。
+ * 金額以原幣計，不換匯、不跨幣別相抵。
+ */
+export function summarizeAdvances(
+  items: Array<
+    SummaryActivity &
+      Pick<ActivityItem, "id" | "title" | "status" | "advanceCounterparty"> &
+      Partial<Pick<ActivityItem, "displayName">>
+  >,
+): AdvanceCounterpartySummary[] {
+  const groups = new Map<string, AdvanceCounterpartySummary>();
+  for (const item of items) {
+    if (
+      item.source !== "bank" &&
+      item.source !== "card" &&
+      item.source !== "invoice"
+    )
+      continue;
+    if (!isAdvanceRole(item.economicRole) || item.duplicateOf) continue;
+    const name = item.advanceCounterparty;
+    if (!name) continue;
+    const signed = signedAmount(item);
+    if (signed == null) continue;
+    const day = activityDateKey(item);
+    const key = name.toLocaleLowerCase();
+    const group = groups.get(key) ?? {
+      name,
+      balances: {},
+      advanced: {},
+      reimbursed: {},
+      lastDay: day,
+      entries: [],
+    };
+    const currency = item.currency;
+    const delta = -signed;
+    group.balances[currency] = (group.balances[currency] ?? 0) + delta;
+    if (item.economicRole === "advance")
+      group.advanced[currency] = (group.advanced[currency] ?? 0) + delta;
+    else
+      group.reimbursed[currency] = (group.reimbursed[currency] ?? 0) + signed;
+    if (day > group.lastDay) {
+      group.lastDay = day;
+      group.name = name;
+    }
+    group.entries.push({
+      id: item.id,
+      source: item.source,
+      day,
+      role: item.economicRole,
+      displayName: item.displayName || item.title,
+      currency,
+      amount: round(signed),
+      receivableDelta: round(delta),
+      pending: item.status === "pending",
+    });
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      balances: roundValues(group.balances),
+      advanced: roundValues(group.advanced),
+      reimbursed: roundValues(group.reimbursed),
+      entries: group.entries.sort(
+        (a, b) => b.day.localeCompare(a.day) || a.id.localeCompare(b.id),
+      ),
+    }))
+    .sort(
+      (a, b) =>
+        Math.abs(b.balances.TWD ?? 0) - Math.abs(a.balances.TWD ?? 0) ||
+        b.lastDay.localeCompare(a.lastDay),
+    );
+}
+
+/**
+ * 使用者在發票上設了代墊／收回代墊，之後發票與刷卡配對成重複時，發票本身不再計入；
+ * 把代墊（含對象）帶到它指向的交易上，避免代墊消失、金額回到消費。交易自己有使用者
+ * override 時以交易為準。
+ */
+export function carryInvoiceAdvancesToTransactions<
+  T extends { id: string } & Partial<EconomicRoleFields>,
+>(
+  transactions: T[],
+  invoiceRoles: ReadonlyMap<string, EconomicRoleFields>,
+): T[] {
+  const carried = new Map<string, EconomicRoleFields>();
+  for (const fields of invoiceRoles.values()) {
+    // 只帶代墊（購買發票標成收回代墊沒有意義）；沒有對象的舊資料也帶，彙總時自然略過。
+    if (
+      fields.economicRole !== "advance" ||
+      fields.roleReason !== "override" ||
+      fields.duplicateOf?.kind !== "bank_transaction"
+    )
+      continue;
+    if (!carried.has(fields.duplicateOf.id))
+      carried.set(fields.duplicateOf.id, fields);
+  }
+  if (carried.size === 0) return transactions;
+  return transactions.map((transaction) => {
+    const fields = carried.get(transaction.id);
+    if (!fields || transaction.roleReason === "override") return transaction;
+    return {
+      ...transaction,
+      economicRole: fields.economicRole,
+      reviewStatus: "confirmed",
+      roleReason: "invoice_override",
+      investmentEventKind: null,
+      advanceCounterparty: fields.advanceCounterparty ?? null,
+    };
+  });
 }

@@ -20,6 +20,7 @@
     activitySearchQuery,
     activitySummaryQuery,
   } from "@/data/activity/queries";
+  import { advancesQuery } from "@/data/advances/queries";
   import {
     activitySummaryEquation,
     activitySummaryExcludedParts,
@@ -88,12 +89,14 @@
   import {
     ECONOMIC_ROLE_CHOICE_LABELS,
     ECONOMIC_ROLE_LABELS,
+    ECONOMIC_ROLES_ASKING_COUNTERPARTY,
     ECONOMIC_ROLES_ASKING_REASON,
     activityNoteTarget,
     activityRoleTarget,
     duplicateTargetLabel,
     findDuplicateTarget,
     roleOverridePath,
+    roleResetTarget,
   } from "./model/roles";
   import {
     activityHash,
@@ -782,12 +785,16 @@
       item: ActivityItem;
       role: EconomicRole;
       note?: string;
+      counterparty?: string;
     }) => {
       const target = activityRoleTarget(payload.item);
       if (!target) throw new Error("此活動不支援調整角色。");
       return api.put(roleOverridePath(target), {
         economicRole: payload.role,
         ...(payload.note !== undefined ? { note: payload.note } : {}),
+        ...(payload.counterparty !== undefined
+          ? { counterparty: payload.counterparty }
+          : {}),
       });
     },
     onSuccess: () => {
@@ -799,13 +806,26 @@
   let pendingRole = $state<{ item: ActivityItem; role: EconomicRole } | null>(
     null,
   );
-  function submitRoleReason(reason: string) {
+  function submitRoleReason(reason: string, counterparty?: string) {
     if (!pendingRole) return;
     const { item, role } = pendingRole;
     // 沒有改動原因時不送 note，保留既有備註（也不會在配對的另一筆多寫一份）。
     const note = reason === (item.note ?? "").trim() ? undefined : reason;
-    $roleMutation.mutate({ item, role, note });
+    $roleMutation.mutate({ item, role, note, counterparty });
   }
+  // 代墊對象的建議名稱：已用過的對象，依最近一筆排序。只在開啟對話框時才讀取。
+  const advances = createQuery(
+    toStore(() => ({
+      ...advancesQuery(() => api),
+      enabled: pendingRole != null,
+      staleTime: 60_000,
+    })),
+  );
+  const counterpartySuggestions = $derived(
+    [...($advances.data?.counterparties ?? [])]
+      .sort((a, b) => b.lastDay.localeCompare(a.lastDay))
+      .map((entry) => entry.name),
+  );
   // 備註：寫到 noteTarget（已配對的交易與發票共用），清空即刪除。
   const saveNoteOptions = saveActivityNoteMutation(() => api);
   const deleteNoteOptions = deleteActivityNoteMutation(() => api);
@@ -832,7 +852,7 @@
   }
   const roleResetMutation = createMutation({
     mutationFn: (item: ActivityItem) => {
-      const target = activityRoleTarget(item);
+      const target = roleResetTarget(item);
       if (!target) throw new Error("此活動不支援調整角色。");
       return api.delete(roleOverridePath(target));
     },
@@ -841,7 +861,10 @@
   function changeRole(item: ActivityItem, role: EconomicRole) {
     $roleResetMutation.reset();
     $roleMutation.reset();
-    if (ECONOMIC_ROLES_ASKING_REASON.has(role)) {
+    if (
+      ECONOMIC_ROLES_ASKING_REASON.has(role) ||
+      ECONOMIC_ROLES_ASKING_COUNTERPARTY.has(role)
+    ) {
       pendingRole = { item, role };
       return;
     }
@@ -1218,6 +1241,11 @@
         title={pendingRole.item.title}
         roleLabel={ECONOMIC_ROLE_CHOICE_LABELS[pendingRole.role]}
         note={pendingRole.item.note}
+        askCounterparty={ECONOMIC_ROLES_ASKING_COUNTERPARTY.has(
+          pendingRole.role,
+        )}
+        counterparty={pendingRole.item.advanceCounterparty}
+        {counterpartySuggestions}
         submitting={$roleMutation.isPending}
         failed={$roleMutation.isError}
         onCancel={() => (pendingRole = null)}

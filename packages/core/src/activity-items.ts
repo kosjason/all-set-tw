@@ -174,6 +174,9 @@ function roleProps(fields?: Partial<EconomicRoleFields>) {
     duplicateOf: fields.duplicateOf ?? null,
     investmentEventKind: fields.investmentEventKind ?? null,
     roleReason: fields.roleReason ?? "sign",
+    ...(fields.advanceCounterparty
+      ? { advanceCounterparty: fields.advanceCounterparty }
+      : {}),
   };
 }
 function invoiceMatchProps(info?: InvoiceMatchInfo) {

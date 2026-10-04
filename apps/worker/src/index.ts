@@ -1,6 +1,7 @@
 import { activityRoutes } from "./features/activity/route";
 import { activityNoteRoutes } from "./features/activity-notes/route";
 import { activityRoleRoutes } from "./features/activity-roles/route";
+import { advanceRoutes } from "./features/advances/route";
 import { bankCalculationRoutes } from "./features/bank/calculation-route";
 import { bankRoutes } from "./features/bank/route";
 import { budgetRoutes } from "./features/budget/route";
@@ -45,6 +46,7 @@ api.route("/", classificationRoutes);
 api.route("/", ownAccountRoutes);
 api.route("/", activityRoutes);
 api.route("/", activityRoleRoutes);
+api.route("/", advanceRoutes);
 api.route("/", activityNoteRoutes);
 api.route("/", budgetRoutes);
 api.route("/", merchantRoutes);

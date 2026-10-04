@@ -17,6 +17,7 @@ const overrideColumns = {
   economicRole: sql<EconomicRole>`${activityRoleOverrides.economicRole}`,
   duplicateOfKind: sql<EconomicRoleTargetKind | null>`${activityRoleOverrides.duplicateOfKind}`,
   duplicateOfId: activityRoleOverrides.duplicateOfId,
+  counterparty: activityRoleOverrides.counterparty,
   createdAt: activityRoleOverrides.createdAt,
   updatedAt: activityRoleOverrides.updatedAt,
 };
@@ -27,6 +28,7 @@ type OverrideRow = {
   economicRole: EconomicRole;
   duplicateOfKind: EconomicRoleTargetKind | null;
   duplicateOfId: string | null;
+  counterparty: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -41,6 +43,7 @@ function toOverride(row: OverrideRow): EconomicRoleOverride {
       row.duplicateOfKind && row.duplicateOfId
         ? { kind: row.duplicateOfKind, id: row.duplicateOfId }
         : null,
+    counterparty: row.counterparty,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -80,6 +83,7 @@ export async function upsertActivityRoleOverride(
     reviewStatus: "confirmed",
     duplicateOfKind: override.duplicateOf?.kind ?? null,
     duplicateOfId: override.duplicateOf?.id ?? null,
+    counterparty: override.counterparty,
     updatedAt: override.updatedAt,
   };
   await createDrizzle(db)

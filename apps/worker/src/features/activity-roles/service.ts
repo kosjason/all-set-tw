@@ -1,5 +1,7 @@
 import {
   economicRoleOverrideKey,
+  isAdvanceRole,
+  normalizeAdvanceCounterparty,
   type ActivityRef,
   type EconomicRole,
   type EconomicRoleOverride,
@@ -17,6 +19,8 @@ export class ActivityRoleTargetNotFoundError extends Error {}
 export class ActivityRoleDuplicateNotFoundError extends Error {}
 export class ActivityRoleSelfDuplicateError extends Error {}
 export class ActivityRoleOverrideNotFoundError extends Error {}
+/** 代墊／收回代墊必須有對象；其他角色不可帶對象。 */
+export class ActivityRoleCounterpartyError extends Error {}
 
 export function getActivityRoleOverrides(db: D1Database) {
   return listActivityRoleOverrides(db);
@@ -47,11 +51,18 @@ export async function setActivityRoleOverride(
   input: {
     economicRole: EconomicRole;
     duplicateOf?: ActivityRef | null;
+    /** 代墊對象；advance／reimbursement 必填，其他角色必須省略或為 null。 */
+    counterparty?: string | null;
     /** 一併寫入備註；空字串或 null 刪除，undefined 不變更。 */
     note?: string | null;
   },
 ) {
   const duplicateOf = input.duplicateOf ?? null;
+  const counterparty = isAdvanceRole(input.economicRole)
+    ? normalizeAdvanceCounterparty(input.counterparty)
+    : null;
+  if (isAdvanceRole(input.economicRole) ? !counterparty : input.counterparty)
+    throw new ActivityRoleCounterpartyError();
   if (duplicateOf && duplicateOf.kind === kind && duplicateOf.id === id)
     throw new ActivityRoleSelfDuplicateError();
   const [targetExists, duplicateExists] = await Promise.all([
@@ -70,6 +81,7 @@ export async function setActivityRoleOverride(
     economicRole: input.economicRole,
     reviewStatus: "confirmed",
     duplicateOf,
+    counterparty,
     createdAt: now,
     updatedAt: now,
   };

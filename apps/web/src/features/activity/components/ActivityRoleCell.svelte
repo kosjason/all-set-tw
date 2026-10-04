@@ -37,7 +37,11 @@
   }: ActivityRoleCellProps = $props();
 
   const role = $derived(item.economicRole ?? "spending");
-  const label = $derived(ECONOMIC_ROLE_LABELS[role]);
+  const label = $derived(
+    item.advanceCounterparty
+      ? `${ECONOMIC_ROLE_LABELS[role]} · ${item.advanceCounterparty}`
+      : ECONOMIC_ROLE_LABELS[role],
+  );
   const reviewing = $derived(needsReview(item));
   const editable = $derived(
     Boolean(onRoleChange) && activityRoleTarget(item) != null,

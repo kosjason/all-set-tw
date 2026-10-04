@@ -15,6 +15,7 @@ import {
 } from "../activity-notes/route";
 import { ActivityNoteTooLongError } from "../activity-notes/service";
 import {
+  ActivityRoleCounterpartyError,
   ActivityRoleDuplicateNotFoundError,
   ActivityRoleOverrideNotFoundError,
   ActivityRoleSelfDuplicateError,
@@ -37,6 +38,8 @@ const overrideSchema = z
       .strict()
       .nullable()
       .optional(),
+    /** 代墊對象（advance／reimbursement 必填）；服務端正規化並限制 1–40 字。 */
+    counterparty: z.string().max(200).nullable().optional(),
     /** 一併寫入活動備註；空字串或 null 刪除，省略則不變更。 */
     note: activityNoteTextSchema.nullable().optional(),
   })
@@ -50,6 +53,12 @@ function roleOverrideError(error: unknown) {
       "DUPLICATE_ACTIVITY_NOT_FOUND",
       "The activity referenced by duplicateOf was not found.",
       404,
+    );
+  if (error instanceof ActivityRoleCounterpartyError)
+    return jsonError(
+      "INVALID_COUNTERPARTY",
+      "代墊與收回代墊需要填寫 1–40 字的對象；其他角色不可指定對象。",
+      400,
     );
   if (error instanceof ActivityRoleSelfDuplicateError)
     return jsonError(

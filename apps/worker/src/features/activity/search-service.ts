@@ -13,6 +13,7 @@ import {
   taipeiDay,
   type ActivityItem,
   type ActivityOrderKey,
+  carryInvoiceAdvancesToTransactions,
 } from "@taiwan-fin-hub/core";
 import { listBankAccounts } from "../bank/repository";
 import { normalizeBankAccountDisplay } from "../bank/display";
@@ -158,7 +159,7 @@ export async function searchActivity(
     const items = await annotateActivityItems(
       db,
       buildActivityItems(
-        transactions,
+        carryInvoiceAdvancesToTransactions(transactions, invoiceRoles),
         invoiceBatch,
         tradeBatch,
         accountMap,

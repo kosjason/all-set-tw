@@ -665,6 +665,7 @@ describe("activity notes, excluded role and auto-applied categories", () => {
       categorySource: "none",
       economicRole: "spending",
       reviewStatus: "needs_review",
+      advanceCounterparty: null,
       note: "跟朋友A買人民幣，存富邦華一",
       itemsPreview: [],
       account: "玉山銀行 末四碼 8901",
@@ -692,6 +693,7 @@ describe("activity notes, excluded role and auto-applied categories", () => {
     expect(Object.keys(voided).sort()).toEqual(
       [
         "account",
+        "advanceCounterparty",
         "amountTwd",
         "categoryId",
         "categoryLabel",

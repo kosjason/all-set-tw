@@ -27,6 +27,7 @@ apps/
     │   │   ├── activity/
     │   │   ├── activity-notes/
     │   │   ├── activity-roles/
+    │   │   ├── advances/
     │   │   ├── bank/
     │   │   ├── cards/
     │   │   ├── classification/
@@ -385,8 +386,33 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
 - `economicRole`：`spending`（消費，信用卡退款以正數沖減）、`income`、`own_transfer`
   （自有帳戶互轉、電支儲值，以及被排除計算且沒有其他角色依據者）、`investment`、
   `card_payment`（繳已同步信用卡：銀行端扣款與卡片端繳款入帳）、`excluded`（「不計入」：
-  沒有實際付款、已退款作廢、測試等；0063 起）。`excluded` 只來自使用者 override 或作廢發票，
-  分類規則與商家規則不能指定（`RULE_ECONOMIC_ROLES`，API 回 400）。
+  沒有實際付款、已退款作廢、測試等；0063 起）、`advance`（代墊：幫別人付、等對方還）與
+  `reimbursement`（收回代墊：對方還的錢；0073 起）。`excluded` 只來自使用者 override 或作廢發票；
+  `advance`／`reimbursement` 只來自使用者 override，且必須帶 `counterparty`（對象，API 以
+  `normalizeAdvanceCounterparty` 正規化為 NFKC、去頭尾空白、合併連續空白，1–40 字；其他角色帶
+  對象回 400 `INVALID_COUNTERPARTY`）。這三個角色分類規則與商家規則都不能指定
+  （`RULE_ECONOMIC_ROLES`，API 回 400）。
+- 代墊與收回代墊不計入收入、消費、本月可花與週回顧；月 summary 在重複判斷之後另計
+  `advanceAmount`／`advanceCount`（付出為正、代墊退款沖減）與 `reimbursementAmount`／
+  `reimbursementCount`。套用 override 後活動帶 `advanceCounterparty`。
+  `features/advances`（`GET /api/activity/advances`）以 `summarizeAdvances` 依對象（不分大小寫）
+  彙總全期間（自最早一筆代墊的前一個月起，最多 36 個月）的待收回餘額：
+  `receivableDelta = −帶正負號金額`，依幣別分開不換匯，負數表示對方多給。沿用
+  `loadRoleActivities` 的發票配對與即時消費去重，口徑與月 summary 一致。
+- 代墊仍是一筆實際付款：發票自動配對接受角色為 `advance` 的交易（含舊的排除計算設定），
+  避免發票被當成另一筆消費；使用者先在發票上設代墊、之後配對到刷卡時，
+  `carryInvoiceAdvancesToTransactions` 在讀取時把代墊與對象帶到該交易（月份與搜尋兩條路徑都套用；
+  只帶 `advance`；交易自己有 override 時以交易為準）。帶過去的交易 `roleReason = invoice_override`，
+  從交易「恢復自動判斷」時前端刪除的是發票上的設定（`matchedInvoiceId`）；已配對但自己有
+  override 的發票仍可修改或恢復；商家規則不會覆蓋。有歧義的發票判斷同樣把
+  代墊刷卡視為候選。信用卡未出帳與帳單推估把 `advance` 與 `spending` 一起計入（卡費仍要繳）。
+  匯出的活動帶 `advanceCounterparty`（遮蔽長數字）。
+- 即時消費入帳時，使用者在舊交易上的角色（含代墊對象）與備註會搬到新交易：共用的
+  `transaction-merge.ts` 合併欄位清單含 `counterparty`，兩邊都有角色時角色與對象都相同才合併；
+  永豐、玉山（未入帳搬到已入帳）與中信（已入帳那筆刪除、搬到保留的那筆）以
+  `carryRoleOverrideAndNoteStatements` 搬移：兩邊都有角色時以 `updated_at` 較新者為準、備註不同時
+  合併；中信刪除已入帳那筆前，也把其他 override 指向它的 `duplicate_of` 改指保留的那筆。
+  共用合併以不分大小寫比對兩邊的對象。
 - `reviewStatus`：`auto`／`confirmed`（使用者 override、個別計算設定、發票配對決策）／
   `needs_review`。與角色正交。
 - `duplicateOf`：`{ kind: "bank_transaction" | "invoice", id }` 或 `null`；重複的活動仍列出，

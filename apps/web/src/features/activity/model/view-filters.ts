@@ -121,6 +121,8 @@ export const ACTIVITY_ROLE_FILTERS: readonly ActivityRoleFilter[] = [
   "investment",
   "own_transfer",
   "card_payment",
+  "advance",
+  "reimbursement",
   "excluded",
 ];
 

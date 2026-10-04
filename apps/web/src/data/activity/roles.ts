@@ -12,6 +12,8 @@ export const ECONOMIC_ROLE_LABELS: Readonly<Record<EconomicRole, string>> = {
   investment: "投資",
   card_payment: "繳卡費",
   excluded: "不計入",
+  advance: "代墊",
+  reimbursement: "收回代墊",
 };
 
 /** 使用者可選的角色（列上快速選擇與明細「這筆是…」共用順序）；「不計入」放最後。 */
@@ -21,8 +23,14 @@ export const ECONOMIC_ROLE_CHOICES: readonly EconomicRole[] = [
   "own_transfer",
   "investment",
   "card_payment",
+  "advance",
+  "reimbursement",
   "excluded",
 ];
+
+/** 需要填寫對象的角色（代墊、收回代墊）；選擇時一律開啟對話框。 */
+export const ECONOMIC_ROLES_ASKING_COUNTERPARTY: ReadonlySet<EconomicRole> =
+  new Set(["advance", "reimbursement"]);
 
 /** 選單上的角色文字：「不計入」補上說明，其餘同 {@link ECONOMIC_ROLE_LABELS}。 */
 export const ECONOMIC_ROLE_CHOICE_LABELS: Readonly<
@@ -30,6 +38,8 @@ export const ECONOMIC_ROLE_CHOICE_LABELS: Readonly<
 > = {
   ...ECONOMIC_ROLE_LABELS,
   excluded: "不計入（未實際付款、已作廢）",
+  advance: "代墊（幫別人付，等對方還）",
+  reimbursement: "收回代墊（對方還我的錢）",
 };
 
 /**

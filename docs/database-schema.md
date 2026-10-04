@@ -9,16 +9,16 @@
 ## 目錄
 
 - Tables：38
-- Explicit indexes：45
+- Explicit indexes：46
 - Other objects：0
-- Migrations：67
+- Migrations：68
 
 ## Tables
 
 | Table | 用途 | Columns | Foreign keys | Indexes |
 | --- | --- | ---: | ---: | ---: |
 | [`activity_notes`](#activity_notes) | 使用者對單筆活動（銀行／信用卡交易或電子發票）的備註，讓自己與 LLM 知道這筆錢的原因。 | 5 | 0 | 0 |
-| [`activity_role_overrides`](#activity_role_overrides) | 使用者對活動經濟角色（收入／消費／投資／自有移轉／繳卡費／不計入）的覆寫與重複標記。 | 8 | 0 | 0 |
+| [`activity_role_overrides`](#activity_role_overrides) | 使用者對活動經濟角色（收入／消費／投資／自有移轉／繳卡費／不計入／代墊／收回代墊）的覆寫與重複標記。 | 9 | 0 | 1 |
 | [`bank_accounts`](#bank_accounts) | 各銀行與信用卡連接器同步回來的帳戶主檔；同一個實體帳戶可能同時存在多個來源記錄。 | 17 | 1 | 1 |
 | [`bank_balance_snapshots`](#bank_balance_snapshots) | 帳戶在特定時間點的餘額快照，供資產總值與歷史圖表計算。 | 15 | 1 | 2 |
 | [`bank_transaction_preferences`](#bank_transaction_preferences) | 使用者對銀行交易計算方式的個別偏好。 | 4 | 1 | 1 |
@@ -94,8 +94,8 @@ CREATE TABLE activity_notes (
 
 ### `activity_role_overrides`
 
-> 用途：使用者對活動經濟角色（收入／消費／投資／自有移轉／繳卡費／不計入）的覆寫與重複標記。
-> 注意：經濟角色在讀取時由交易、分類、自有帳戶與發票配對推導，不改寫 bank_transactions 或 invoices；只有使用者確認的結果存在此表，因此規則或自有帳戶變動後過去月份會自動重算。target_kind + target_id 為多型參照（bank_transaction／invoice），不設 FK；找不到對應活動的覆寫不影響任何金額。有 duplicate_of 的活動仍會列出，但不計入任何金額。
+> 用途：使用者對活動經濟角色（收入／消費／投資／自有移轉／繳卡費／不計入／代墊／收回代墊）的覆寫與重複標記。
+> 注意：經濟角色在讀取時由交易、分類、自有帳戶與發票配對推導，不改寫 bank_transactions 或 invoices；只有使用者確認的結果存在此表，因此規則或自有帳戶變動後過去月份會自動重算。target_kind + target_id 為多型參照（bank_transaction／invoice），不設 FK；找不到對應活動的覆寫不影響任何金額。有 duplicate_of 的活動仍會列出，但不計入任何金額。 0073 新增 advance（代墊，待收回）與 reimbursement（收回代墊），兩者不計入收入與消費，依 counterparty 累計待收回餘額。
 
 #### Columns
 
@@ -103,12 +103,13 @@ CREATE TABLE activity_notes (
 | ---: | --- | --- | --- | :---: | --- | ---: | --- |
 | 1 | `target_kind` | 被覆寫的活動種類：bank_transaction 或 invoice。 | TEXT | NO | — | 1 | — |
 | 2 | `target_id` | 被覆寫活動的 id（bank_transactions.id 或 invoices.id）。 | TEXT | NO | — | 2 | — |
-| 3 | `economic_role` | 使用者指定的經濟角色：spending、income、own_transfer、investment、card_payment 或 excluded（不計入：沒有實際付款、已退款作廢、測試等；0063 起）。 | TEXT | NO | — | — | — |
+| 3 | `economic_role` | 使用者指定的經濟角色：spending、income、own_transfer、investment、card_payment、excluded（不計入：沒有實際付款、已退款作廢、測試等；0063 起）、advance（代墊）或 reimbursement（收回代墊）（0073 起）。 | TEXT | NO | — | — | — |
 | 4 | `review_status` | 覆寫一律為 confirmed（CHECK 限制）。 | TEXT | NO | 'confirmed' | — | — |
 | 5 | `duplicate_of_kind` | 此活動是另一筆活動的重複時，那筆活動的種類；與 duplicate_of_id 同時為 NULL 或同時有值。 | TEXT | YES | — | — | — |
 | 6 | `duplicate_of_id` | 被重複的活動 id；不可指向自己。NULL 時沿用推導出的重複關係（例如已配對的發票）。 | TEXT | YES | — | — | — |
-| 7 | `created_at` | 覆寫建立的時間。 | TEXT | NO | — | — | — |
-| 8 | `updated_at` | 覆寫最後更新的時間。 | TEXT | NO | — | — | — |
+| 7 | `counterparty` | 代墊對象（0073）：只有 advance／reimbursement 必須有值，其他角色必須為 NULL；API 正規化為 NFKC、去頭尾空白、合併連續空白，1–40 字。 | TEXT | YES | — | — | — |
+| 8 | `created_at` | 覆寫建立的時間。 | TEXT | NO | — | — | — |
+| 9 | `updated_at` | 覆寫最後更新的時間。 | TEXT | NO | — | — | — |
 
 #### Foreign keys
 
@@ -116,7 +117,9 @@ CREATE TABLE activity_notes (
 
 #### Indexes
 
-—
+| Index | Unique | Partial | 欄位 | 定義 |
+| --- | :---: | :---: | --- | --- |
+| `idx_activity_role_overrides_counterparty` | 否 | 是 | `counterparty` | `CREATE INDEX idx_activity_role_overrides_counterparty<br>  ON activity_role_overrides (counterparty)<br>  WHERE counterparty IS NOT NULL` |
 
 #### DDL
 
@@ -125,18 +128,26 @@ CREATE TABLE "activity_role_overrides" (
   target_kind TEXT NOT NULL CHECK (target_kind IN ('bank_transaction', 'invoice')),
   target_id TEXT NOT NULL,
   economic_role TEXT NOT NULL CHECK (
-    economic_role IN ('spending', 'income', 'own_transfer', 'investment', 'card_payment', 'excluded')
+    economic_role IN (
+      'spending', 'income', 'own_transfer', 'investment', 'card_payment', 'excluded',
+      'advance', 'reimbursement'
+    )
   ),
   review_status TEXT NOT NULL DEFAULT 'confirmed' CHECK (review_status = 'confirmed'),
   duplicate_of_kind TEXT CHECK (
     duplicate_of_kind IS NULL OR duplicate_of_kind IN ('bank_transaction', 'invoice')
   ),
   duplicate_of_id TEXT,
+  counterparty TEXT CHECK (
+    counterparty IS NULL
+    OR (counterparty = trim(counterparty) AND length(counterparty) BETWEEN 1 AND 40)
+  ),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (target_kind, target_id),
   CHECK ((duplicate_of_kind IS NULL) = (duplicate_of_id IS NULL)),
-  CHECK (NOT (duplicate_of_kind = target_kind AND duplicate_of_id = target_id))
+  CHECK (NOT (duplicate_of_kind = target_kind AND duplicate_of_id = target_id)),
+  CHECK ((economic_role IN ('advance', 'reimbursement')) = (counterparty IS NOT NULL))
 )
 ```
 
@@ -2073,6 +2084,7 @@ Migration 是 schema 演進的 source of truth；若要了解某欄位的變更�
 - [`0070_budget.sql`](../packages/db/migrations/0070_budget.sql)
 - [`0071_budget_monthly_limit.sql`](../packages/db/migrations/0071_budget_monthly_limit.sql)
 - [`0072_ctbc_disable_schedule.sql`](../packages/db/migrations/0072_ctbc_disable_schedule.sql)
+- [`0073_activity_advances.sql`](../packages/db/migrations/0073_activity_advances.sql)
 
 ## 程式碼導覽
 

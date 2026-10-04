@@ -3,7 +3,10 @@ import {
   type EconomicRole,
   type EconomicRoleReason,
 } from "@taiwan-fin-hub/core";
-import { ECONOMIC_ROLE_LABELS } from "@/data/activity/roles";
+import {
+  ECONOMIC_ROLE_LABELS,
+  activityRoleTarget,
+} from "@/data/activity/roles";
 import { activitySourceLabel } from "./labels";
 import type { ActivityItem } from "./types";
 
@@ -11,6 +14,7 @@ export {
   ECONOMIC_ROLE_CHOICES,
   ECONOMIC_ROLE_CHOICE_LABELS,
   ECONOMIC_ROLE_LABELS,
+  ECONOMIC_ROLES_ASKING_COUNTERPARTY,
   ECONOMIC_ROLES_ASKING_REASON,
   activityNoteTarget,
   activityRoleTarget,
@@ -36,6 +40,8 @@ const ROLE_BADGE_TONE: Record<
   own_transfer: "transfer",
   card_payment: "muted",
   excluded: "muted",
+  advance: "transfer",
+  reimbursement: "transfer",
 };
 
 export function needsReview(item: ActivityItem) {
@@ -60,7 +66,9 @@ export function activityRoleBadges(
   )
     badges.push({
       key: item.economicRole,
-      label: ECONOMIC_ROLE_LABELS[item.economicRole],
+      label: item.advanceCounterparty
+        ? `${ECONOMIC_ROLE_LABELS[item.economicRole]} · ${item.advanceCounterparty}`
+        : ECONOMIC_ROLE_LABELS[item.economicRole],
       tone: ROLE_BADGE_TONE[item.economicRole],
     });
   if (needsReview(item))
@@ -88,6 +96,9 @@ export function showsRoleInsteadOfCategory(item: ActivityItem) {
  * 「不計入」（使用者指定、作廢發票）。
  */
 export function isExcludedActivity(item: ActivityItem) {
+  // 代墊／收回代墊是使用者明確指定的角色，不因舊的「排除統計計算」而顯示成不計入。
+  if (item.economicRole === "advance" || item.economicRole === "reimbursement")
+    return false;
   return (
     Boolean(item.excludedFromCalculation) || item.economicRole === "excluded"
   );
@@ -115,6 +126,8 @@ export function activityRoleReasonLabel(
   switch (reason) {
     case "override":
       return "你手動指定的角色";
+    case "invoice_override":
+      return "依你在配對發票上指定的代墊";
     case "calculation_preference":
       return "依你在這筆交易設定的「是否計入收支」";
     case "own_account":
@@ -158,9 +171,22 @@ export function activityRoleReasonLabel(
   }
 }
 
-/** 目前角色來自使用者覆寫，可「恢復自動判斷」。 */
+/**
+ * 目前角色來自使用者覆寫，可「恢復自動判斷」。帶自配對發票的代墊（invoice_override）
+ * 也可以：恢復時刪除發票上的設定。
+ */
 export function hasRoleOverride(item: ActivityItem) {
-  return item.roleReason === "override";
+  return (
+    item.roleReason === "override" ||
+    (item.roleReason === "invoice_override" && Boolean(item.matchedInvoiceId))
+  );
+}
+
+/** 「恢復自動判斷」要刪除的覆寫：帶自配對發票的代墊刪發票上的設定。 */
+export function roleResetTarget(item: ActivityItem) {
+  if (item.roleReason === "invoice_override" && item.matchedInvoiceId)
+    return { targetKind: "invoice" as const, targetId: item.matchedInvoiceId };
+  return activityRoleTarget(item);
 }
 
 /**
