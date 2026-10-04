@@ -19,6 +19,7 @@ import {
   completeCathayTrustedDeviceSetup,
   createCathaybkConnector,
   cathayAccountSelectorShape,
+  cathayMenuStructure,
   cathayPeriodDays,
   chooseCathayPeriodOption,
   dismissCathaySystemMessageIfPresent,
@@ -1356,11 +1357,12 @@ describe("Cathay period combobox", () => {
       ),
       focus: vi.fn().mockResolvedValue(undefined),
       keyboard: { press: vi.fn().mockResolvedValue(undefined) },
+      click: vi.fn().mockResolvedValue(undefined),
     };
     return { page, period, account, optionElements };
   }
 
-  const fast = { optionsMs: 0, labelMs: 0 };
+  const fast = { keyboardMs: 0, optionsMs: 0, labelMs: 0 };
 
   it("reads only the period menu's options and confirms the selection", async () => {
     const { page, period, account, optionElements } = setup([
@@ -1389,6 +1391,45 @@ describe("Cathay period combobox", () => {
     await expect(
       chooseCathayPeriodOption(page as never, 90, fast),
     ).resolves.toMatchObject({ chosen: "近 90 天", applied: false });
+  });
+
+  it("opens the period menu with the mouse when the keyboard does not", async () => {
+    const { page, period } = setup([]);
+    const control = {
+      dataset: {} as Record<string, string>,
+      getAttribute: (name: string) =>
+        name === "class" ? "css-13cymwt-control" : null,
+      innerText: "近 30 天",
+      parentElement: null,
+    };
+    (period as unknown as { parentElement: unknown }).parentElement = control;
+    const option = {
+      id: "",
+      textContent: "近3個月",
+      offsetParent: {},
+      click: vi.fn(() => {
+        control.innerText = "近3個月";
+      }),
+    };
+    let open = false;
+    page.click = vi.fn(async () => {
+      open = true;
+    });
+    const base = globalThis.document as unknown as {
+      querySelectorAll: (selector: string) => unknown[];
+    };
+    const original = base.querySelectorAll;
+    base.querySelectorAll = (selector: string) =>
+      selector.includes("[class*='menu'] [class*='option']")
+        ? open
+          ? [option]
+          : []
+        : original(selector);
+
+    await expect(
+      chooseCathayPeriodOption(page as never, 90, fast),
+    ).resolves.toMatchObject({ chosen: "近3個月", applied: true });
+    expect(page.click).toHaveBeenCalledWith('[data-cathay-control="period"]');
   });
 
   it("closes the menu when no option could be read", async () => {
@@ -1490,4 +1531,84 @@ it("describes the account selector without exposing account text", () => {
     optionShapes: [[12]],
   });
   expect(JSON.stringify(shape)).not.toMatch(/王小明|1234|活期/);
+});
+
+describe("Cathay combobox opening fallback", () => {
+  it("clicks the react-select control when the keyboard does not open the menu", async () => {
+    let open = false;
+    const control = {
+      dataset: {} as Record<string, string>,
+      getAttribute: (name: string) =>
+        name === "class" ? "css-13cymwt-control" : null,
+      parentElement: null,
+      innerText: "123456789012 活期存款",
+    };
+    const input = {
+      dataset: {} as Record<string, string>,
+      parentElement: control,
+    };
+    const option = {
+      textContent: "123456789012 活期儲蓄存款",
+      click: vi.fn(),
+    };
+    vi.stubGlobal("document", {
+      querySelector: (selector: string) =>
+        selector.includes("data-cathay-combobox") ? input : null,
+      querySelectorAll: (selector: string) => {
+        if (selector.includes("combobox")) return [input];
+        // 改版後選項沒有 role／id，只有 react-select 的 class 命名。
+        if (selector.includes("[class*='option']") && open) return [option];
+        return [];
+      },
+    });
+    const page = {
+      evaluate: vi.fn(
+        async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
+          fn(...args),
+      ),
+      focus: vi.fn().mockResolvedValue(undefined),
+      keyboard: { press: vi.fn().mockResolvedValue(undefined) },
+      click: vi.fn(async () => {
+        open = true;
+      }),
+      waitForFunction: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("timeout"))
+        .mockResolvedValueOnce(undefined),
+    };
+
+    await expect(
+      chooseCathayComboboxOption(page as never, "account", "123456789012"),
+    ).resolves.toBe(true);
+    expect(control.dataset.cathayControl).toBe("account");
+    expect(page.click).toHaveBeenCalledWith('[data-cathay-control="account"]');
+    expect(option.click).toHaveBeenCalledOnce();
+  });
+
+  it("reports menu structure with counts and class names only", () => {
+    const input = {
+      getAttribute: (name: string) =>
+        name === "aria-expanded" ? "false" : null,
+      hasAttribute: () => true,
+    };
+    const menu = { getAttribute: () => "css-26l3qy-menu" };
+    vi.stubGlobal("document", {
+      querySelector: (selector: string) =>
+        selector.includes("data-cathay-combobox") ? input : null,
+      querySelectorAll: (selector: string) =>
+        selector === "[class*='menu']" ? [menu] : [],
+    });
+
+    expect(cathayMenuStructure("account")).toEqual({
+      expanded: "false",
+      readOnly: true,
+      controlMarked: false,
+      roleOptionCount: 0,
+      idOptionCount: 0,
+      classOptionCount: 0,
+      listboxCount: 0,
+      menuClasses: ["css-26l3qy-menu"],
+      optionClasses: [],
+    });
+  });
 });

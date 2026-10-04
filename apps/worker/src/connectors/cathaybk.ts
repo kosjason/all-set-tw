@@ -1206,6 +1206,80 @@ export function pickCathayPeriodOption(
 
 type CathayCombobox = "account" | "period";
 
+/** 頁面內：是否有任何下拉選項（role／id 或 react-select 的 class 命名）。必須自給自足。 */
+export function cathayHasMenuOptions(): boolean {
+  if (document.querySelector("[role='option'], [id*='-option-']")) return true;
+  return Array.from(
+    document.querySelectorAll<HTMLElement>("[class*='menu'], [role='listbox']"),
+  ).some((menu) => Boolean(menu.querySelector("[class*='option']")));
+}
+
+/** 頁面內：標記被標記 combobox 外層的 react-select control，供滑鼠點擊開啟。 */
+export function cathayMarkComboboxControl(kind: string): boolean {
+  const input = document.querySelector<HTMLElement>(
+    `[data-cathay-combobox="${kind}"]`,
+  );
+  let node: HTMLElement | null = input?.parentElement ?? null;
+  for (let depth = 0; node && depth < 6; depth += 1) {
+    if (/control/i.test(node.getAttribute?.("class") ?? "")) {
+      node.dataset.cathayControl = kind;
+      return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
+}
+
+/** 頁面內：選單結構診斷，只有數量與 class 名稱（不含使用者資料）。 */
+export function cathayMenuStructure(kind: string) {
+  const input = document.querySelector<HTMLElement>(
+    `[data-cathay-combobox="${kind}"]`,
+  );
+  const classes = (selector: string) =>
+    Array.from(document.querySelectorAll<HTMLElement>(selector))
+      .slice(0, 3)
+      .map((element) => (element.getAttribute("class") ?? "").slice(0, 80));
+  return {
+    expanded: input?.getAttribute("aria-expanded") ?? null,
+    readOnly: input ? input.hasAttribute("readonly") : null,
+    controlMarked: Boolean(
+      document.querySelector(`[data-cathay-control="${kind}"]`),
+    ),
+    roleOptionCount: document.querySelectorAll("[role='option']").length,
+    idOptionCount: document.querySelectorAll("[id*='-option-']").length,
+    classOptionCount: document.querySelectorAll("[class*='option']").length,
+    listboxCount: document.querySelectorAll("[role='listbox']").length,
+    menuClasses: classes("[class*='menu']"),
+    optionClasses: classes("[class*='option']"),
+  };
+}
+
+/**
+ * 打開 combobox：先 focus＋ArrowDown；沒出現選項時改用滑鼠點 react-select control。
+ * 國泰 2026-10 改版後鍵盤開不了選單（實測選項數為 0）。
+ */
+async function openCathayCombobox(
+  page: Pick<
+    Page,
+    "focus" | "keyboard" | "evaluate" | "click" | "waitForFunction"
+  >,
+  kind: CathayCombobox,
+): Promise<boolean> {
+  await page.focus(`[data-cathay-combobox="${kind}"]`);
+  await page.keyboard.press("ArrowDown");
+  const opened = await page
+    .waitForFunction(cathayHasMenuOptions, { timeout: 2000 })
+    .then(() => true)
+    .catch(() => false);
+  if (opened) return true;
+  if (!(await page.evaluate(cathayMarkComboboxControl, kind))) return false;
+  await page.click(`[data-cathay-control="${kind}"]`).catch(() => null);
+  return page
+    .waitForFunction(cathayHasMenuOptions, { timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
+}
+
 /**
  * The transaction page uses react-select comboboxes: the menu opens from the
  * keyboard and options render as `[id*='-option-']` elements.
@@ -1241,24 +1315,23 @@ export async function chooseCathayComboboxOption(
   }, kind);
   if (!marked) return false;
 
-  await page.focus(`[data-cathay-combobox="${kind}"]`);
-  await page.keyboard.press("ArrowDown");
-  await page
-    .waitForFunction(
-      () =>
-        document.querySelectorAll("[role='option'], [id*='-option-']").length >
-        0,
-      { timeout: 5000 },
-    )
-    .catch(() => null);
+  await openCathayCombobox(page, kind);
   return page.evaluate(
     (match: string, exactAccount: boolean) => {
       const normalize = (value: string) => value.replace(/\s+/g, "");
-      const option = Array.from(
+      let candidates = Array.from(
         document.querySelectorAll<HTMLElement>(
           "[role='option'], [id*='-option-']",
         ),
-      ).find((candidate) => {
+      );
+      if (candidates.length === 0) {
+        candidates = Array.from(
+          document.querySelectorAll<HTMLElement>(
+            "[class*='menu'] [class*='option'], [role='listbox'] [class*='option']",
+          ),
+        );
+      }
+      const option = candidates.find((candidate) => {
         const text = normalize(candidate.textContent ?? "");
         // Account options start with the account number; compare it exactly
         // so one account number cannot match inside another.
@@ -1413,6 +1486,13 @@ export function cathayPeriodPageAction(
       (option) => option.offsetParent !== null,
     );
   }
+  if (options.length === 0) {
+    options = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        "[class*='menu'] [class*='option'], [role='listbox'] [class*='option']",
+      ),
+    ).filter((option) => option.offsetParent !== null);
+  }
   if (action === "options") {
     return options.map((option) =>
       (option.textContent ?? "").replace(/\s+/g, " ").trim(),
@@ -1441,30 +1521,44 @@ async function pollPage<T>(
 
 /** 開啟期間選單、在 Node 端挑選項目、點擊後回讀控制項文字確認真的選上。 */
 export async function chooseCathayPeriodOption(
-  page: Pick<Page, "evaluate" | "focus" | "keyboard">,
+  page: Pick<Page, "evaluate" | "focus" | "keyboard" | "click">,
   days: number,
-  timeouts = { optionsMs: 5000, labelMs: 2000 },
+  timeouts = { keyboardMs: 2000, optionsMs: 5000, labelMs: 2000 },
 ): Promise<{
   found: boolean;
   options: string[];
   chosen?: string;
   applied?: boolean;
+  structure?: unknown;
 }> {
   if (!(await page.evaluate(cathayPeriodPageAction, "mark"))) {
     return { found: false, options: [] };
   }
+  const readOptions = async (timeoutMs: number) =>
+    (await pollPage(
+      () => page.evaluate(cathayPeriodPageAction, "options"),
+      (value) => Array.isArray(value) && value.length > 0,
+      timeoutMs,
+    )) as string[];
   await page.focus('[data-cathay-combobox="period"]');
   await page.keyboard.press("ArrowDown");
-  const options = (await pollPage(
-    () => page.evaluate(cathayPeriodPageAction, "options"),
-    (value) => Array.isArray(value) && value.length > 0,
-    timeouts.optionsMs,
-  )) as string[];
+  let options = await readOptions(timeouts.keyboardMs);
+  // 鍵盤開不了選單時改用滑鼠點 react-select control。
+  if (
+    options.length === 0 &&
+    (await page.evaluate(cathayMarkComboboxControl, "period"))
+  ) {
+    await page.click('[data-cathay-control="period"]').catch(() => null);
+    options = await readOptions(timeouts.optionsMs);
+  }
   // 沒點到選項一律按 Escape 關閉選單：選單若其實開著卻讀不到選項，留著會讓之後的
   // 帳號選單讀到期間選項。react-select 預設 Escape 不清除已選的值。
   if (options.length === 0) {
+    const structure = await page
+      .evaluate(cathayMenuStructure, "period")
+      .catch(() => undefined);
     await page.keyboard.press("Escape").catch(() => null);
-    return { found: true, options };
+    return { found: true, options, structure };
   }
   const index = pickCathayPeriodOption(options, days);
   const chosen = index >= 0 ? options[index] : undefined;
@@ -1532,6 +1626,7 @@ async function selectTransactionPeriod(
       comboboxFound: result.found,
       clicked: Boolean(result.chosen),
       options: redactCathayPeriodOptions(result.options),
+      ...(result.structure ? { structure: result.structure } : {}),
     }),
   );
   return {
@@ -1655,6 +1750,9 @@ async function scrapeDeposits(
           ...(await page
             .evaluate(cathayAccountSelectorShape, acct.acctNo.length)
             .catch(() => ({ unavailable: true }))),
+          structure: await page
+            .evaluate(cathayMenuStructure, "account")
+            .catch(() => null),
         }),
       );
       await page.keyboard.press("Escape").catch(() => null);
