@@ -313,9 +313,18 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 `/OnlineBanking/Logout/SystemError` 並結束工作階段。帳號與查詢期間都是 react-select
 選單，`input[role=combobox]` 的 value 為空，要以外層控制項的文字辨識，並用鍵盤
 ArrowDown 開啟選單，選項為 `[id*='-option-']` 元素；帳號選項以完整帳號比對。
+期間選單優先挑目前顯示文字本身就是期間的 combobox，找不到再退回外層文字含
+「天／週／月／年」且不含長數字者；選項只從該選單讀取（react-select 的
+`<id>-option-N` 或 `aria-controls` listbox），不掃整份 document。選項文字由
+`cathayPeriodDays` 換算天數（支援阿拉伯數字與中文數字，例如「近 90 天」「近三個月」
+「近 1 年」），`pickCathayPeriodOption` 選涵蓋 `BANK_SYNC_MONTHS × 30` 天的最短選項，
+都不夠長時選最長並帶警告；點擊後回讀控制項文字（以結尾比對）確認已選上。選單或選項
+無法辨識、點擊未生效，或操作時發生頁面錯誤（被登出仍整次失敗）時沿用頁面預設期間繼續，`SyncResult.warnings` 說明只取得預設期間，log 記錄
+`cathaybk_period_option_unrecognized`，選項文字只保留能由 `cathayPeriodDays` 換算的
+期間，其他記為 `[redacted]`。
 進入明細頁時自動送出的 30 天查詢要先等它回應，每個帳戶再自行按「查詢」。
 `B_ACCT_Q_TransferDetail` 回應的 `accountNumber` 會補零（例如 12 碼帳號回傳 16 碼），
-以結尾比對（前面只能是 0）確認屬於目前帳戶。找不到帳號或期間選項、回應不是 JSON、
+以結尾比對（前面只能是 0）確認屬於目前帳戶。找不到帳號、回應不是 JSON、
 帳號不符、查詢逾時或被登出時，整次同步失敗，不以零筆交易繼續。
 
 #### 信用卡總覽與帳戶拆分

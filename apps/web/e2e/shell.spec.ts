@@ -517,12 +517,12 @@ test("shows a loading state while a connector sync is pending", async ({
       body: JSON.stringify({ demoMode: false }),
     }),
   );
-  await page.route("**/api/connectors/ctbc/settings", (route) =>
+  await page.route("**/api/connectors/esun/settings", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        connectorId: "ctbc",
+        connectorId: "esun",
         configured: true,
         credentialsComplete: true,
         sessionAvailable: false,
@@ -535,14 +535,14 @@ test("shows a loading state while a connector sync is pending", async ({
   const pendingSync = new Promise<void>((resolve) => {
     releaseSync = resolve;
   });
-  await page.route("**/api/connectors/ctbc/sync", async (route) => {
+  await page.route("**/api/connectors/esun/sync", async (route) => {
     await pendingSync;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
         success: true,
-        connectorId: "ctbc",
+        connectorId: "esun",
         scope: "all",
         records: 0,
         cursorUpdated: true,
@@ -551,11 +551,11 @@ test("shows a loading state while a connector sync is pending", async ({
   });
 
   await page.goto("/#/data-sources");
-  const ctbcCard = page.locator("div.rounded-xl").filter({
-    has: page.getByRole("heading", { name: "中國信託銀行", exact: true }),
+  const esunCard = page.locator("div.rounded-xl").filter({
+    has: page.getByRole("heading", { name: "玉山銀行", exact: true }),
   });
-  await ctbcCard
-    .getByRole("button", { name: "管理中國信託銀行設定", exact: true })
+  await esunCard
+    .getByRole("button", { name: "管理玉山銀行設定", exact: true })
     .click();
   const syncButton = page.getByRole("button", {
     name: "同步",

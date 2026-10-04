@@ -806,6 +806,13 @@
         <span class="text-sm text-muted-foreground"
           >在下方查看進度與同步帳戶</span
         >
+      {:else if connectorId === "ctbc"}
+        <!-- 中信會擋自動登入（App 回 0131、網銀防機器人），只提供網銀半自動匯入。 -->
+        <span
+          class="text-sm text-muted-foreground"
+          data-testid="ctbc-import-only"
+          >中信不支援自動同步，請用網銀半自動匯入</span
+        >
       {:else if browserBank}
         {#if browserBankSessionAvailable}
           <Button
@@ -1078,7 +1085,11 @@
       <div>
         <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-ink/70">
           <span class="font-semibold text-ink">
-            自動同步：{job?.enabled ? "開" : "關"}
+            自動同步：{connectorId === "ctbc"
+              ? "不支援"
+              : job?.enabled
+                ? "開"
+                : "關"}
           </span>
           {#if browserBank && connectorId !== "nextbank"}<span
               >登入：{browserBankSessionAvailable
@@ -1103,7 +1114,7 @@
           </p>
         {/if}
       </div>
-      {#if job}<Button
+      {#if job && connectorId !== "ctbc"}<Button
           size="sm"
           variant="outline"
           disabled={demoMode || $updateJob.isPending}
@@ -1119,7 +1130,7 @@
           : "目前只會在你手動操作時同步。"}
       </p>
     {/if}
-    {#if job?.enabled}
+    {#if job?.enabled && connectorId !== "ctbc"}
       <div class="mt-3 grid gap-3 border-t border-ink/10 pt-3 md:grid-cols-4">
         <label class="grid gap-1 text-sm font-semibold text-ink/70">
           排程方式

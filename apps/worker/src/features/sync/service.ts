@@ -199,6 +199,13 @@ export class NeedsUserActionError extends Error {
 
 export class NextbankCaptchaRequiredError extends NeedsUserActionError {}
 
+/** 中信會擋自動登入（App 回 0131、網銀防機器人），只支援網銀半自動匯入。 */
+export class CtbcAutoSyncPausedError extends NeedsUserActionError {
+  constructor() {
+    super("中信不支援自動同步，請改用網銀半自動匯入。");
+  }
+}
+
 export type SinopacSyncOverrides = {
   captcha?: string;
 };
@@ -856,6 +863,7 @@ export async function syncCathaybk(
     cursorUpdated: Boolean(
       persistedCursor && persistedCursor !== settings.sync_cursor,
     ),
+    ...(result.warnings?.length ? { warnings: result.warnings } : {}),
   };
 }
 
