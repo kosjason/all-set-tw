@@ -1139,11 +1139,13 @@ async function waitForInitialDepositQuery(
   const response = await page
     .waitForResponse(
       (r) =>
-        r.url().includes(API_DEPOSIT_TX) ||
-        r
-          .request()
-          .redirectChain()
-          .some((request) => request.url().includes(API_DEPOSIT_TX)),
+        // 轉址時 puppeteer 會先為每個 3xx 送出回應事件；略過它們，等轉址鏈最後的回應。
+        (r.status() < 300 || r.status() >= 400) &&
+        (r.url().includes(API_DEPOSIT_TX) ||
+          r
+            .request()
+            .redirectChain()
+            .some((request) => request.url().includes(API_DEPOSIT_TX))),
       { timeout: 30000 },
     )
     .catch(() => null);
