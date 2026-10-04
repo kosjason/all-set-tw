@@ -768,7 +768,7 @@ async function collectDepositTransactions(
   }
   if (missingWithBalance > 0 && missing < accounts.length) {
     log(
-      `存款明細：${missingWithBalance} 個有餘額的帳戶未取得（未在明細頁查看）`,
+      `存款明細：${missingWithBalance} 個有餘額（或餘額不明）的帳戶未取得（未在明細頁查看）`,
     );
   }
   if (missingZeroBalance > 0 && missing < accounts.length) {

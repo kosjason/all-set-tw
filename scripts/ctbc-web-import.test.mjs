@@ -534,7 +534,7 @@ test("collectCtbcPayloads imports the page's own deposit results when replays fa
   ]);
   const output = lines.join("\n");
   assert.ok(output.includes("使用頁面查詢結果 1 筆"));
-  assert.ok(output.includes("1 個有餘額的帳戶未取得"));
+  assert.ok(output.includes("1 個有餘額（或餘額不明）的帳戶未取得"));
   for (const secret of [ACCOUNT_A, ACCOUNT_B, "31520", "虛構"]) {
     assert.ok(!output.includes(secret), `log leaked ${secret}`);
   }
