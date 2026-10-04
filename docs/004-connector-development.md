@@ -318,8 +318,8 @@ ArrowDown 開啟選單，選項為 `[id*='-option-']` 元素；帳號選項以�
 `<id>-option-N` 或 `aria-controls` listbox），不掃整份 document。選項文字由
 `cathayPeriodDays` 換算天數（支援阿拉伯數字與中文數字，例如「近 90 天」「近三個月」
 「近 1 年」），`pickCathayPeriodOption` 選涵蓋 `BANK_SYNC_MONTHS × 30` 天的最短選項，
-都不夠長時選最長並帶警告；點擊後回讀控制項文字確認已選上。選單或選項無法辨識、或點擊
-未生效時沿用頁面預設期間繼續，`SyncResult.warnings` 說明只取得預設期間，log 記錄
+都不夠長時選最長並帶警告；點擊後回讀控制項文字（以結尾比對）確認已選上。選單或選項
+無法辨識、點擊未生效，或操作時發生頁面錯誤（被登出仍整次失敗）時沿用頁面預設期間繼續，`SyncResult.warnings` 說明只取得預設期間，log 記錄
 `cathaybk_period_option_unrecognized`，選項文字只保留像期間的短文字，其他記為
 `[redacted]`。
 進入明細頁時自動送出的 30 天查詢要先等它回應，每個帳戶再自行按「查詢」。

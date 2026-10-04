@@ -991,7 +991,7 @@ apps/worker/src/features/sync/
   解析使用者自行登入網銀後取得的回應，在手動同步 lock 下寫入；不讀寫帳密與 cursor。
   `registry.ts` 的中信同步（手動與排程）一律丟 `CtbcAutoSyncPausedError`（回
   `409 CTBC_AUTO_SYNC_PAUSED`、排程記為需要處理），不再嘗試中信登入；`syncCtbc` 保留供
-  寫入路徑測試比對。
+  寫入路徑測試比對。migration `0072` 關閉既有的中信排程。
 - `schedule-route.ts`：排程設定 API。
 - `schedule-service.ts`：排程設定 use case。
 - `scheduler.ts`：到期工作選取、預設排程批次與同步 dispatch。

@@ -1409,12 +1409,15 @@ export async function chooseCathayPeriodOption(
     return { found: true, options };
   }
   const target = chosen.replace(/\s+/g, "");
+  // 寬鬆後備選中的選單，外層文字可能帶標題（例如「查詢期間近90天」），以結尾比對。
+  const matches = (value: unknown) =>
+    typeof value === "string" && value.endsWith(target);
   const label = await pollPage(
     () => page.evaluate(cathayPeriodPageAction, "label"),
-    (value) => value === target,
+    matches,
     timeouts.labelMs,
   );
-  return { found: true, options, chosen, applied: label === target };
+  return { found: true, options, chosen, applied: matches(label) };
 }
 
 /**
@@ -1425,7 +1428,23 @@ async function selectTransactionPeriod(
   page: Page,
   days: number,
 ): Promise<CathayPeriodResult> {
-  const result = await chooseCathayPeriodOption(page, days);
+  let result: Awaited<ReturnType<typeof chooseCathayPeriodOption>>;
+  try {
+    result = await chooseCathayPeriodOption(page, days);
+  } catch (error) {
+    // 被登出照樣失敗；頁面重繪等暫時性錯誤改用預設期間繼續。
+    assertCathayNotLoggedOut(page);
+    console.warn(
+      JSON.stringify({
+        event: "cathaybk_period_selection_failed",
+        errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR",
+      }),
+    );
+    return {
+      status: "default",
+      warning: "國泰存款明細的期間無法設定，本次只取得頁面預設期間的交易。",
+    };
+  }
   const chosenDays = result.chosen
     ? cathayPeriodDays(result.chosen)
     : undefined;

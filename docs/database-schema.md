@@ -11,7 +11,7 @@
 - Tables：38
 - Explicit indexes：45
 - Other objects：0
-- Migrations：65
+- Migrations：67
 
 ## Tables
 
@@ -2055,6 +2055,7 @@ Migration 是 schema 演進的 source of truth；若要了解某欄位的變更�
 - [`0049_cathay_credit_card_repairs.sql`](../packages/db/migrations/0049_cathay_credit_card_repairs.sql)
 - [`0049_megabank_sync_job.sql`](../packages/db/migrations/0049_megabank_sync_job.sql)
 - [`0050_ewallet_topup_transfer_rule.sql`](../packages/db/migrations/0050_ewallet_topup_transfer_rule.sql)
+- [`0050_nextbank_sync_job.sql`](../packages/db/migrations/0050_nextbank_sync_job.sql)
 - [`0051_bank_transaction_counterparty_account.sql`](../packages/db/migrations/0051_bank_transaction_counterparty_account.sql)
 - [`0052_own_accounts.sql`](../packages/db/migrations/0052_own_accounts.sql)
 - [`0053_investment_position_broker.sql`](../packages/db/migrations/0053_investment_position_broker.sql)
@@ -2071,6 +2072,7 @@ Migration 是 schema 演進的 source of truth；若要了解某欄位的變更�
 - [`0069_donation_category.sql`](../packages/db/migrations/0069_donation_category.sql)
 - [`0070_budget.sql`](../packages/db/migrations/0070_budget.sql)
 - [`0071_budget_monthly_limit.sql`](../packages/db/migrations/0071_budget_monthly_limit.sql)
+- [`0072_ctbc_disable_schedule.sql`](../packages/db/migrations/0072_ctbc_disable_schedule.sql)
 
 ## 程式碼導覽
 
