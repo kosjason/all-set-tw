@@ -271,14 +271,14 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
     },
   );
 
-  api.post("/connectors/ctbc/sync", async (c) => {
-    return syncRouteResponse(
-      c,
-      withManualSyncLock(c.env, "ctbc", SYNC_SCOPE_ALL, () =>
-        runConnectorSync(c.env, "ctbc", "manual"),
-      ),
-    );
-  });
+  // 中信只支援網銀半自動匯入；在取得同步鎖前就拒絕，避免把狀態寫成需要處理。
+  api.post("/connectors/ctbc/sync", (c) =>
+    jsonError(
+      "CTBC_AUTO_SYNC_PAUSED",
+      new CtbcAutoSyncPausedError().message,
+      409,
+    ),
+  );
 
   api.post(
     "/connectors/ctbc/import",
