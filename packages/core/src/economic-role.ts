@@ -940,3 +940,41 @@ export function summarizeAdvances(
         b.lastDay.localeCompare(a.lastDay),
     );
 }
+
+/**
+ * 使用者在發票上設了代墊／收回代墊，之後發票與刷卡配對成重複時，發票本身不再計入；
+ * 把代墊（含對象）帶到它指向的交易上，避免代墊消失、金額回到消費。交易自己有使用者
+ * override 時以交易為準。
+ */
+export function carryInvoiceAdvancesToTransactions<
+  T extends { id: string } & Partial<EconomicRoleFields>,
+>(
+  transactions: T[],
+  invoiceRoles: ReadonlyMap<string, EconomicRoleFields>,
+): T[] {
+  const carried = new Map<string, EconomicRoleFields>();
+  for (const fields of invoiceRoles.values()) {
+    if (
+      !isAdvanceRole(fields.economicRole) ||
+      fields.roleReason !== "override" ||
+      !fields.advanceCounterparty ||
+      fields.duplicateOf?.kind !== "bank_transaction"
+    )
+      continue;
+    if (!carried.has(fields.duplicateOf.id))
+      carried.set(fields.duplicateOf.id, fields);
+  }
+  if (carried.size === 0) return transactions;
+  return transactions.map((transaction) => {
+    const fields = carried.get(transaction.id);
+    if (!fields || transaction.roleReason === "override") return transaction;
+    return {
+      ...transaction,
+      economicRole: fields.economicRole,
+      reviewStatus: "confirmed",
+      roleReason: "override",
+      investmentEventKind: null,
+      advanceCounterparty: fields.advanceCounterparty,
+    };
+  });
+}

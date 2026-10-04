@@ -300,6 +300,11 @@ function paymentsBetween(
   return payments;
 }
 
+/** 會出現在信用卡帳單上的刷卡：自己的消費與代墊（代墊不算個人消費，但卡費仍要繳）。 */
+function countsOnCardBill(role: string | null | undefined) {
+  return role === "spending" || role === "advance";
+}
+
 /** 該期（上期結帳日, 本期結帳日] 的刷卡淨額，供來源沒有帳單總額時推估。 */
 function estimateStatementAmount(
   transactions: CardTransaction[],
@@ -311,7 +316,8 @@ function estimateStatementAmount(
   let total = 0;
   for (const transaction of transactions) {
     if (!issuer.accountIds.has(transaction.accountId)) continue;
-    if (transaction.economicRole !== "spending" || transaction.duplicateOf)
+    // 用卡代墊的錢一樣出現在帳單上，帳單推估要算進去。
+    if (!countsOnCardBill(transaction.economicRole) || transaction.duplicateOf)
       continue;
     const day = billingDay(transaction);
     if (day <= previousClosing || day > closing) continue;
@@ -489,7 +495,7 @@ async function summarizeCards(
   const spending = loaded.transactions.filter(
     (transaction) =>
       issuer.identity.accountIds.has(transaction.accountId) &&
-      transaction.economicRole === "spending" &&
+      countsOnCardBill(transaction.economicRole) &&
       !transaction.duplicateOf,
   );
   const unbilled = spending.filter(

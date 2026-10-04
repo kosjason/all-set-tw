@@ -72,3 +72,21 @@ describe("AdvancesCard", () => {
     expect(within(card).queryByText("Cara")).toBeNull();
   });
 });
+
+it("shows foreign-currency balances when nothing is owed in TWD", () => {
+  render(AdvancesCard, {
+    props: {
+      advances: advances([
+        {
+          name: "Dana",
+          balances: { USD: 25 },
+          advanced: { USD: 25 },
+          reimbursed: {},
+          lastDay: "2026-09-01",
+          entries: [],
+        },
+      ]),
+    },
+  });
+  expect(screen.getByTestId("advances-owed").textContent).toContain("USD 25");
+});

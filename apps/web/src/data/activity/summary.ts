@@ -66,7 +66,12 @@ export function activitySummaryExcludedParts(
       amount: summary.reimbursementAmount ?? 0,
     },
   ];
-  return parts.filter((part) => part.amount > 0);
+  // 代墊／收回代墊可能因退款或沖回為負，非零就列出。
+  return parts.filter((part) =>
+    part.key === "advance" || part.key === "reimbursement"
+      ? part.amount !== 0
+      : part.amount > 0,
+  );
 }
 
 const INCOMPLETE_REASON_LABELS: Record<

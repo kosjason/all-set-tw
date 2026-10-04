@@ -19,6 +19,17 @@
   const owed = $derived(
     open.reduce((sum, entry) => sum + Math.max(entry.balances.TWD ?? 0, 0), 0),
   );
+  // 沒有台幣待收時，大字改列外幣待收（不換匯）。
+  const foreignOwed = $derived(
+    Object.entries(
+      open.reduce<Record<string, number>>((sums, entry) => {
+        for (const [currency, balance] of Object.entries(entry.balances))
+          if (currency !== "TWD" && balance > 0)
+            sums[currency] = (sums[currency] ?? 0) + balance;
+        return sums;
+      }, {}),
+    ),
+  );
   const overpaid = $derived(
     open.reduce(
       (sum, entry) => sum + Math.max(-(entry.balances.TWD ?? 0), 0),
@@ -56,7 +67,11 @@
     class="mt-1 text-[clamp(1.25rem,3.5vw,1.6rem)] leading-tight font-semibold tracking-tight tabular-nums"
     data-testid="advances-owed"
   >
-    {formatCurrency(owed)}
+    {owed === 0 && foreignOwed.length > 0
+      ? foreignOwed
+          .map(([currency, amount]) => money(amount, currency))
+          .join("、")
+      : formatCurrency(owed)}
   </p>
   <p class="mt-1 text-caption text-subtle">
     {open.length > 0

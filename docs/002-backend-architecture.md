@@ -399,10 +399,17 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
   彙總全期間（自最早一筆代墊的前一個月起，最多 36 個月）的待收回餘額：
   `receivableDelta = −帶正負號金額`，依幣別分開不換匯，負數表示對方多給。沿用
   `loadRoleActivities` 的發票配對與即時消費去重，口徑與月 summary 一致。
+- 代墊仍是一筆實際付款：發票自動配對接受角色為 `advance` 的交易（含舊的排除計算設定），
+  避免發票被當成另一筆消費；使用者先在發票上設代墊、之後配對到刷卡時，
+  `carryInvoiceAdvancesToTransactions` 在讀取時把代墊與對象帶到該交易（交易自己有 override
+  時以交易為準）。信用卡未出帳與帳單推估把 `advance` 與 `spending` 一起計入（卡費仍要繳）。
+  匯出的活動帶 `advanceCounterparty`（遮蔽長數字）。
 - 即時消費入帳時，使用者在舊交易上的角色（含代墊對象）與備註會搬到新交易：共用的
   `transaction-merge.ts` 合併欄位清單含 `counterparty`，兩邊都有角色時角色與對象都相同才合併；
   永豐、玉山（未入帳搬到已入帳）與中信（已入帳那筆刪除、搬到保留的那筆）以
-  `carryRoleOverrideAndNoteStatements` 搬移，新交易已有角色時保留新交易的設定、備註不同時合併。
+  `carryRoleOverrideAndNoteStatements` 搬移：兩邊都有角色時以 `updated_at` 較新者為準、備註不同時
+  合併；中信刪除已入帳那筆前，也把其他 override 指向它的 `duplicate_of` 改指保留的那筆。
+  共用合併以不分大小寫比對兩邊的對象。
 - `reviewStatus`：`auto`／`confirmed`（使用者 override、個別計算設定、發票配對決策）／
   `needs_review`。與角色正交。
 - `duplicateOf`：`{ kind: "bank_transaction" | "invoice", id }` 或 `null`；重複的活動仍列出，

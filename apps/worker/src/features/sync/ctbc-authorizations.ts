@@ -253,6 +253,22 @@ export async function prepareCtbcAuthorizationWrite(
         .bind(linksJson),
       // 已入帳那筆會被刪除，使用者設在它上面的角色與備註搬到保留下來的這筆。
       ...carryRoleOverrideAndNoteStatements(db, linksJson, "$.posted", "$.id"),
+      // 其他活動標為「重複於已入帳那筆」的參照改指保留下來的這筆；指到自己時清空。
+      db
+        .prepare(
+          `UPDATE activity_role_overrides SET
+          duplicate_of_id = CASE
+            WHEN target_kind = 'bank_transaction' AND target_id = json_extract(link.value, '$.id')
+            THEN NULL ELSE json_extract(link.value, '$.id') END,
+          duplicate_of_kind = CASE
+            WHEN target_kind = 'bank_transaction' AND target_id = json_extract(link.value, '$.id')
+            THEN NULL ELSE duplicate_of_kind END
+        FROM json_each(?) link
+        WHERE duplicate_of_kind = 'bank_transaction'
+          AND duplicate_of_id = json_extract(link.value, '$.posted')
+          AND json_extract(link.value, '$.posted') <> json_extract(link.value, '$.id')`,
+        )
+        .bind(linksJson),
       db
         .prepare(
           `UPDATE bank_transactions SET matched_transaction_id = NULL

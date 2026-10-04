@@ -281,8 +281,8 @@
           onOpenSettings={() => navigate("budget")}
         />
       {/if}
-      {#if $advances.data && $advances.data.counterparties.length > 0}
-        <AdvancesCard advances={$advances.data} />
+      {#if ($advances.data?.counterparties?.length ?? 0) > 0}
+        <AdvancesCard advances={$advances.data!} />
       {/if}
       {#if reminder}
         <button

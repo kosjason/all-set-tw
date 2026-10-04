@@ -142,8 +142,9 @@ npm run verify:web
 本月頁右欄（本月可花下方）另有 `components/AdvancesCard`「代墊待收回」：依對象列出還欠多少／多給
 多少（不分月份，資料來自 `data/advances/` 的 `GET /api/activity/advances`，query key 以 `bank` 開頭），
 點開可看各筆代墊與收回；已結清的對象只顯示人數，沒有任何代墊時不顯示。交易頁選「代墊」或「收回代墊」
-時，`RoleReasonDialog` 要求填寫對象（以已用過的對象名稱為建議），列上與明細以「代墊 · 對象」標示；
-收件匣的快速選單不提供這兩個角色。
+時，`RoleReasonDialog` 要求填寫對象（開啟對話框時才讀取已用過的對象，依最近一筆排序作為建議），
+列上與明細以「代墊 · 對象」標示，明細不再顯示對它無效的「排除統計計算」開關；收件匣的快速選單不提供
+這兩個角色。只有外幣待收時，卡片大字改列外幣（不換匯）。
 
 可花設定為子頁 `features/month/BudgetPage`（`#/month/budget`，上層為本月）：
 

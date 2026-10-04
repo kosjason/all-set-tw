@@ -621,6 +621,77 @@ describe("importCtbcPayloads after the per-card account migration", () => {
       .all();
   }
 
+  it("moves an advance, its note and duplicate references to the surviving row", async () => {
+    const { db, env } = legacyDatabase();
+    const rows = db.database
+      .prepare(
+        "SELECT id, status FROM bank_transactions WHERE connector_id = 'ctbc' AND amount = -688",
+      )
+      .all() as Array<{ id: string; status: string }>;
+    const posted = rows.find((row) => row.status === "posted")!.id;
+    const pending = rows.find((row) => row.status === "pending")!.id;
+    db.database
+      .prepare(
+        `INSERT INTO activity_role_overrides
+          (target_kind, target_id, economic_role, review_status, counterparty, created_at, updated_at)
+         VALUES ('bank_transaction', ?, 'advance', 'confirmed', 'Irene', '2026-09-16', '2026-09-16')`,
+      )
+      .run(posted);
+    db.database
+      .prepare(
+        `INSERT INTO activity_role_overrides
+          (target_kind, target_id, economic_role, review_status, duplicate_of_kind, duplicate_of_id, created_at, updated_at)
+         VALUES ('invoice', 'fake-invoice', 'spending', 'confirmed', 'bank_transaction', ?, '2026-09-16', '2026-09-16')`,
+      )
+      .run(posted);
+    db.database
+      .prepare(
+        `INSERT INTO activity_notes (target_kind, target_id, note, created_at, updated_at)
+         VALUES ('bank_transaction', ?, '幫 Irene 買', '2026-09-16', '2026-09-16')`,
+      )
+      .run(posted);
+
+    await importCtbcPayloads(
+      env,
+      cardPayloads([realtimeItem], [unbilledItem]),
+      {
+        now: NOW,
+      },
+    );
+
+    const survivor = (
+      db.database
+        .prepare(
+          "SELECT id FROM bank_transactions WHERE connector_id = 'ctbc' AND amount = -688",
+        )
+        .all() as Array<{ id: string }>
+    ).map((row) => row.id);
+    expect(survivor).toEqual([pending]);
+    expect(
+      db.database
+        .prepare(
+          "SELECT target_id, economic_role, counterparty, duplicate_of_id FROM activity_role_overrides ORDER BY target_kind",
+        )
+        .all(),
+    ).toEqual([
+      {
+        target_id: pending,
+        economic_role: "advance",
+        counterparty: "Irene",
+        duplicate_of_id: null,
+      },
+      {
+        target_id: "fake-invoice",
+        economic_role: "spending",
+        counterparty: null,
+        duplicate_of_id: pending,
+      },
+    ]);
+    expect(
+      db.database.prepare("SELECT target_id, note FROM activity_notes").all(),
+    ).toEqual([{ target_id: pending, note: "幫 Irene 買" }]);
+  });
+
   for (const [label, realtime] of [
     ["while the authorization is still listed", [realtimeItem]],
     ["after the authorization left the realtime feed", []],

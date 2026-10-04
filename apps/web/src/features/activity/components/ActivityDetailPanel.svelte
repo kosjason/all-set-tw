@@ -476,7 +476,8 @@
               >{/if}
           </div>
 
-          {#if item.transactionId}<label
+          <!-- 代墊／收回代墊已明確不計入收支，舊的排除設定對它沒有作用，不顯示。 -->
+          {#if item.transactionId && item.economicRole !== "advance" && item.economicRole !== "reimbursement"}<label
               class="flex cursor-pointer items-center justify-between gap-4 py-4"
             >
               <span>

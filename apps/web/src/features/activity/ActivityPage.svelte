@@ -812,10 +812,18 @@
     const note = reason === (item.note ?? "").trim() ? undefined : reason;
     $roleMutation.mutate({ item, role, note, counterparty });
   }
-  // 代墊對象的建議名稱：已用過的對象（依最近使用排序）。
-  const advances = createQuery(advancesQuery(() => api));
+  // 代墊對象的建議名稱：已用過的對象，依最近一筆排序。只在開啟對話框時才讀取。
+  const advances = createQuery(
+    toStore(() => ({
+      ...advancesQuery(() => api),
+      enabled: pendingRole != null,
+      staleTime: 60_000,
+    })),
+  );
   const counterpartySuggestions = $derived(
-    ($advances.data?.counterparties ?? []).map((entry) => entry.name),
+    [...($advances.data?.counterparties ?? [])]
+      .sort((a, b) => b.lastDay.localeCompare(a.lastDay))
+      .map((entry) => entry.name),
   );
   // 備註：寫到 noteTarget（已配對的交易與發票共用），清空即刪除。
   const saveNoteOptions = saveActivityNoteMutation(() => api);

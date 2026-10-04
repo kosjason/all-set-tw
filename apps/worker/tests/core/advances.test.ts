@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   ADVANCE_COUNTERPARTY_MAX_LENGTH,
   applyEconomicRoleOverride,
+  carryInvoiceAdvancesToTransactions,
+  matchInvoicesToTransactions,
+  resolveInvoiceDedupe,
   normalizeAdvanceCounterparty,
   RULE_ECONOMIC_ROLES,
   summarizeActivityMonths,
@@ -151,5 +154,73 @@ describe("summarizeAdvances", () => {
         item("investment", "2026-09-01", -100),
       ]),
     ).toEqual([]);
+  });
+});
+
+describe("advances and e-invoice matching", () => {
+  const card = (economicRole: "spending" | "advance") => ({
+    id: "card-1",
+    connectorId: "esun",
+    sourceId: "card-1",
+    accountType: "credit",
+    amount: -31300,
+    currency: "TWD",
+    postedDate: "2026-09-29",
+    description: "虛構電信門市",
+    economicRole,
+    duplicateOf: null,
+    ...(economicRole === "advance"
+      ? { excludedFromCalculation: true, advanceCounterparty: "Irene" }
+      : {}),
+  });
+  const invoice = {
+    id: "inv-1",
+    invoiceDate: "2026-09-29",
+    amount: 31300,
+    sellerName: "虛構電信門市",
+    invoiceStatus: "開立已確認",
+  };
+
+  it("still matches the invoice of an advance paid by card", () => {
+    // 代墊仍是一筆實際付款；不配對的話發票會被當成另一筆消費。
+    const transactions = [card("advance")];
+    const matches = matchInvoicesToTransactions(transactions, [invoice]);
+    expect(matches.transactionToInvoice.get("card-1")?.id).toBe("inv-1");
+    const { roles } = resolveInvoiceDedupe([invoice], transactions, matches);
+    expect(roles.get("inv-1")?.duplicateOf).toEqual({
+      kind: "bank_transaction",
+      id: "card-1",
+    });
+  });
+
+  it("carries an advance set on the invoice to the matched card charge", () => {
+    const transactions = [{ ...card("spending"), roleReason: "sign" as const }];
+    const matches = matchInvoicesToTransactions(transactions, [invoice]);
+    const { roles } = resolveInvoiceDedupe([invoice], transactions, matches);
+    const invoiceRoles = new Map(
+      [...roles].map(([id, fields]) => [
+        id,
+        applyEconomicRoleOverride(fields, {
+          economicRole: "advance",
+          duplicateOf: null,
+          counterparty: "Irene",
+        }),
+      ]),
+    );
+    const [carried] = carryInvoiceAdvancesToTransactions(
+      transactions,
+      invoiceRoles,
+    );
+    expect(carried).toMatchObject({
+      economicRole: "advance",
+      advanceCounterparty: "Irene",
+      roleReason: "override",
+    });
+    // 交易自己有 override 時以交易為準。
+    const [kept] = carryInvoiceAdvancesToTransactions(
+      [{ ...transactions[0]!, roleReason: "override" as const }],
+      invoiceRoles,
+    );
+    expect(kept).toMatchObject({ economicRole: "spending" });
   });
 });

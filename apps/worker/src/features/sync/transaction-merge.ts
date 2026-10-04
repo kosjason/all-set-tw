@@ -41,7 +41,7 @@ export function mergeLegacyTransactionStatements(
         AND (old_invoice.invoice_id IS NULL OR new_invoice.invoice_id IS NULL)
         AND (old_role.target_id IS NULL OR new_role.target_id IS NULL
           OR (old_role.economic_role = new_role.economic_role
-            AND old_role.counterparty IS new_role.counterparty))
+            AND lower(old_role.counterparty) IS lower(new_role.counterparty)))
     )`;
   return [
     `INSERT INTO bank_transaction_preferences
@@ -115,7 +115,7 @@ export function mergeLegacyTransactionStatements(
 /**
  * 即時消費入帳時，把使用者在舊交易上設定的經濟角色（含代墊對象）與備註搬到新交易。
  * `links` 為 JSON 陣列，`fromPath`／`toPath` 指出每個元素中舊／新交易 id 的 JSON path。
- * 新交易已有角色時保留新交易的設定；備註兩邊不同時合併保留。
+ * 兩邊都有角色時以較新（updated_at）的設定為準；備註兩邊不同時合併保留。
  */
 export function carryRoleOverrideAndNoteStatements(
   db: D1Database,
@@ -140,7 +140,14 @@ export function carryRoleOverrideAndNoteStatements(
       FROM json_each(?) link JOIN activity_role_overrides p
         ON p.target_kind = 'bank_transaction' AND p.target_id = ${from}
       WHERE ${to} IS NOT NULL AND ${to} <> ${from}
-      ON CONFLICT(target_kind, target_id) DO NOTHING`,
+      ON CONFLICT(target_kind, target_id) DO UPDATE SET
+        economic_role = excluded.economic_role,
+        review_status = excluded.review_status,
+        duplicate_of_kind = excluded.duplicate_of_kind,
+        duplicate_of_id = excluded.duplicate_of_id,
+        counterparty = excluded.counterparty,
+        updated_at = excluded.updated_at
+      WHERE excluded.updated_at > activity_role_overrides.updated_at`,
       )
       .bind(links),
     db
