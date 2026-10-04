@@ -382,12 +382,6 @@ export function formatStatementMonth(month) {
   return /^\d{4}\/?\d{2}$/.test(String(month)) ? String(month) : "[month]";
 }
 
-/** 網銀回應的錯誤說明（例如「請重新登入」），遮蔽數字與長字串後最多 40 字。 */
-export function responseDesc(response) {
-  if (!isRecord(response)) return "";
-  return redactMessage(stringValue(response.desc).trim()).slice(0, 40);
-}
-
 export function responseCode(response) {
   if (!isRecord(response)) return "?";
   return stringValue(response.code || response.statusCode) || "?";
@@ -579,9 +573,8 @@ export async function collectCtbcPayloads(call, options = {}) {
   const required = async (resource, rqData, countOf) => {
     const response = await request(resource, rqData, countOf);
     if (!isResourceSuccess(response)) {
-      const desc = responseDesc(response);
       throw new CtbcWebImportError(
-        `${resource} 查詢失敗（code=${responseCode(response)}${desc ? `：${desc}` : ""}），未匯入任何資料。`,
+        `${resource} 查詢失敗（code=${responseCode(response)}），未匯入任何資料。`,
       );
     }
     return response;
@@ -594,7 +587,7 @@ export async function collectCtbcPayloads(call, options = {}) {
   );
   const deposit = await collectDepositTransactions(
     request,
-    extractDepositAccountIds(depositOverview),
+    extractDepositAccounts(depositOverview),
     { now, observedDepositQuery, pageDeposits, log },
   );
   const creditCardOverview = await required(RESOURCES.creditCardBills, {});
@@ -694,48 +687,52 @@ function pick(value, keys) {
 
 async function collectDepositTransactions(
   request,
-  accountIds,
+  accounts,
   { now, observedDepositQuery, pageDeposits, log },
 ) {
   const transactions = [];
   let workingStrategy = null;
-  let anySuccess = false;
   let usedPageResults = false;
+  let missingWithBalance = 0;
+  let missing = 0;
+  // 使用者有在明細頁查看時，其他帳戶也不重送：工具重送一律 H404（差在頁面網址的防護參數，
+  // 工具不重現），只會對網銀多送注定失敗的請求。
+  const pageSeen =
+    pageDepositDetailLists(
+      pageDeposits(),
+      accounts.map((account) => account.accountId),
+      { anyAccount: true },
+    ).length > 0;
 
-  for (const accountId of accountIds) {
+  for (const { accountId, balance } of accounts) {
     const firstInit = await request(RESOURCES.depositInit, { accountId });
     const initOk = isResourceSuccess(firstInit);
     const queryAccountId = initOk
       ? selectTransactionAccountId(firstInit, accountId)
       : accountId;
+    let items = null;
 
-    // 頁面自己的查詢有資料，工具重送卻一律 H404（差在頁面網址的防護參數，工具不重現）。
-    // 使用者在明細頁看過的帳戶直接採用頁面結果，不再送注定失敗的重送。
     const pageLists = pageDepositDetailLists(pageDeposits(), [
       accountId,
       queryAccountId,
     ]);
     if (pageLists.length > 0) {
-      const items = mergeDepositDetailLists(pageLists);
-      log(`存款明細：使用頁面查詢結果 ${items.length} 筆`);
-      anySuccess = true;
+      items = mergeDepositDetailLists(pageLists);
       usedPageResults = true;
-      for (const item of items) {
-        transactions.push({ ...item, sourceAccountId: accountId });
-      }
-      continue;
+      log(`存款明細：使用頁面查詢結果 ${items.length} 筆`);
     }
 
-    const strategies = initOk
-      ? orderStrategies(
-          depositQueryStrategies(queryAccountId, {
-            dateRanges: arrayValue(responseData(firstInit).dateRanges),
-            observedQuery: observedDepositQuery(),
-            now,
-          }),
-          workingStrategy,
-        )
-      : [];
+    const strategies =
+      items === null && initOk && !pageSeen
+        ? orderStrategies(
+            depositQueryStrategies(queryAccountId, {
+              dateRanges: arrayValue(responseData(firstInit).dateRanges),
+              observedQuery: observedDepositQuery(),
+              now,
+            }),
+            workingStrategy,
+          )
+        : [];
     for (let index = 0; index < strategies.length; index += 1) {
       if (index > 0) {
         // 每種參數組合前都照頁面流程重新選取帳戶，避免伺服器端選取狀態不一致。
@@ -746,24 +743,37 @@ async function collectDepositTransactions(
       let strategySucceeded = false;
       const strategyItems = [];
       for (const rqData of strategy.requests) {
-        const items = await queryDepositPages(request, rqData);
-        if (items === null) continue;
+        const pageItems = await queryDepositPages(request, rqData);
+        if (pageItems === null) continue;
         strategySucceeded = true;
-        strategyItems.push(...items);
+        strategyItems.push(...pageItems);
       }
       if (!strategySucceeded) continue;
-      anySuccess = true;
       workingStrategy = strategy.name;
-      for (const item of strategyItems) {
-        transactions.push({ ...item, sourceAccountId: accountId });
-      }
+      items = strategyItems;
       break;
     }
+
+    if (items === null) {
+      missing += 1;
+      // 餘額為 0 的帳戶不算遺漏，避免閒置帳戶讓每次匯入都帶警告。
+      if (balance !== 0) missingWithBalance += 1;
+      continue;
+    }
+    for (const item of items) {
+      transactions.push({ ...item, sourceAccountId: accountId });
+    }
+  }
+  if (missing > 0 && missing < accounts.length) {
+    log(`存款明細：${missing} 個帳戶未取得（未在明細頁查看）`);
   }
 
   return {
     transactions,
-    unavailable: accountIds.length > 0 && !anySuccess,
+    // 全部帳戶都沒取得，或有餘額的帳戶沒取得時，匯入結果帶「部分資料未取得」警告。
+    unavailable:
+      accounts.length > 0 &&
+      (missing === accounts.length || missingWithBalance > 0),
     strategy: workingStrategy ?? (usedPageResults ? "page" : null),
   };
 }
@@ -772,13 +782,22 @@ async function collectDepositTransactions(
  * 頁面自己的存款明細查詢回應中，屬於指定帳戶（總覽帳號或明細頁帳號）的明細；
  * 只採用 code 0000 的回應，每個回應（含分頁）各自為一份清單。
  */
-export function pageDepositDetailLists(captures, accountIds) {
+export function pageDepositDetailLists(
+  captures,
+  accountIds,
+  { anyAccount = false } = {},
+) {
   const wanted = new Set(
     accountIds.map((value) => stringValue(value).trim()).filter(Boolean),
   );
   return arrayValue(captures).flatMap((capture) => {
     if (!isRecord(capture) || !isRecord(capture.rqData)) return [];
-    if (!wanted.has(stringValue(capture.rqData.accountId).trim())) return [];
+    if (
+      !anyAccount &&
+      !wanted.has(stringValue(capture.rqData.accountId).trim())
+    ) {
+      return [];
+    }
     if (stringValue(capture.response?.code) !== "0000") return [];
     return [
       arrayValue(responseData(capture.response).detailList).filter(isRecord),
@@ -897,6 +916,19 @@ async function collectPagedCardItems(
     allItems.push(...arrayValue(responseData(page).allItems));
   }
   return { rsData: { ...data, allItems } };
+}
+
+/** 存款總覽的帳戶與餘額；餘額無法解析時為 null。 */
+export function extractDepositAccounts(payload) {
+  const twd = recordValue(responseData(payload).twdAcctSummaryResponse);
+  const demand = recordValue(twd.demDepBalSummaryResponse);
+  return arrayValue(demand.infoList).flatMap((value) => {
+    if (!isRecord(value)) return [];
+    const accountId = stringValue(value.accountId).trim();
+    if (!accountId) return [];
+    const balance = numberValue(value.balance);
+    return [{ accountId, balance: balance === undefined ? null : balance }];
+  });
 }
 
 export function extractDepositAccountIds(payload) {
@@ -1136,7 +1168,7 @@ export class AuthTokenTracker {
  * 監看所有分頁的網銀 API 請求，取得登入後模板、記住頁面自己的存款明細查詢參數，
  * 並取回頁面自己的存款明細回應。
  */
-class RequestTemplateWatcher {
+export class RequestTemplateWatcher {
   #cdp;
   #attached = new Set();
   #ownTrackingIds = new Set();
@@ -1158,6 +1190,8 @@ class RequestTemplateWatcher {
   /** 頁面尚未完成的網銀請求與最後一次活動時間；工具開始查詢前要等頁面靜止。 */
   #pageInFlight = new Set();
   #lastPageActivity = 0;
+  /** 進行中的頁面存款回應擷取數；擷取完成前不算頁面靜止。 */
+  #capturing = 0;
   /** 頁面與工具最新的 x-auth-token；使用者操作頁面時 token 可能更新。 */
   tokens = new AuthTokenTracker();
 
@@ -1169,6 +1203,16 @@ class RequestTemplateWatcher {
     this.#cdp.on("Target.targetCreated", ({ targetInfo }) =>
       this.#attach(targetInfo),
     );
+    // 分頁關閉時進行中的請求可能收不到結束事件；清掉該 session 的追蹤，免得一直等頁面靜止。
+    this.#cdp.on("Target.detachedFromTarget", ({ sessionId }) => {
+      const prefix = `${sessionId ?? ""}:`;
+      for (const key of [...this.#pageInFlight]) {
+        if (key.startsWith(prefix)) this.#pageInFlight.delete(key);
+      }
+      for (const key of [...this.#pendingDeposits.keys()]) {
+        if (key.startsWith(prefix)) this.#pendingDeposits.delete(key);
+      }
+    });
     this.#cdp.on("Network.requestWillBeSent", (params, sessionId) =>
       this.#onRequest(params, sessionId, this.tokens.nextSeq()),
     );
@@ -1247,12 +1291,16 @@ class RequestTemplateWatcher {
       if (event === "Network.loadingFinished") {
         void this.#captureDeposit(requestId, sessionId, rqData);
       }
-    } else if (this.#classifying.has(key)) {
+    } else if (
+      event === "Network.loadingFinished" &&
+      this.#classifying.has(key)
+    ) {
       this.#finishedWhileClassifying.add(key);
     }
   }
 
   async #captureDeposit(requestId, sessionId, rqData) {
+    this.#capturing += 1;
     try {
       const { body = "", base64Encoded } = await this.#cdp.send(
         "Network.getResponseBody",
@@ -1264,7 +1312,10 @@ class RequestTemplateWatcher {
       );
       if (isRecord(response)) this.pageDeposits.push({ rqData, response });
     } catch {
-      // 取不到頁面的回應時，仍以工具重送的結果為準。
+      // 取不到頁面的回應時，這次就沒有該查詢的頁面結果。
+    } finally {
+      this.#capturing -= 1;
+      this.#lastPageActivity = Date.now();
     }
   }
 
@@ -1277,6 +1328,7 @@ class RequestTemplateWatcher {
     while (!shouldStop() && Date.now() < deadline) {
       if (
         this.#pageInFlight.size === 0 &&
+        this.#capturing === 0 &&
         Date.now() - this.#lastPageActivity >= quietMs
       ) {
         return true;
@@ -1286,14 +1338,21 @@ class RequestTemplateWatcher {
     return false;
   }
 
-  /** 等頁面自己的存款明細回應；取得任一筆即回傳 true，逾時或中斷回傳 false。 */
+  /**
+   * 等頁面自己的存款明細回應擷取完成；有可採用（0000）的回應時回傳 true，
+   * 逾時或中斷回傳 false。
+   */
   async waitForPageDeposit(timeoutMs, shouldStop = () => false) {
     const deadline = Date.now() + timeoutMs;
-    while (this.pageDeposits.length === 0 && !shouldStop()) {
-      if (Date.now() >= deadline) return false;
+    const usable = () =>
+      this.pageDeposits.some(
+        (capture) => stringValue(capture.response?.code) === "0000",
+      );
+    while (!shouldStop() && Date.now() < deadline) {
+      if (this.#capturing === 0 && usable()) return true;
       await sleep(250);
     }
-    return this.pageDeposits.length > 0;
+    return this.#capturing === 0 && usable();
   }
 
   async #onRequest(params, sessionId, seq) {
@@ -1815,7 +1874,7 @@ async function run(argv) {
     session = new PageApiSession(browser, watcher);
     if (options.depositWaitSeconds > 0 && !watcher.observedDepositQuery) {
       console.log(
-        `已偵測到登入。請點進存款帳戶的交易明細，看到明細後工具才開始查詢（最多等 ${Math.round(options.depositWaitSeconds / 60)} 分鐘，沒點也會繼續）。`,
+        `已偵測到登入。請點進存款帳戶的交易明細，看到明細後工具才開始查詢（最多等 ${options.depositWaitSeconds} 秒，沒點也會繼續）。`,
       );
       const observed = await watcher.waitForDepositQuery(
         options.depositWaitSeconds * 1_000,
@@ -1839,7 +1898,7 @@ async function run(argv) {
       console.log(
         captured
           ? "已取得存款明細頁的查詢結果。"
-          : "未取得存款明細頁的查詢結果，改用工具查詢。",
+          : "未取得可用的存款明細頁查詢結果。",
       );
     }
     if (watcher.depositEnvelopeDiff) {

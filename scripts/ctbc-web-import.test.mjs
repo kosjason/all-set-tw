@@ -18,7 +18,7 @@ import {
   userDataDirPattern,
   pickTemplateHeaders,
   redactMessage,
-  responseDesc,
+  RequestTemplateWatcher,
   RESOURCES,
   statementDetailQueries,
   statementMonthsToFetch,
@@ -294,7 +294,7 @@ test("redactMessage hides account numbers, ids and tokens", () => {
   assert.ok(!text.includes("x.example"));
 });
 
-function overview(accountIds) {
+function overview(accountIds, balances = []) {
   return {
     code: "0000",
     rsData: {
@@ -302,7 +302,7 @@ function overview(accountIds) {
         demDepBalSummaryResponse: {
           infoList: accountIds.map((accountId, index) => ({
             accountId,
-            balance: String(1000 * (index + 1)),
+            balance: balances[index] ?? String(1000 * (index + 1)),
             accountNickName: "測試戶名",
           })),
         },
@@ -312,6 +312,7 @@ function overview(accountIds) {
 }
 
 function fakeBank({
+  balances,
   depositHandler,
   failResource,
   creditCards,
@@ -324,7 +325,7 @@ function fakeBank({
     if (resource === failResource) return { code: "9991", desc: "未提供" };
     switch (resource) {
       case RESOURCES.depositOverview:
-        return overview([ACCOUNT_A, ACCOUNT_B]);
+        return overview([ACCOUNT_A, ACCOUNT_B], balances);
       case RESOURCES.depositInit:
         return {
           code: "0000",
@@ -524,45 +525,47 @@ test("collectCtbcPayloads imports the page's own deposit results when replays fa
     ],
   });
 
-  assert.equal(result.depositTransactionsUnavailable, false);
+  // B 有餘額卻沒取得明細（頁面回 H404、也不重送）：仍帶部分資料未取得的警告。
+  assert.equal(result.depositTransactionsUnavailable, true);
   assert.equal(result.depositStrategy, "page");
   assert.deepEqual(result.payloads.depositTransactions.rsData.detailList, [
     { ...pageItem, sourceAccountId: ACCOUNT_A },
   ]);
   const output = lines.join("\n");
   assert.ok(output.includes("使用頁面查詢結果 1 筆"));
+  assert.ok(output.includes("1 個帳戶未取得"));
   for (const secret of [ACCOUNT_A, ACCOUNT_B, "31520", "虛構"]) {
     assert.ok(!output.includes(secret), `log leaked ${secret}`);
   }
 });
 
-test("collectCtbcPayloads skips replays for accounts the page already showed", async () => {
-  const { call, calls } = fakeBank();
-  const result = await collectCtbcPayloads(call, {
-    pageDeposits: () => [
-      {
-        rqData: { accountId: ACCOUNT_A, type: "m0" },
-        response: {
-          code: "0000",
-          rsData: { detailList: [{ memo1: "虛構本月", balanceAmt: "2" }] },
+test("collectCtbcPayloads skips every replay once the page showed deposits", async () => {
+  const pageDeposits = () => [
+    {
+      rqData: { accountId: ACCOUNT_A, type: "m0" },
+      response: {
+        code: "0000",
+        rsData: { detailList: [{ memo1: "虛構本月", balanceAmt: "2" }] },
+      },
+    },
+    // 使用者切換到前幾個月：與本月重疊的紀錄只算一次。
+    {
+      rqData: { accountId: ACCOUNT_A, type: "m2" },
+      response: {
+        code: "0000",
+        rsData: {
+          detailList: [
+            { memo1: "虛構上月", balanceAmt: "1" },
+            { balanceAmt: "2", memo1: "虛構本月" },
+          ],
         },
       },
-      // 使用者切換到前幾個月：與本月重疊的紀錄只算一次。
-      {
-        rqData: { accountId: ACCOUNT_A, type: "m2" },
-        response: {
-          code: "0000",
-          rsData: {
-            detailList: [
-              { memo1: "虛構上月", balanceAmt: "1" },
-              { balanceAmt: "2", memo1: "虛構本月" },
-            ],
-          },
-        },
-      },
-    ],
-  });
+    },
+  ];
+  const { call, calls } = fakeBank({ balances: ["5000", "0"] });
+  const result = await collectCtbcPayloads(call, { pageDeposits });
   assert.equal(result.depositStrategy, "page");
+  // 沒看的 B 餘額為 0：不算遺漏，不帶警告。
   assert.equal(result.depositTransactionsUnavailable, false);
   assert.deepEqual(
     result.payloads.depositTransactions.rsData.detailList.map(
@@ -570,14 +573,15 @@ test("collectCtbcPayloads skips replays for accounts the page already showed", a
     ),
     ["虛構本月:true", "虛構上月:true"],
   );
-  const replayed = (accountId) =>
-    calls.some(
-      (entry) =>
-        entry.resource === RESOURCES.depositTransactions &&
-        entry.rqData.accountId === accountId,
-    );
-  assert.equal(replayed(ACCOUNT_A), false);
-  assert.equal(replayed(ACCOUNT_B), true);
+  assert.ok(
+    !calls.some((entry) => entry.resource === RESOURCES.depositTransactions),
+  );
+
+  // B 有餘額時就要警告。
+  const withBalance = await collectCtbcPayloads(fakeBank().call, {
+    pageDeposits,
+  });
+  assert.equal(withBalance.depositTransactionsUnavailable, true);
 });
 
 test("mergeDepositDetailLists keeps repeated records within one list", () => {
@@ -643,23 +647,11 @@ test("collectCtbcPayloads stops without importing when a required resource fails
   const { call } = fakeBank({ failResource: RESOURCES.creditCardBills });
   await assert.rejects(collectCtbcPayloads(call), (error) => {
     assert.ok(error instanceof CtbcWebImportError);
-    assert.match(error.message, /\/twrbc-card\/qu002\/010.*code=9991：未提供/);
+    assert.match(error.message, /\/twrbc-card\/qu002\/010.*code=9991/);
+    assert.ok(!error.message.includes("未提供"));
     assert.ok(!error.message.includes(ACCOUNT_A));
     return true;
   });
-});
-
-test("responseDesc keeps the bank's message but hides numbers and tokens", () => {
-  assert.equal(
-    responseDesc({ code: "9994", desc: " 請重新登入 " }),
-    "請重新登入",
-  );
-  assert.equal(
-    responseDesc({ desc: `帳號 ${ACCOUNT_A} token ${AUTH_TOKEN}` }),
-    "帳號 [redacted] token [redacted]",
-  );
-  assert.equal(responseDesc({ desc: "請".repeat(100) }).length, 40);
-  assert.equal(responseDesc(null), "");
 });
 
 test("formatImportResult prints counts and redacts worker messages", () => {
@@ -967,4 +959,118 @@ test("AuthTokenTracker keeps the newest token regardless of classification order
   tracker.classify("t2:9", "page", undefined, t2);
   tracker.response("t2:9", "T6", tracker.nextSeq());
   assert.equal(tracker.current, "T6");
+});
+
+function fakeCdp(handlers = {}) {
+  const listeners = new Map();
+  const sent = [];
+  return {
+    sent,
+    on(method, handler) {
+      listeners.set(method, [...(listeners.get(method) ?? []), handler]);
+    },
+    emit(method, params, sessionId) {
+      for (const handler of listeners.get(method) ?? []) {
+        handler(params, sessionId);
+      }
+    },
+    async send(method, params, sessionId) {
+      sent.push({ method, sessionId });
+      return handlers[method] ? handlers[method](params, sessionId) : {};
+    },
+  };
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+function depositPostData(overrides = {}) {
+  return JSON.stringify(
+    pageBody({
+      resource: RESOURCES.depositTransactions,
+      rqData: { accountId: ACCOUNT_A, type: "m0" },
+      ...overrides,
+    }),
+  );
+}
+
+async function startWatcher(handlers = {}) {
+  let releasePostData = () => {};
+  const cdp = fakeCdp({
+    "Target.getTargets": () => ({ targetInfos: [] }),
+    "Network.getRequestPostData": () =>
+      new Promise((resolve) => {
+        releasePostData = () => resolve({ postData: depositPostData() });
+      }),
+    "Network.getResponseBody": () => ({
+      body: JSON.stringify({
+        code: "0000",
+        rsData: { detailList: [{ memo1: "虛構入帳" }] },
+      }),
+      base64Encoded: false,
+    }),
+    ...handlers,
+  });
+  const watcher = new RequestTemplateWatcher(cdp);
+  await watcher.start();
+  const request = (requestId, sessionId, postData) =>
+    cdp.emit(
+      "Network.requestWillBeSent",
+      {
+        requestId,
+        request: {
+          url: RESOURCE_URL,
+          method: "POST",
+          headers: pageHeaders,
+          ...(postData === undefined ? { hasPostData: true } : { postData }),
+        },
+      },
+      sessionId,
+    );
+  return { cdp, watcher, request, release: () => releasePostData() };
+}
+
+test("RequestTemplateWatcher captures a page deposit that finished before classification", async () => {
+  const { cdp, watcher, request, release } = await startWatcher();
+  request("r1", "s1");
+  cdp.emit("Network.loadingFinished", { requestId: "r1" }, "s1");
+  release();
+  assert.equal(await watcher.waitForPageDeposit(1_000), true);
+  assert.deepEqual(watcher.pageDeposits[0].rqData, {
+    accountId: ACCOUNT_A,
+    type: "m0",
+  });
+  assert.equal(await watcher.waitForQuiet(10, 1_000), true);
+});
+
+test("RequestTemplateWatcher skips the body of a failed page deposit", async () => {
+  const { cdp, watcher, request, release } = await startWatcher();
+  request("r1", "s1");
+  cdp.emit("Network.loadingFailed", { requestId: "r1" }, "s1");
+  release();
+  await flush();
+  assert.ok(
+    !cdp.sent.some((entry) => entry.method === "Network.getResponseBody"),
+  );
+  assert.equal(watcher.pageDeposits.length, 0);
+  assert.equal(watcher.observedDepositQuery?.type, "m0");
+  assert.equal(await watcher.waitForQuiet(10, 1_000), true);
+});
+
+test("RequestTemplateWatcher stops waiting on requests of a detached tab", async () => {
+  const { cdp, watcher, request } = await startWatcher();
+  request("r1", "s2", depositPostData());
+  await flush();
+  assert.equal(await watcher.waitForQuiet(10, 300), false);
+  cdp.emit("Target.detachedFromTarget", { sessionId: "s2" });
+  assert.equal(await watcher.waitForQuiet(10, 1_000), true);
+});
+
+test("RequestTemplateWatcher does not count the tool's own requests as page activity", async () => {
+  const { watcher, request } = await startWatcher();
+  watcher.markOwnRequest("own-tracking");
+  request("r1", "s1", depositPostData({ trackingIxd: "own-tracking" }));
+  await flush();
+  assert.equal(await watcher.waitForQuiet(10, 1_000), true);
+  assert.equal(watcher.observedDepositQuery, null);
+  assert.equal(watcher.pageDeposits.length, 0);
 });
