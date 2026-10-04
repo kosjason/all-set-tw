@@ -335,6 +335,12 @@ disabled、control 是否找到與點擊位置命中的元素、各種選項選�
 `cathaybk_period_option_unrecognized`，選項文字只保留能由 `cathayPeriodDays` 換算的
 期間，其他記為 `[redacted]`。
 進入明細頁時自動送出的 30 天查詢要先等它回應，每個帳戶再自行按「查詢」。
+2026-10 改版後明細頁會跳出彈出視窗（Chakra modal，實測滑鼠點選單時命中
+`chakra-modal__content-container`），蓋住頁面並鎖住鍵盤焦點，帳號與期間選單都操作不了。
+每次操作選單前先以 `dismissCathayTransactionModals` 關閉：先按 Escape，仍在時點 × 關閉鈕
+（`chakra-modal__close-btn`），沒有時只點「我知道了／知道了／關閉／稍後再說／下次再說／
+略過／取消」，不點「確定」等可能同意任何事的按鈕。log `cathaybk_modal_dismissed` 只記
+數量、方式與 10 字內不含數字的按鈕文字。
 `B_ACCT_Q_TransferDetail` 回應的 `accountNumber` 會補零（例如 12 碼帳號回傳 16 碼），
 以結尾比對（前面只能是 0）確認屬於目前帳戶。找不到帳號、回應不是 JSON、
 帳號不符、查詢逾時或被登出時，整次同步失敗，不以零筆交易繼續。

@@ -20,6 +20,7 @@ import {
   createCathaybkConnector,
   cathayAccountSelectorShape,
   cathayMenuStructure,
+  dismissCathayTransactionModals,
   chooseCathayComboboxOptionWithDiagnostics,
   cathayPeriodDays,
   chooseCathayPeriodOption,
@@ -1803,5 +1804,108 @@ describe("Cathay account combobox", () => {
     expect(cathayMenuStructure("account").ancestorClasses[0]).toBe(
       "css-13cymwt-control",
     );
+  });
+});
+
+describe("Cathay transaction page modal", () => {
+  function modalPage(root: FakeNode, onEscape?: () => void) {
+    vi.stubGlobal("document", fakeDocument(root));
+    return {
+      evaluate: vi.fn(
+        async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
+          fn(...args),
+      ),
+      keyboard: {
+        press: vi.fn(async (key: string) => {
+          if (key === "Escape") onEscape?.();
+        }),
+      },
+    };
+  }
+
+  function dialog(...buttons: FakeNode[]) {
+    const container = fakeNode("div", {
+      class: "chakra-modal__content-container css-1a6i8n5",
+    });
+    append(container, ...buttons);
+    return container;
+  }
+
+  it("does nothing when no modal is open", async () => {
+    const page = modalPage(fakeNode("div"));
+    await expect(
+      dismissCathayTransactionModals(page as never, 0),
+    ).resolves.toEqual({ before: 0, after: 0 });
+    expect(page.keyboard.press).not.toHaveBeenCalled();
+  });
+
+  it("closes the modal with Escape", async () => {
+    const root = fakeNode("div");
+    const modal = dialog(fakeNode("button", {}, "我知道了"));
+    append(root, modal);
+    const page = modalPage(root, () => {
+      modal.offsetParent = null;
+    });
+
+    await expect(
+      dismissCathayTransactionModals(page as never, 0),
+    ).resolves.toEqual({ before: 1, after: 0, method: "escape" });
+  });
+
+  it("falls back to the close button when Escape does not work", async () => {
+    const root = fakeNode("div");
+    const close = fakeNode("button", {
+      class: "chakra-modal__close-btn css-1ik4h6n",
+    });
+    const confirm = fakeNode("button", {}, "確定");
+    const modal = dialog(confirm, close);
+    close.click = vi.fn(() => {
+      modal.offsetParent = null;
+    });
+    append(root, modal);
+    const page = modalPage(root);
+
+    await expect(
+      dismissCathayTransactionModals(page as never, 0),
+    ).resolves.toEqual({ before: 1, after: 0, method: "button" });
+    expect(close.click).toHaveBeenCalledOnce();
+    expect(confirm.click).not.toHaveBeenCalled();
+  });
+
+  it("only presses buttons that do not agree to anything", async () => {
+    const root = fakeNode("div");
+    const confirm = fakeNode("button", {}, "確定");
+    const later = fakeNode("button", {}, "稍後再說");
+    const modal = dialog(confirm, later);
+    later.click = vi.fn(() => {
+      modal.offsetParent = null;
+    });
+    append(root, modal);
+
+    await dismissCathayTransactionModals(modalPage(root) as never, 0);
+    expect(later.click).toHaveBeenCalledOnce();
+    expect(confirm.click).not.toHaveBeenCalled();
+  });
+
+  it("logs only short button labels without digits", async () => {
+    const root = fakeNode("div");
+    append(
+      root,
+      dialog(
+        fakeNode("button", {}, "確定"),
+        fakeNode("button", {}, "轉入 123456789012"),
+      ),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await dismissCathayTransactionModals(modalPage(root) as never, 0);
+    const event = JSON.parse(String(log.mock.calls.at(-1)?.[0]));
+    expect(event).toMatchObject({
+      event: "cathaybk_modal_dismissed",
+      before: 1,
+      after: 1,
+      labels: ["確定"],
+    });
+    log.mockRestore();
   });
 });
