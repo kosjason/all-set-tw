@@ -22,6 +22,7 @@ import {
 } from "./cathaybk-deposit-counterparty.js";
 import {
   cathayReplayInPage,
+  classifyCathayReplay,
   describeCathayTransferQuery,
   replayableHeaders,
   rewriteCathayTransferQuery,
@@ -1272,37 +1273,40 @@ async function scrapeDeposits(
       event: "cathaybk_transfer_query_template",
       captured: Boolean(captured),
       ...(captured
-        ? { request: describeCathayTransferQuery(captured.postData) }
+        ? {
+            request: describeCathayTransferQuery(captured.postData),
+            // 只記標頭名稱，用來判斷有沒有一次性 token 或簽章類標頭。
+            headerNames: Object.keys(captured.headers).slice(0, 40),
+          }
         : {}),
       initialResponse: Boolean(initialResponse),
     }),
   );
 
-  const addWarning = (warning: string) => {
-    if (!warnings.includes(warning)) warnings.push(warning);
-  };
+  const initialDatas = first
+    ? classifyCathayReplay(
+        initialResponse
+          ? {
+              status: 200,
+              url: "",
+              redirected: false,
+              contentType: "application/json",
+              text: JSON.stringify(initialResponse),
+            }
+          : null,
+        first.acctNo,
+      )
+    : null;
+  let replayEnabled = Boolean(captured && first);
+  let defaultPeriodOnly = false;
+  const unavailable: string[] = [];
   for (const [index, acct] of accounts.entries()) {
     const sourceId = `bank:cathaybk:${acct.acctNo}`;
-    // The API zero-pads the account number (e.g. 16 digits for a 12-digit
-    // account shown on the page). Every entry must belong to this account.
-    const belongsToAccount = (accountNumber: string | undefined) => {
-      const digits = (accountNumber ?? "").replace(/\D/g, "");
-      return (
-        digits.endsWith(acct.acctNo) &&
-        /^0*$/.test(digits.slice(0, -acct.acctNo.length))
-      );
-    };
-    const ownDatas = (data: TransferDetailResponse | null) => {
-      const datas = data?.content?.datas;
-      if (!Array.isArray(datas)) return undefined;
-      return datas.every((entry) => belongsToAccount(entry.accountNumber))
-        ? datas
-        : undefined;
-    };
-
-    let datas: NonNullable<TransferDetailResponse["content"]>["datas"];
+    let datas: Array<{ details?: unknown[] }> | undefined;
     let period = "default";
-    if (captured && first) {
+    let reason = captured ? "replay-disabled" : "no-template";
+
+    if (replayEnabled && captured && first) {
       const rewrite = rewriteCathayTransferQuery(captured.postData, {
         fromAccount: first.acctNo,
         toAccount: acct.acctNo,
@@ -1310,7 +1314,17 @@ async function scrapeDeposits(
         toCurrency: acct.currency,
         lookbackDays,
       });
-      if (index === 0 || rewrite.accountReplaced) {
+      // 第一個帳戶若無法延長日期，重送會和頁面剛送的完全相同，直接用頁面結果。
+      const worthReplay =
+        index === 0 ? rewrite.datesExtended : rewrite.accountReplaced;
+      reason = index === 0 ? "dates-not-extended" : "account-not-replaced";
+      if (worthReplay) {
+        if (index > 0) {
+          // 依序重送並間隔 1–2 秒，避免短時間連續請求。
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 + Math.floor(Math.random() * 1000)),
+          );
+        }
         const replay = await page
           .evaluate(
             cathayReplayInPage,
@@ -1320,53 +1334,51 @@ async function scrapeDeposits(
             rewrite.body,
           )
           .catch(() => null);
-        assertCathayNotLoggedOut(page);
-        let parsed: TransferDetailResponse | null = null;
-        try {
-          parsed =
-            replay && replay.status === 200
-              ? (JSON.parse(replay.text) as TransferDetailResponse)
-              : null;
-        } catch {
-          parsed = null;
-        }
-        datas = ownDatas(parsed);
-        if (datas)
-          period = rewrite.datesExtended ? `${lookbackDays}d` : "default";
-        if (datas && !rewrite.datesExtended) {
-          addWarning(
-            "國泰存款明細無法指定期間，本次只取得頁面預設期間的交易。",
+        const result = classifyCathayReplay(replay, acct.acctNo);
+        if (result.kind === "logged-out") {
+          throw new Error(
+            "Cathay Bank ended the session during transaction query.",
           );
         }
-        if (!datas) {
+        assertCathayNotLoggedOut(page);
+        if (result.kind === "ok") {
+          datas = result.datas;
+          period = rewrite.datesExtended ? `${lookbackDays}d` : "default";
+          if (!rewrite.datesExtended) defaultPeriodOnly = true;
+        } else {
+          reason = result.reason;
           console.warn(
             JSON.stringify({
               event: "cathaybk_transfer_query_replay_failed",
+              accountIndex: index,
+              kind: result.kind,
+              reason: result.reason,
               status: replay?.status ?? null,
-              parsed: Boolean(parsed),
-              accountReplaced: rewrite.accountReplaced,
+              redirected: replay?.redirected ?? null,
+              contentType: (replay?.contentType ?? "").slice(0, 60),
+              accountKeys: rewrite.accountKeys,
               datesExtended: rewrite.datesExtended,
             }),
           );
+          // 熔斷：重送一失敗就不再送後續帳戶，避免連續送出異常請求。
+          if (result.kind === "failed") replayEnabled = false;
         }
       }
     }
-    // 第一個帳戶重送失敗時，退回頁面自己查到的預設期間。
-    if (!datas && index === 0) {
-      datas = ownDatas(initialResponse);
-      if (datas) {
-        addWarning("國泰存款明細無法指定期間，本次只取得頁面預設期間的交易。");
-      }
+    // 第一個帳戶沒有可用的重送結果時，退回頁面自己查到的預設期間。
+    if (!datas && index === 0 && initialDatas?.kind === "ok") {
+      datas = initialDatas.datas;
+      defaultPeriodOnly = true;
     }
     if (!datas) {
-      addWarning("國泰部分存款帳戶的交易明細未取得，本次只更新餘額。");
+      unavailable.push(reason);
       console.log(
-        `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: transactions unavailable`,
+        `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: transactions unavailable (${reason})`,
       );
       continue;
     }
 
-    const details: TransferDetail[] = datas.flatMap((d) => d.details ?? []);
+    const details = datas.flatMap((d) => d.details ?? []) as TransferDetail[];
     console.log(
       `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: ${details.length} tx (period=${period})`,
     );
@@ -1375,6 +1387,16 @@ async function scrapeDeposits(
       details,
       sourceId,
       acct.currency,
+    );
+  }
+  if (defaultPeriodOnly) {
+    warnings.push(
+      "國泰存款明細無法指定期間，本次部分帳戶只取得頁面預設期間的交易。",
+    );
+  }
+  if (unavailable.length > 0) {
+    warnings.push(
+      `國泰 ${unavailable.length}／${accounts.length} 個存款帳戶的交易明細未取得（${[...new Set(unavailable)].join("、")}），本次只更新這些帳戶的餘額。`,
     );
   }
 

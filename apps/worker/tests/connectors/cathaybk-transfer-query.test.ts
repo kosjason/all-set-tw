@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyCathayReplay,
   describeCathayTransferQuery,
   replayableHeaders,
   rewriteCathayTransferQuery,
@@ -27,6 +28,7 @@ describe("rewriteCathayTransferQuery", () => {
       },
     });
     expect(result.accountReplaced).toBe(true);
+    expect(result.accountKeys).toEqual(["accountNumber"]);
     expect(result.datesExtended).toBe(true);
     expect(JSON.parse(result.body)).toEqual({
       header: { channel: "WEB" },
@@ -53,15 +55,44 @@ describe("rewriteCathayTransferQuery", () => {
     ).toEqual({ acct: "444455556666", s: "1150706", e: "1151004" });
   });
 
+  it("only extends a recent, same-format start and end pair", () => {
+    // 格式不同
+    expect(
+      rewrite({ acct: "111122223333", s: "2026/09/04", e: "20261004" })
+        .datesExtended,
+    ).toBe(false);
+    // 同一天（可能是系統日或交易日，不是區間）
+    expect(
+      rewrite({ acct: "111122223333", s: "2026/10/04", e: "2026/10/04" })
+        .datesExtended,
+    ).toBe(false);
+    // 結束日不在最近 3 天內
+    expect(
+      rewrite({ acct: "111122223333", s: "2026/08/01", e: "2026/09/01" })
+        .datesExtended,
+    ).toBe(false);
+  });
+
+  it("only swaps currency values in currency fields", () => {
+    expect(
+      JSON.parse(
+        rewrite(
+          { acct: "111122223333", curCode: "TWD", note: "TWD" },
+          { fromCurrency: "TWD", toCurrency: "USD" },
+        ).body,
+      ),
+    ).toEqual({ acct: "444455556666", curCode: "USD", note: "TWD" });
+  });
+
   it("swaps the currency only together with a different account currency", () => {
     expect(
       JSON.parse(
         rewrite(
           { acct: "111122223333", currency: "TWD" },
-          { fromCurrency: "TWD", toCurrency: "USD" },
+          { fromCurrency: "TWD", toCurrency: "TWD" },
         ).body,
       ),
-    ).toEqual({ acct: "444455556666", currency: "USD" });
+    ).toEqual({ acct: "444455556666", currency: "TWD" });
   });
 
   it("does not touch other numbers or longer account numbers", () => {
@@ -116,6 +147,7 @@ describe("rewriteCathayTransferQuery", () => {
     ).toEqual({
       body: "acct=111122223333",
       accountReplaced: false,
+      accountKeys: [],
       datesExtended: false,
     });
   });
@@ -174,5 +206,110 @@ it("drops browser-managed and identifying headers before replay", () => {
     "content-type": "application/json",
     accept: "application/json",
     "x-csrf-token": "token",
+  });
+});
+
+describe("classifyCathayReplay", () => {
+  const replay = (
+    overrides: Partial<
+      Parameters<typeof classifyCathayReplay>[0] & object
+    > = {},
+  ) => ({
+    status: 200,
+    url: "https://www.cathaybk.com.tw/api/B_ACCT_Q_TransferDetail",
+    redirected: false,
+    contentType: "application/json",
+    text: JSON.stringify({
+      content: {
+        datas: [{ accountNumber: "0000444455556666", details: [{}] }],
+      },
+    }),
+    ...overrides,
+  });
+  const account = "444455556666";
+
+  it("accepts transactions that all belong to the account", () => {
+    expect(classifyCathayReplay(replay(), account)).toMatchObject({
+      kind: "ok",
+    });
+  });
+
+  it("treats redirects to login and 401/403 as a logged-out session", () => {
+    expect(
+      classifyCathayReplay(
+        replay({
+          redirected: true,
+          url: "https://www.cathaybk.com.tw/MyBank/",
+          contentType: "text/html",
+          text: "<html>",
+        }),
+        account,
+      ),
+    ).toEqual({ kind: "logged-out" });
+    expect(
+      classifyCathayReplay(
+        replay({
+          url: "https://www.cathaybk.com.tw/OnlineBanking/Logout/SystemError",
+        }),
+        account,
+      ),
+    ).toEqual({ kind: "logged-out" });
+    expect(classifyCathayReplay(replay({ status: 403 }), account)).toEqual({
+      kind: "logged-out",
+    });
+  });
+
+  it("fails on errors, HTML and missing data", () => {
+    expect(classifyCathayReplay(null, account)).toMatchObject({
+      kind: "failed",
+      reason: "no-response",
+    });
+    expect(
+      classifyCathayReplay(replay({ status: 500 }), account),
+    ).toMatchObject({
+      kind: "failed",
+      reason: "status-500",
+    });
+    expect(
+      classifyCathayReplay(replay({ text: "<html>error</html>" }), account),
+    ).toMatchObject({ kind: "failed", reason: "not-json" });
+    expect(
+      classifyCathayReplay(
+        replay({ text: JSON.stringify({ content: null }) }),
+        account,
+      ),
+    ).toMatchObject({ kind: "failed", reason: "no-datas" });
+  });
+
+  it("rejects transactions for another account", () => {
+    expect(
+      classifyCathayReplay(
+        replay({
+          text: JSON.stringify({
+            content: { datas: [{ accountNumber: "0000111122223333" }] },
+          }),
+        }),
+        account,
+      ),
+    ).toMatchObject({ kind: "mismatch" });
+  });
+
+  it("only accepts an empty result that names the account", () => {
+    expect(
+      classifyCathayReplay(
+        replay({
+          text: JSON.stringify({
+            content: { datas: [], query: { acct: "0000444455556666" } },
+          }),
+        }),
+        account,
+      ),
+    ).toMatchObject({ kind: "ok", datas: [] });
+    expect(
+      classifyCathayReplay(
+        replay({ text: JSON.stringify({ content: { datas: [] } }) }),
+        account,
+      ),
+    ).toMatchObject({ kind: "unverified" });
   });
 });

@@ -318,21 +318,30 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 `cathaybk-transfer-query.ts` 的 `rewriteCathayTransferQuery` 改寫：
 
 - 帳號：純數字、以第一個帳號結尾且前面只補 0 的字串值換成目標帳號（保留補零長度）；
-  兩個帳戶幣別不同時，等於原幣別的字串值換成目標幣別。
-- 日期：恰好找到兩個同格式（`YYYY/MM/DD`、`YYYY-MM-DD`、`YYYYMMDD`、民國 `YYYMMDD`）、
-  且在合理範圍內的日期時，把較早者往前推到 `BANK_SYNC_MONTHS × 30` 天；否則不改日期。
+  兩個帳戶幣別不同時，只替換欄位名稱含 `cur`／`ccy` 且等於原幣別的值。
+- 日期：恰好找到兩個合理範圍內的日期，且同格式（`YYYY/MM/DD`、`YYYY-MM-DD`、`YYYYMMDD`、
+  民國 `YYYMMDD`）、至少差一天、結束日在最近 3 天內時，把較早者往前推到
+  `BANK_SYNC_MONTHS × 30` 天；否則不改日期。
 
 改寫後以 `cathayReplayInPage` 在同一已登入頁面內 `fetch` 重送（`credentials: include`，
 `replayableHeaders` 去掉 cookie、referer、user-agent、`sec-*` 等瀏覽器自管標頭），只做唯讀
-查詢。`B_ACCT_Q_TransferDetail` 回應的 `accountNumber` 會補零（例如 12 碼帳號回傳 16 碼），
-以結尾比對（前面只能是 0）確認每筆都屬於目標帳戶，不符就不寫入。
+查詢；帳戶之間依序重送並間隔 1–2 秒。第一個帳戶無法延長日期時不重送，直接用頁面結果。
+`classifyCathayReplay` 判讀結果：
 
-降級：範本沒有帳號欄位可換、重送失敗或回應帳號不符時，第一個帳戶改用頁面自己查到的預設
-期間結果，其他帳戶略過交易明細、只更新餘額；日期無法延長時只取得預設期間。這些情況都以
-`SyncResult.warnings` 回報（資料來源頁顯示部分資料未取得），不讓整次同步失敗；被登出時
-仍整次失敗。log `cathaybk_transfer_query_template` 只記請求 body 的欄位名稱與值的形狀
-（`describeCathayTransferQuery`，例如 `digits16`、`date10`），
-`cathaybk_transfer_query_replay_failed` 只記狀態碼與改寫旗標，都不含任何值。
+- 被導向登出／登入頁或 401／403 視為工作階段結束，整次同步失敗（頁面內 fetch 不會改變
+  `page.url()`，所以要看 fetch 的最終網址）。
+- `B_ACCT_Q_TransferDetail` 回應的 `accountNumber` 會補零（例如 12 碼帳號回傳 16 碼），
+  以結尾比對（前面只能是 0）確認每筆都屬於目標帳戶；空結果要在回應內容中出現目標帳號
+  才採用，否則視為無法驗證。
+- 非 200、非 JSON 或沒有 `content.datas` 視為失敗，並熔斷：之後的帳戶不再重送。
+
+降級：第一個帳戶沒有可用的重送結果時，改用頁面自己查到的預設期間結果；其他帳戶略過交易
+明細、只更新餘額。`SyncResult.warnings` 會帶上「N／M 個帳戶未取得」與原因代碼（例如
+`account-not-replaced`、`not-json`），資料來源頁顯示部分資料未取得、TG 通知也會附提醒。
+log `cathaybk_transfer_query_template` 只記請求 body 的欄位名稱與值的形狀
+（`describeCathayTransferQuery`，例如 `digits16`、`date10`）與標頭名稱；
+`cathaybk_transfer_query_replay_failed` 只記狀態碼、是否轉址、內容類型、被換的帳號欄位
+名稱與改寫旗標，都不含任何值。
 
 #### 信用卡總覽與帳戶拆分
 

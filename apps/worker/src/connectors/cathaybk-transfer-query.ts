@@ -12,6 +12,8 @@ export type CathayTransferQueryRewrite = {
   body: string;
   /** 範本中找到並替換了帳號欄位。 */
   accountReplaced: boolean;
+  /** 被替換的帳號欄位名稱（只有名稱，供診斷）。 */
+  accountKeys: string[];
   /** 範本中找到開始與結束日期，並把開始日期往前推到所需天數。 */
   datesExtended: boolean;
 };
@@ -134,11 +136,16 @@ export function rewriteCathayTransferQuery(
   try {
     parsed = JSON.parse(postData) as Json;
   } catch {
-    return { body: postData, accountReplaced: false, datesExtended: false };
+    return {
+      body: postData,
+      accountReplaced: false,
+      accountKeys: [],
+      datesExtended: false,
+    };
   }
   const leaves = stringLeaves(parsed);
 
-  let accountReplaced = false;
+  const accountKeys: string[] = [];
   for (const leaf of leaves) {
     const value = read(leaf);
     if (isAccountValue(value, options.fromAccount)) {
@@ -148,12 +155,14 @@ export function rewriteCathayTransferQuery(
           ? options.toAccount.padStart(value.length, "0")
           : options.toAccount,
       );
-      accountReplaced = true;
+      accountKeys.push(String(leaf.key).slice(0, 40));
     } else if (
       options.fromCurrency &&
       options.toCurrency &&
       options.fromCurrency !== options.toCurrency &&
-      value === options.fromCurrency
+      value === options.fromCurrency &&
+      // 只換幣別欄位，避免把其他剛好等於幣別代碼的值也換掉。
+      /cur|ccy/i.test(String(leaf.key))
     ) {
       write(leaf, options.toCurrency);
     }
@@ -181,14 +190,25 @@ export function rewriteCathayTransferQuery(
       dates[0]!.date <= dates[1]!.date
         ? [dates[0]!, dates[1]!]
         : [dates[1]!, dates[0]!];
-    const wanted = new Date(
-      end.date.getTime() - options.lookbackDays * 86_400_000,
-    );
-    if (wanted < start.date) write(start.leaf, start.format.format(wanted));
-    datesExtended = true;
+    // 必須同格式、至少差一天，且結束日在最近 3 天內，才視為查詢的開始／結束日。
+    const sameFormat = read(start.leaf).length === read(end.leaf).length;
+    const spansDays = end.date.getTime() - start.date.getTime() >= 86_400_000;
+    const endsRecently = now.getTime() - end.date.getTime() <= 3 * 86_400_000;
+    if (sameFormat && spansDays && endsRecently) {
+      const wanted = new Date(
+        end.date.getTime() - options.lookbackDays * 86_400_000,
+      );
+      if (wanted < start.date) write(start.leaf, start.format.format(wanted));
+      datesExtended = true;
+    }
   }
 
-  return { body: JSON.stringify(parsed), accountReplaced, datesExtended };
+  return {
+    body: JSON.stringify(parsed),
+    accountReplaced: accountKeys.length > 0,
+    accountKeys,
+    datesExtended,
+  };
 }
 
 /**
@@ -235,18 +255,84 @@ export function replayableHeaders(headers: Record<string, string>) {
   );
 }
 
+export type CathayReplayResponse = {
+  status: number;
+  url: string;
+  redirected: boolean;
+  contentType: string;
+  text: string;
+};
+
 /** 頁面內：以頁面自己的 cookie 重送查詢。puppeteer 會序列化，必須自給自足。 */
 export async function cathayReplayInPage(
   url: string,
   method: string,
   headers: Record<string, string>,
   body: string,
-): Promise<{ status: number; text: string }> {
+): Promise<CathayReplayResponse> {
   const response = await fetch(url, {
     method,
     headers,
     body,
     credentials: "include",
   });
-  return { status: response.status, text: await response.text() };
+  return {
+    status: response.status,
+    url: response.url,
+    redirected: response.redirected,
+    contentType: response.headers.get("content-type") ?? "",
+    text: await response.text(),
+  };
+}
+
+type TransferData = { accountNumber?: string; details?: unknown[] };
+
+/**
+ * 判讀重送結果：
+ * - logged-out：被導向登出／登入頁或 401／403，代表工作階段已結束，呼叫端應整次失敗。
+ * - ok：每筆資料都屬於目標帳戶；沒有資料時，回應內容必須出現目標帳號才算可驗證。
+ * - failed／mismatch／unverified：不可採用，呼叫端降級並停止後續重送（failed）。
+ */
+export function classifyCathayReplay(
+  replay: CathayReplayResponse | null,
+  account: string,
+):
+  | { kind: "ok"; datas: TransferData[] }
+  | { kind: "logged-out" }
+  | { kind: "failed" | "mismatch" | "unverified"; reason: string } {
+  if (!replay) return { kind: "failed", reason: "no-response" };
+  if (
+    replay.status === 401 ||
+    replay.status === 403 ||
+    /\/(logout|login|mybank)\b/i.test(replay.redirected ? replay.url : "") ||
+    /\/logout\//i.test(replay.url)
+  ) {
+    return { kind: "logged-out" };
+  }
+  if (replay.status !== 200) {
+    return { kind: "failed", reason: `status-${replay.status}` };
+  }
+  let parsed: { content?: { datas?: TransferData[] } | null } | null;
+  try {
+    parsed = JSON.parse(replay.text);
+  } catch {
+    return { kind: "failed", reason: "not-json" };
+  }
+  const datas = parsed?.content?.datas;
+  if (!Array.isArray(datas)) return { kind: "failed", reason: "no-datas" };
+  const belongs = (accountNumber: string | undefined) => {
+    const digits = (accountNumber ?? "").replace(/\D/g, "");
+    return (
+      digits.endsWith(account) && /^0*$/.test(digits.slice(0, -account.length))
+    );
+  };
+  if (datas.length === 0) {
+    // 空結果無法用 accountNumber 證明屬於目標帳戶，要求回應內容出現該帳號。
+    return replay.text.includes(account)
+      ? { kind: "ok", datas }
+      : { kind: "unverified", reason: "empty-without-account" };
+  }
+  return datas.every((data) => belongs(data.accountNumber))
+    ? { kind: "ok", datas }
+    : { kind: "mismatch", reason: "account-mismatch" };
 }
