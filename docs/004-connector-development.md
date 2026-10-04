@@ -308,45 +308,41 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 
 #### 存款明細
 
-存款明細從存款總覽點第一個帳號進入臺幣帳戶明細頁後，其餘帳戶改用頁面上的帳號選單
-切換，不要回到存款總覽：在帳戶之間重新開啟總覽，國泰會導向
-`/OnlineBanking/Logout/SystemError` 並結束工作階段。帳號與查詢期間都是 react-select
-選單，`input[role=combobox]` 的 value 為空，要以外層控制項的文字辨識。開啟選單先用
-鍵盤 ArrowDown；2026-10 改版後鍵盤開不了（實測選項數為 0），因此 2 秒內沒出現選項、
-且 input 的 `aria-expanded` 不是 `true` 時，改用滑鼠點外層 react-select control（已
-展開時再點會把選單關掉）。`cathayComboboxPageAction` 只讀看得到、最內層的選項，依序從
-`aria-controls`／`aria-owns`、`<id>-option-N`、所在 react-select container（最多往上
-5 層，遇到外層 `…container` 就停，不含 input／value／indicators container）讀取，只有
-`aria-expanded` 為 `true` 時才讀整頁；期間選單的讀選項、點擊與回讀也走同一套規則；
-class 以完整字詞比對（`-option`、`__option`）。帳號選項以完整帳號比對，點擊後回讀控制項確認帳號已切換，否則
-視為失敗（查詢回應的 `accountNumber` 也會再核對一次）。
-期間選單優先挑目前顯示文字本身就是期間的 combobox，找不到再退回外層文字含
-「天／週／月／年」且不含長數字者；讀選項、點擊與回讀用與帳號選單相同的
-`cathayComboboxPageAction` 範圍規則（自訂 `inputId` 時選項 id 與輸入框對不上，要靠
-container 或展開時的整頁讀取）。沒有點到選項時一律按 Escape 關閉選單，避免之後的帳號
-選單讀到期間選項。帳號選單比對失敗時記錄 `cathaybk_account_selector_unmatched`，只含
-combobox 與選項的數量、可見數與「數字段長度」形狀（例如 `[4,4,4]`），不含帳號或名稱。兩種失敗 log 也附鍵盤後與點擊後的 `cathayMenuStructure`：`aria-expanded`、readonly、
-disabled、control 是否找到與點擊位置命中的元素、各種選項選擇器數量、原生 `select`、
-`aria-haspopup`、iframe、shadow host 數量，以及 input 往上的 class 字詞，不含使用者文字。選項文字由
-`cathayPeriodDays` 換算天數（支援阿拉伯數字與中文數字，例如「近 90 天」「近三個月」
-「近 1 年」），`pickCathayPeriodOption` 選涵蓋 `BANK_SYNC_MONTHS × 30` 天的最短選項，
-都不夠長時選最長並帶警告；點擊後回讀控制項文字（以結尾比對）確認已選上。選單或選項
-無法辨識、點擊未生效，或操作時發生頁面錯誤（被登出仍整次失敗）時沿用頁面預設期間繼續，`SyncResult.warnings` 說明只取得預設期間，log 記錄
-`cathaybk_period_option_unrecognized`，選項文字只保留能由 `cathayPeriodDays` 換算的
-期間，其他記為 `[redacted]`。
-進入明細頁時自動送出的 30 天查詢要先等它回應，每個帳戶再自行按「查詢」。
-2026-10 改版後明細頁會跳出彈出視窗（Chakra modal，實測滑鼠點選單時命中
-`chakra-modal__content-container`），蓋住頁面並鎖住鍵盤焦點，帳號與期間選單都操作不了。
-每次操作選單前先以 `dismissCathayTransactionModals` 關閉：只偵測看得到的 Chakra modal
-container 與 `aria-modal="true"` 的 dialog（排除 `visibility:hidden`、`aria-hidden` 祖先，
-同一視窗不重複計算；Chakra Popover 沒有 `aria-modal` 不算）。先按 Escape，仍在時點 ×
-關閉鈕（`chakra-modal__close-btn` 或 `aria-label` 為 Close／關閉），沒有時只點「我知道了／
-知道了／關閉／稍後再說／下次再說」，不點「確定」「取消」等可能有語意的按鈕。仍關不掉時
-交由後續選單診斷失敗或期間降級。log `cathaybk_modal_detected` 只記數量、是否關閉與方式，
-不記任何視窗或按鈕文字。注意：這會自動關掉該頁的提示，使用者不會在同步時看到。
-`B_ACCT_Q_TransferDetail` 回應的 `accountNumber` 會補零（例如 12 碼帳號回傳 16 碼），
-以結尾比對（前面只能是 0）確認屬於目前帳戶。找不到帳號、回應不是 JSON、
-帳號不符、查詢逾時或被登出時，整次同步失敗，不以零筆交易繼續。
+存款明細從存款總覽點第一個帳號進入臺幣帳戶明細頁，之後不要回到存款總覽：在帳戶之間
+重新開啟總覽，國泰會導向 `/OnlineBanking/Logout/SystemError` 並結束工作階段。
+
+2026-10 改版後明細頁會跳出彈出視窗（Chakra modal）蓋住頁面並鎖住鍵盤焦點，帳號與期間
+選單（react-select）都無法操作；按 Escape 關閉視窗還會讓頁面離開明細檢視。因此不再操作
+畫面：進入明細頁時以 `page.on("request")` 記下頁面自動送出的
+`B_ACCT_Q_TransferDetail` 請求（網址、方法、標頭、body）作為範本，再由
+`cathaybk-transfer-query.ts` 的 `rewriteCathayTransferQuery` 改寫：
+
+- 帳號：純數字、以第一個帳號結尾且前面只補 0 的字串值換成目標帳號（保留補零長度）；
+  兩個帳戶幣別不同時，只替換欄位名稱含 `cur`／`ccy` 且等於原幣別的值。
+- 日期：恰好找到兩個合理範圍內的日期，且同格式（`YYYY/MM/DD`、`YYYY-MM-DD`、`YYYYMMDD`、
+  民國 `YYYMMDD`）、至少差一天、結束日在最近 3 天內時，把較早者往前推到
+  `BANK_SYNC_MONTHS × 30` 天；否則不改日期。
+
+改寫後以 `cathayReplayInPage` 在同一已登入頁面內 `fetch` 重送（`credentials: include`，
+`replayableHeaders` 去掉 cookie、referer、user-agent、`sec-*` 等瀏覽器自管標頭），只做唯讀
+查詢；帳戶之間依序重送並間隔 1–2 秒。第一個帳戶無法延長日期時不重送，直接用頁面結果。
+`classifyCathayReplay` 判讀結果：
+
+- 被導向登出／登入頁或 401／403 視為工作階段結束，整次同步失敗（頁面內 fetch 不會改變
+  `page.url()`，所以要看 fetch 的最終網址）。頁面自己送的第一筆查詢也保留實際狀態碼、
+  最終網址與是否轉址（比對轉址鏈）並同樣判讀。
+- `B_ACCT_Q_TransferDetail` 回應的 `accountNumber` 會補零（例如 12 碼帳號回傳 16 碼），
+  以結尾比對（前面只能是 0）確認每筆都屬於目標帳戶；空結果要在回應內容中出現目標帳號
+  才採用，否則視為無法驗證。
+- 非 200、非 JSON、沒有 `content.datas` 或帳號對不上時熔斷：之後的帳戶不再重送。
+
+降級：第一個帳戶沒有可用的重送結果時，改用頁面自己查到的預設期間結果；其他帳戶略過交易
+明細、只更新餘額。`SyncResult.warnings` 會帶上「N／M 個帳戶未取得」與原因代碼（例如
+`account-not-replaced`、`not-json`），資料來源頁顯示部分資料未取得、TG 通知也會附提醒。
+log `cathaybk_transfer_query_template` 只記請求 body 的欄位名稱與值的形狀
+（`describeCathayTransferQuery`，例如 `digits16`、`date10`）與標頭名稱；
+`cathaybk_transfer_query_replay_failed` 只記狀態碼、是否轉址、內容類型、被換的帳號欄位
+名稱與改寫旗標，都不含任何值。
 
 #### 信用卡總覽與帳戶拆分
 
