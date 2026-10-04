@@ -21,6 +21,7 @@ import {
   maskCathayDepositRaw,
 } from "./cathaybk-deposit-counterparty.js";
 import {
+  type CathayReplayResponse,
   cathayReplayInPage,
   classifyCathayReplay,
   describeCathayTransferQuery,
@@ -1085,18 +1086,6 @@ interface TransferDetail {
   [key: string]: unknown;
 }
 
-interface TransferDetailResponse {
-  content?: {
-    datas?: Array<{
-      accountNumber?: string;
-      details?: TransferDetail[];
-      [key: string]: unknown;
-    }>;
-    [key: string]: unknown;
-  } | null;
-  [key: string]: unknown;
-}
-
 async function scrapeDomAccounts(page: Page): Promise<DomAccount[]> {
   return page.evaluate(() => {
     const results: Array<{
@@ -1140,13 +1129,32 @@ async function scrapeDomAccounts(page: Page): Promise<DomAccount[]> {
   });
 }
 
-function waitForDepositTransactions(page: Page) {
-  return page
+/**
+ * 等頁面自己送出的明細查詢回應，保留狀態碼、最終網址、是否轉址與內容，供判讀是否被登出。
+ * 被轉址時最終回應的網址不含 API 名稱，因此也比對轉址鏈。
+ */
+async function waitForInitialDepositQuery(
+  page: Page,
+): Promise<CathayReplayResponse | null> {
+  const response = await page
     .waitForResponse(
-      (r) => r.url().includes(API_DEPOSIT_TX) && r.status() === 200,
+      (r) =>
+        r.url().includes(API_DEPOSIT_TX) ||
+        r
+          .request()
+          .redirectChain()
+          .some((request) => request.url().includes(API_DEPOSIT_TX)),
       { timeout: 30000 },
     )
     .catch(() => null);
+  if (!response) return null;
+  return {
+    status: response.status(),
+    url: response.url(),
+    redirected: response.request().redirectChain().length > 0,
+    contentType: response.headers()["content-type"] ?? "",
+    text: await response.text().catch(() => ""),
+  };
 }
 
 function assertCathayNotLoggedOut(page: Pick<Page, "url">) {
@@ -1224,7 +1232,7 @@ async function scrapeDeposits(
       postData: string;
     } | null;
   } = { template: null };
-  let initialResponse: TransferDetailResponse | null = null;
+  let initialResponse: CathayReplayResponse | null = null;
   if (first) {
     const onRequest = (request: HTTPRequest) => {
       if (capture.template || !request.url().includes(API_DEPOSIT_TX)) return;
@@ -1239,7 +1247,7 @@ async function scrapeDeposits(
     };
     page.on("request", onRequest);
     try {
-      const initialQuery = waitForDepositTransactions(page);
+      const initialQuery = waitForInitialDepositQuery(page);
       const clicked = await page.evaluate((acctNo: string) => {
         const btn = Array.from(
           document.querySelectorAll<HTMLButtonElement>("button"),
@@ -1251,12 +1259,7 @@ async function scrapeDeposits(
         await page
           .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
           .catch(() => null);
-        const response = await initialQuery;
-        initialResponse = response
-          ? ((await response
-              .json()
-              .catch(() => null)) as TransferDetailResponse | null)
-          : null;
+        initialResponse = await initialQuery;
       } else {
         console.log(
           `[cathaybk] no button found for account ${maskAccountNumber(first.acctNo)}`,
@@ -1284,19 +1287,11 @@ async function scrapeDeposits(
   );
 
   const initialDatas = first
-    ? classifyCathayReplay(
-        initialResponse
-          ? {
-              status: 200,
-              url: "",
-              redirected: false,
-              contentType: "application/json",
-              text: JSON.stringify(initialResponse),
-            }
-          : null,
-        first.acctNo,
-      )
+    ? classifyCathayReplay(initialResponse, first.acctNo)
     : null;
+  if (initialDatas?.kind === "logged-out") {
+    throw new Error("Cathay Bank ended the session during transaction query.");
+  }
   let replayEnabled = Boolean(captured && first);
   let defaultPeriodOnly = false;
   const unavailable: string[] = [];
@@ -1360,8 +1355,8 @@ async function scrapeDeposits(
               datesExtended: rewrite.datesExtended,
             }),
           );
-          // 熔斷：重送一失敗就不再送後續帳戶，避免連續送出異常請求。
-          if (result.kind === "failed") replayEnabled = false;
+          // 熔斷：重送失敗或帳號對不上（改寫規則可能錯了）就不再送後續帳戶。
+          if (result.kind !== "unverified") replayEnabled = false;
         }
       }
     }

@@ -329,11 +329,12 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 `classifyCathayReplay` 判讀結果：
 
 - 被導向登出／登入頁或 401／403 視為工作階段結束，整次同步失敗（頁面內 fetch 不會改變
-  `page.url()`，所以要看 fetch 的最終網址）。
+  `page.url()`，所以要看 fetch 的最終網址）。頁面自己送的第一筆查詢也保留實際狀態碼、
+  最終網址與是否轉址（比對轉址鏈）並同樣判讀。
 - `B_ACCT_Q_TransferDetail` 回應的 `accountNumber` 會補零（例如 12 碼帳號回傳 16 碼），
   以結尾比對（前面只能是 0）確認每筆都屬於目標帳戶；空結果要在回應內容中出現目標帳號
   才採用，否則視為無法驗證。
-- 非 200、非 JSON 或沒有 `content.datas` 視為失敗，並熔斷：之後的帳戶不再重送。
+- 非 200、非 JSON、沒有 `content.datas` 或帳號對不上時熔斷：之後的帳戶不再重送。
 
 降級：第一個帳戶沒有可用的重送結果時，改用頁面自己查到的預設期間結果；其他帳戶略過交易
 明細、只更新餘額。`SyncResult.warnings` 會帶上「N／M 個帳戶未取得」與原因代碼（例如
