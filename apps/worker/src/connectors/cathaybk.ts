@@ -1274,6 +1274,49 @@ export async function chooseCathayComboboxOption(
   );
 }
 
+/**
+ * 帳號選單比對失敗時的診斷：只回傳數量與「數字段長度」形狀（例如 [3,3,6]），
+ * 不回傳任何帳號或名稱文字。在頁面內執行，必須自給自足。
+ */
+export function cathayAccountSelectorShape(accountLength: number) {
+  // 只留 4 位以上的數字段（帳號分段），避免透露「1,234,567」這類金額的位數。
+  const shape = (text: string) =>
+    (text.match(/\d+/g) ?? [])
+      .map((digits) => digits.length)
+      .filter((length) => length >= 4)
+      .slice(0, 10);
+  const labelOf = (input: HTMLElement) => {
+    let node: HTMLElement | null = input;
+    for (let depth = 0; depth < 5 && node; depth += 1) {
+      node = node.parentElement;
+      const text = (node?.innerText ?? "").replace(/\s+/g, "");
+      if (text) return text;
+    }
+    return "";
+  };
+  const comboboxes = Array.from(
+    document.querySelectorAll<HTMLInputElement>("input[role='combobox']"),
+  );
+  const options = Array.from(
+    document.querySelectorAll<HTMLElement>("[role='option'], [id*='-option-']"),
+  );
+  return {
+    accountLength,
+    markedAccount: comboboxes.some(
+      (input) => input.dataset.cathayCombobox === "account",
+    ),
+    comboboxLabelShapes: comboboxes
+      .slice(0, 5)
+      .map((input) => shape(labelOf(input))),
+    optionCount: options.length,
+    visibleOptionCount: options.filter((option) => option.offsetParent !== null)
+      .length,
+    optionShapes: options
+      .slice(0, 10)
+      .map((option) => shape(option.textContent ?? "")),
+  };
+}
+
 type CathayPeriodResult =
   | { status: "selected"; label: string }
   | { status: "partial"; label: string; warning: string }
@@ -1290,8 +1333,8 @@ export function redactCathayPeriodOptions(options: readonly string[]) {
 
 /**
  * 在頁面內執行的期間選單操作；puppeteer 會序列化函式原始碼，因此必須自給自足。
- * 選項只從被標記的期間選單讀取（react-select 的 `<id>-option-N` 或 aria-controls 的
- * listbox），不掃整份 document。
+ * 選項依序從 react-select 的 `<id>-option-N`、aria-controls listbox、期間選單所在容器
+ * 內看得到的選項讀取，都沒有時才讀頁面上看得到的選項（同時只會開一個選單）。
  */
 export function cathayPeriodPageAction(
   // "mark" | "options" | "click" | "label"；puppeteer 的型別要求參數為 string。
@@ -1338,22 +1381,37 @@ export function cathayPeriodPageAction(
   if (!marked)
     return action === "options" ? [] : action === "label" ? "" : false;
   if (action === "label") return labelOf(marked);
+  const OPTION = "[role='option'], [id*='-option-']";
+  // 依序：react-select 的 `<id>-option-N`（自訂 inputId 時對不上）、aria-controls
+  // listbox、期間選單所在容器內的選項、頁面上目前看得到的選項（同時只會開一個選單）。
   const prefix = /^(.*)-input$/.exec(marked.id)?.[1];
-  let options: HTMLElement[] = [];
-  if (prefix) {
-    options = Array.from(
-      document.querySelectorAll<HTMLElement>("[id*='-option-']"),
-    ).filter((option) => option.id.startsWith(`${prefix}-option-`));
-  } else {
+  let options: HTMLElement[] = prefix
+    ? Array.from(
+        document.querySelectorAll<HTMLElement>("[id*='-option-']"),
+      ).filter((option) => option.id.startsWith(`${prefix}-option-`))
+    : [];
+  if (options.length === 0) {
     const listId = marked.getAttribute("aria-controls");
     const list = listId ? document.getElementById(listId) : null;
-    options = list
-      ? Array.from(
-          list.querySelectorAll<HTMLElement>(
-            "[role='option'], [id*='-option-']",
-          ),
-        )
-      : [];
+    if (list) options = Array.from(list.querySelectorAll<HTMLElement>(OPTION));
+  }
+  let container: HTMLElement | null = marked.parentElement;
+  for (
+    let depth = 0;
+    options.length === 0 && container && depth < 8;
+    depth += 1
+  ) {
+    if (typeof container.querySelectorAll === "function") {
+      options = Array.from(
+        container.querySelectorAll<HTMLElement>(OPTION),
+      ).filter((option) => option.offsetParent !== null);
+    }
+    container = container.parentElement;
+  }
+  if (options.length === 0) {
+    options = Array.from(document.querySelectorAll<HTMLElement>(OPTION)).filter(
+      (option) => option.offsetParent !== null,
+    );
   }
   if (action === "options") {
     return options.map((option) =>
@@ -1402,8 +1460,12 @@ export async function chooseCathayPeriodOption(
     (value) => Array.isArray(value) && value.length > 0,
     timeouts.optionsMs,
   )) as string[];
-  // 選單沒打開就不按 Escape，避免作用在已關閉的選單上。
-  if (options.length === 0) return { found: true, options };
+  // 沒點到選項一律按 Escape 關閉選單：選單若其實開著卻讀不到選項，留著會讓之後的
+  // 帳號選單讀到期間選項。react-select 預設 Escape 不清除已選的值。
+  if (options.length === 0) {
+    await page.keyboard.press("Escape").catch(() => null);
+    return { found: true, options };
+  }
   const index = pickCathayPeriodOption(options, days);
   const chosen = index >= 0 ? options[index] : undefined;
   if (
@@ -1587,6 +1649,15 @@ async function scrapeDeposits(
       !(await chooseCathayComboboxOption(page, "account", acct.acctNo))
     ) {
       assertCathayNotLoggedOut(page);
+      console.warn(
+        JSON.stringify({
+          event: "cathaybk_account_selector_unmatched",
+          ...(await page
+            .evaluate(cathayAccountSelectorShape, acct.acctNo.length)
+            .catch(() => ({ unavailable: true }))),
+        }),
+      );
+      await page.keyboard.press("Escape").catch(() => null);
       throw new Error(
         "Cathay Bank account was not found in the transaction account selector.",
       );

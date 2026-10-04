@@ -18,6 +18,7 @@ import {
   chooseCathayComboboxOption,
   completeCathayTrustedDeviceSetup,
   createCathaybkConnector,
+  cathayAccountSelectorShape,
   cathayPeriodDays,
   chooseCathayPeriodOption,
   dismissCathaySystemMessageIfPresent,
@@ -1390,14 +1391,54 @@ describe("Cathay period combobox", () => {
     ).resolves.toMatchObject({ chosen: "近 90 天", applied: false });
   });
 
-  it("does not press Escape when the menu did not open", async () => {
+  it("closes the menu when no option could be read", async () => {
     const { page } = setup([]);
 
     await expect(
       chooseCathayPeriodOption(page as never, 90, fast),
     ).resolves.toEqual({ found: true, options: [] });
-    expect(page.keyboard.press).toHaveBeenCalledTimes(1);
-    expect(page.keyboard.press).toHaveBeenCalledWith("ArrowDown");
+    expect(page.keyboard.press).toHaveBeenLastCalledWith("Escape");
+  });
+
+  it("reads visible options inside the period selector's container", async () => {
+    const { page, period, optionElements } = setup([]);
+    const visible = element("menu-option-a", "近3個月");
+    const hidden = element("menu-option-b", "近 1 年");
+    (visible as unknown as { offsetParent: unknown }).offsetParent = {};
+    (hidden as unknown as { offsetParent: unknown }).offsetParent = null;
+    visible.click = vi.fn(() => {
+      period.parentElement.innerText = "近3個月";
+    });
+    (
+      period.parentElement as unknown as {
+        querySelectorAll: () => unknown[];
+      }
+    ).querySelectorAll = () => [hidden, visible];
+    expect(optionElements).toEqual([]);
+
+    await expect(
+      chooseCathayPeriodOption(page as never, 90, fast),
+    ).resolves.toMatchObject({
+      options: ["近3個月"],
+      chosen: "近3個月",
+      applied: true,
+    });
+  });
+
+  it("falls back to visible options when ids do not follow the input id", async () => {
+    // 自訂 inputId 時，選項 id 與輸入框 id 前綴對不上；改讀目前看得到的選項。
+    const { page, optionElements } = setup([
+      ["react-select-7-option-0", "近1個月"],
+      ["react-select-7-option-1", "近3個月"],
+    ]);
+    for (const option of optionElements) {
+      (option as unknown as { offsetParent: unknown }).offsetParent = {};
+    }
+
+    await expect(
+      chooseCathayPeriodOption(page as never, 90, fast),
+    ).resolves.toMatchObject({ chosen: "近3個月", applied: true });
+    expect(optionElements[1]!.click).toHaveBeenCalledOnce();
   });
 
   it("closes the menu when no option is recognised", async () => {
@@ -1420,4 +1461,33 @@ it("redacts anything but recognisable period labels from logs", () => {
       "王小明",
     ]),
   ).toEqual(["近 90 天", "[redacted]", "[redacted]", "近三個月", "[redacted]"]);
+});
+
+it("describes the account selector without exposing account text", () => {
+  const input = {
+    dataset: { cathayCombobox: "account" },
+    parentElement: {
+      innerText: "1234-5678-9012 王小明 餘額 1,234,567",
+      parentElement: null,
+    },
+  };
+  const option = {
+    textContent: "123456789012 活期存款",
+    offsetParent: {},
+  };
+  vi.stubGlobal("document", {
+    querySelectorAll: (selector: string) =>
+      selector.includes("combobox") ? [input] : [option],
+  });
+
+  const shape = cathayAccountSelectorShape(12);
+  expect(shape).toEqual({
+    accountLength: 12,
+    markedAccount: true,
+    comboboxLabelShapes: [[4, 4, 4]],
+    optionCount: 1,
+    visibleOptionCount: 1,
+    optionShapes: [[12]],
+  });
+  expect(JSON.stringify(shape)).not.toMatch(/王小明|1234|活期/);
 });
