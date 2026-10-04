@@ -1270,20 +1270,25 @@ export function cathayComboboxPageAction(
     }
     const prefix = /^(.*)-input$/.exec(input.id ?? "")?.[1];
     if (prefix) {
-      const found = Array.from(
-        document.querySelectorAll<HTMLElement>("[id*='-option-']"),
-      ).filter((option) => option.id.startsWith(`${prefix}-option-`));
+      const found = collect(document).filter((option) =>
+        (option.id ?? "").startsWith(`${prefix}-option-`),
+      );
       if (found.length) return found;
     }
+    // 往上找到 react-select 的 container 為止（最多 5 層），不爬到整頁。
     let node: HTMLElement | null = input.parentElement;
-    for (let depth = 0; node && depth < 8; depth += 1) {
+    for (let depth = 0; node && depth < 5; depth += 1) {
       if (typeof node.querySelectorAll === "function") {
         const found = collect(node);
         if (found.length) return found;
       }
+      if (/(^|[\s_-])container(\s|$)/.test(classOf(node))) break;
       node = node.parentElement;
     }
-    return collect(document);
+    // 整頁只在選單確定展開時才讀，避免頁面其他地方的選項讓人誤判選單已開。
+    return input.getAttribute("aria-expanded") === "true"
+      ? collect(document)
+      : [];
   };
   if (action === "expanded")
     return input?.getAttribute("aria-expanded") ?? null;
@@ -1321,7 +1326,9 @@ export function cathayMenuStructure(kind: string) {
   const safeClass = (element: Element | null) =>
     (element?.getAttribute("class") ?? "")
       .split(/\s+/)
-      .filter((token) => /^[A-Za-z0-9_-]{1,40}$/.test(token))
+      .filter(
+        (token) => /^[A-Za-z0-9_-]{1,40}$/.test(token) && !/\d{6,}/.test(token),
+      )
       .join(" ")
       .slice(0, 80);
   const count = (selector: string) =>
@@ -1464,6 +1471,13 @@ export async function chooseCathayComboboxOptionWithDiagnostics(
       }
       return "";
     };
+    for (const element of Array.from(
+      document.querySelectorAll<HTMLElement>(
+        `[data-cathay-combobox="${target}"]`,
+      ),
+    )) {
+      delete element.dataset.cathayCombobox;
+    }
     const input = Array.from(
       document.querySelectorAll<HTMLInputElement>("input[role='combobox']"),
     ).find((candidate) => {
@@ -1648,23 +1662,37 @@ export function cathayPeriodPageAction(
   let options: HTMLElement[] = prefix
     ? Array.from(
         document.querySelectorAll<HTMLElement>("[id*='-option-']"),
-      ).filter((option) => option.id.startsWith(`${prefix}-option-`))
+      ).filter(
+        (option) =>
+          option.id.startsWith(`${prefix}-option-`) &&
+          option.offsetParent !== null,
+      )
     : [];
   if (options.length === 0) {
     const listId = marked.getAttribute("aria-controls");
     const list = listId ? document.getElementById(listId) : null;
-    if (list) options = Array.from(list.querySelectorAll<HTMLElement>(OPTION));
+    if (list) {
+      options = Array.from(list.querySelectorAll<HTMLElement>(OPTION)).filter(
+        (option) => option.offsetParent !== null,
+      );
+    }
   }
+  // 往上找到 react-select 的 container 為止（最多 5 層），不爬到整頁。
   let container: HTMLElement | null = marked.parentElement;
   for (
     let depth = 0;
-    options.length === 0 && container && depth < 8;
+    options.length === 0 && container && depth < 5;
     depth += 1
   ) {
     if (typeof container.querySelectorAll === "function") {
       options = Array.from(
         container.querySelectorAll<HTMLElement>(OPTION),
       ).filter((option) => option.offsetParent !== null);
+    }
+    if (
+      /(^|[\s_-])container(\s|$)/.test(container.getAttribute?.("class") ?? "")
+    ) {
+      break;
     }
     container = container.parentElement;
   }
@@ -1675,10 +1703,12 @@ export function cathayPeriodPageAction(
   }
   if (options.length === 0) {
     options = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        "[class*='menu'] [class*='option'], [role='listbox'] [class*='option']",
-      ),
-    ).filter((option) => option.offsetParent !== null);
+      document.querySelectorAll<HTMLElement>("[class*='option']"),
+    ).filter(
+      (option) =>
+        /(^|[\s_-])option(\s|$)/.test(option.getAttribute?.("class") ?? "") &&
+        option.offsetParent !== null,
+    );
   }
   if (action === "options") {
     return options.map((option) =>

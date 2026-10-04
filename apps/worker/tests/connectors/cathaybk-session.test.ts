@@ -1313,6 +1313,8 @@ describe("Cathay period combobox", () => {
       id: "",
       textContent: "近3個月",
       offsetParent: {},
+      getAttribute: (name: string) =>
+        name === "class" ? "css-d7l1ni-option" : null,
       click: vi.fn(() => {
         control.innerText = "近3個月";
       }),
@@ -1326,7 +1328,7 @@ describe("Cathay period combobox", () => {
     };
     const original = base.querySelectorAll;
     base.querySelectorAll = (selector: string) =>
-      selector.includes("[class*='menu'] [class*='option']")
+      selector === "[class*='option']"
         ? open
           ? [option]
           : []
@@ -1641,6 +1643,60 @@ describe("Cathay account combobox", () => {
     expect(option.click).toHaveBeenCalledOnce();
   });
 
+  it("ignores hidden stale options that share the react-select id", async () => {
+    const { root, container, input, select } = accountSelector("111111111111");
+    input.attrs.id = "react-select-5-input";
+    input.id = "react-select-5-input";
+    const stale = fakeNode(
+      "div",
+      { role: "option", id: "react-select-5-option-0" },
+      "123456789012 活期儲蓄存款",
+    );
+    stale.offsetParent = null;
+    append(root, stale);
+    const option = fakeNode(
+      "div",
+      { role: "option", id: "react-select-5-option-1" },
+      "123456789012 活期儲蓄存款",
+    );
+    option.click = vi.fn(() => select("123456789012 活期儲蓄存款"));
+    vi.stubGlobal("document", fakeDocument(root));
+    const page = comboboxPage(() => append(container, option));
+
+    await expect(
+      chooseCathayComboboxOption(
+        page as never,
+        "account",
+        "123456789012",
+        quick,
+      ),
+    ).resolves.toBe(true);
+    expect(page.click).toHaveBeenCalledWith('[data-cathay-control="account"]');
+    expect(stale.click).not.toHaveBeenCalled();
+    expect(option.click).toHaveBeenCalledOnce();
+  });
+
+  it("does not treat options elsewhere on the page as this menu being open", async () => {
+    const { root, input } = accountSelector("111111111111");
+    input.attrs["aria-expanded"] = "false";
+    const tab = fakeNode("div");
+    append(tab, fakeNode("div", { role: "option" }, "123456789012"));
+    append(root, tab);
+    vi.stubGlobal("document", fakeDocument(root));
+    const page = comboboxPage();
+
+    await expect(
+      chooseCathayComboboxOption(
+        page as never,
+        "account",
+        "123456789012",
+        quick,
+      ),
+    ).resolves.toBe(false);
+    // 頁面其他地方的選項不算這個選單開了，所以仍會嘗試點 control。
+    expect(page.click).toHaveBeenCalledWith('[data-cathay-control="account"]');
+  });
+
   it("does not click an already expanded control and reports diagnostics", async () => {
     const { root, input } = accountSelector("111111111111");
     input.attrs["aria-expanded"] = "true";
@@ -1716,5 +1772,16 @@ describe("Cathay account combobox", () => {
       ancestorClasses: ["css-13cymwt-control", "css-b62m3t-container", ""],
     });
     expect(JSON.stringify(structure)).not.toMatch(/1234|活期/);
+  });
+
+  it("drops class words that carry long numbers from diagnostics", () => {
+    const { root, input, control } = accountSelector("123456789012");
+    input.dataset.cathayCombobox = "account";
+    control.attrs.class = "css-13cymwt-control account-123456789012";
+    vi.stubGlobal("document", fakeDocument(root));
+
+    expect(cathayMenuStructure("account").ancestorClasses[0]).toBe(
+      "css-13cymwt-control",
+    );
   });
 });

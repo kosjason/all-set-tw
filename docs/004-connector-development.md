@@ -315,8 +315,9 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 鍵盤 ArrowDown；2026-10 改版後鍵盤開不了（實測選項數為 0），因此 2 秒內沒出現選項、
 且 input 的 `aria-expanded` 不是 `true` 時，改用滑鼠點外層 react-select control（已
 展開時再點會把選單關掉）。`cathayComboboxPageAction` 只讀看得到、最內層的選項，依序從
-`aria-controls`／`aria-owns`、`<id>-option-N`、所在容器、整頁讀取，class 以完整字詞比對
-（`-option`、`__option`）。帳號選項以完整帳號比對，點擊後回讀控制項確認帳號已切換，否則
+`aria-controls`／`aria-owns`、`<id>-option-N`、所在 react-select container（最多往上
+5 層，遇到 class 含 `container` 就停）讀取，只有 `aria-expanded` 為 `true` 時才讀整頁；
+class 以完整字詞比對（`-option`、`__option`）。帳號選項以完整帳號比對，點擊後回讀控制項確認帳號已切換，否則
 視為失敗（查詢回應的 `accountNumber` 也會再核對一次）。
 期間選單優先挑目前顯示文字本身就是期間的 combobox，找不到再退回外層文字含
 「天／週／月／年」且不含長數字者；選項依序從 react-select 的 `<id>-option-N`、
