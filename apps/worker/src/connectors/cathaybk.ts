@@ -1205,78 +1205,105 @@ export function pickCathayPeriodOption(
 }
 
 /**
- * 頁面內的彈出視窗操作（Chakra modal 或 role=dialog）；必須自給自足。
- * "count" 回傳看得到的視窗數；"labels" 回傳按鈕文字（只留 10 字內、不含數字）；
- * "close" 先點 × 關閉鈕，沒有時只點「我知道了／關閉／稍後再說」這類不會同意任何事的按鈕。
+ * 頁面內的彈出視窗操作（Chakra modal 或 aria-modal 的 dialog）；必須自給自足。
+ * "count" 回傳看得到的視窗數（同一視窗不重複計算）；"close" 先點 × 關閉鈕，沒有時只點
+ * 「我知道了／關閉／稍後再說」這類不會同意任何事的按鈕，回傳點了哪一類。
  */
 export function cathayModalPageAction(action: string): unknown {
-  const visible = (element: HTMLElement) =>
-    typeof element.getClientRects === "function"
-      ? element.getClientRects().length > 0
-      : element.offsetParent !== null;
-  const dialogs = Array.from(
+  const hidden = (element: HTMLElement) => {
+    for (
+      let node: HTMLElement | null = element;
+      node;
+      node = node.parentElement
+    ) {
+      if (node.getAttribute?.("aria-hidden") === "true") return true;
+    }
+    if (typeof getComputedStyle === "function") {
+      const style = getComputedStyle(element);
+      if (style.visibility === "hidden" || style.display === "none")
+        return true;
+    }
+    return typeof element.getClientRects === "function"
+      ? element.getClientRects().length === 0
+      : element.offsetParent === null;
+  };
+  const found = Array.from(
     document.querySelectorAll<HTMLElement>(
-      "[class*='chakra-modal__content-container'], [role='dialog'], [role='alertdialog']",
+      "[class*='chakra-modal__content-container'], [role='dialog'][aria-modal='true'], [role='alertdialog'][aria-modal='true']",
     ),
-  ).filter(visible);
+  ).filter((element) => !hidden(element));
+  // Chakra 的 container 內還有 role=dialog，只留最外層，避免同一視窗算兩次。
+  const dialogs = found.filter(
+    (element) =>
+      !found.some(
+        (other) =>
+          other !== element &&
+          typeof other.contains === "function" &&
+          other.contains(element),
+      ),
+  );
   if (action === "count") return dialogs.length;
   const buttons = dialogs.flatMap((dialog) =>
-    Array.from(dialog.querySelectorAll<HTMLElement>("button")).filter(visible),
+    Array.from(dialog.querySelectorAll<HTMLElement>("button")).filter(
+      (button) => !hidden(button),
+    ),
   );
-  const labelOf = (button: HTMLElement) =>
-    (button.textContent ?? "").replace(/\s+/g, "");
-  if (action === "labels") {
-    return buttons
-      .map(labelOf)
-      .filter((label) => label.length <= 10 && !/\d/.test(label))
-      .slice(0, 10);
+  const closeIcon = buttons.find(
+    (button) =>
+      /(^|[\s_-])chakra-modal__close-btn(\s|$)/.test(
+        button.getAttribute("class") ?? "",
+      ) || /^(Close|關閉)$/.test(button.getAttribute("aria-label") ?? ""),
+  );
+  if (closeIcon) {
+    closeIcon.click();
+    return "close-icon";
   }
-  const close =
-    buttons.find(
-      (button) =>
-        /(^|[\s_-])chakra-modal__close-btn(\s|$)/.test(
-          button.getAttribute("class") ?? "",
-        ) || button.getAttribute("aria-label") === "Close",
-    ) ??
-    buttons.find((button) =>
-      /^(我知道了|知道了|關閉|稍後再說|下次再說|略過|取消|×)$/.test(
-        labelOf(button),
-      ),
-    );
-  close?.click();
-  return Boolean(close);
+  const dismiss = buttons.find((button) =>
+    /^(我知道了|知道了|關閉|稍後再說|下次再說|×)$/.test(
+      (button.textContent ?? "").replace(/\s+/g, ""),
+    ),
+  );
+  if (dismiss) {
+    dismiss.click();
+    return "dismiss-label";
+  }
+  return "none";
 }
 
 /**
  * 交易明細頁改版後會跳出彈出視窗蓋住頁面（實測點擊命中
  * `chakra-modal__content-container`），鍵盤焦點也被鎖在視窗內，導致帳號與期間選單
- * 都操作不了。操作選單前先關閉：Escape → × 或安全按鈕；仍關不掉就交給後續流程失敗。
+ * 都操作不了。操作選單前先關閉：Escape → × 或安全按鈕；仍關不掉就交給後續流程，
+ * 由選單診斷失敗或期間降級處理。log 不記任何視窗或按鈕文字。
  */
 export async function dismissCathayTransactionModals(
   page: Pick<Page, "evaluate" | "keyboard">,
   timeoutMs = 2000,
 ): Promise<{ before: number; after: number; method?: string }> {
   const count = async () =>
-    Number(await page.evaluate(cathayModalPageAction, "count")) || 0;
+    Number(
+      await page.evaluate(cathayModalPageAction, "count").catch(() => 0),
+    ) || 0;
   const before = await count();
   if (before === 0) return { before, after: 0 };
-  const labels = await page
-    .evaluate(cathayModalPageAction, "labels")
-    .catch(() => []);
   await page.keyboard.press("Escape").catch(() => null);
   let after = await pollPage(count, (value) => value === 0, timeoutMs);
   let method = "escape";
-  if (after > 0 && (await page.evaluate(cathayModalPageAction, "close"))) {
-    method = "button";
-    after = await pollPage(count, (value) => value === 0, timeoutMs);
+  if (after > 0) {
+    method = String(
+      await page.evaluate(cathayModalPageAction, "close").catch(() => "none"),
+    );
+    if (method !== "none") {
+      after = await pollPage(count, (value) => value === 0, timeoutMs);
+    }
   }
   console.log(
     JSON.stringify({
-      event: "cathaybk_modal_dismissed",
+      event: "cathaybk_modal_detected",
       before,
       after,
+      dismissed: after === 0,
       method,
-      labels,
     }),
   );
   return { before, after, method };
