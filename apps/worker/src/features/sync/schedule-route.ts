@@ -13,6 +13,7 @@ import {
   getSyncJobs,
   setDefaultSyncSchedule,
   SyncJobNotFoundError,
+  SyncJobScheduleUnsupportedError,
 } from "./schedule-service";
 import { getLatestScheduledSyncReport } from "./report-repository";
 
@@ -135,6 +136,13 @@ function registerSyncScheduleRoutes(api: Hono<AppBindings>) {
             "SYNC_JOB_NOT_FOUND",
             "Sync job is not configured.",
             404,
+          );
+        }
+        if (error instanceof SyncJobScheduleUnsupportedError) {
+          return jsonError(
+            "SYNC_SCHEDULE_UNSUPPORTED",
+            "中信不支援自動同步，請改用網銀半自動匯入。",
+            409,
           );
         }
         throw error;

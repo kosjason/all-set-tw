@@ -1279,9 +1279,14 @@ type CathayPeriodResult =
   | { status: "partial"; label: string; warning: string }
   | { status: "default"; warning: string };
 
-/** 只記錄看起來像期間的短文字，其他一律遮蔽，避免誤選其他選單時把帳號等寫進 log。 */
-const PERIOD_LOG_TEXT =
-  /^[近最前內\d一二兩三四五六七八九十天日週周星期個月年 ]{1,20}$/;
+/** 只記錄能換算成期間的選項文字，其他一律遮蔽，避免誤選其他選單時把帳號等寫進 log。 */
+export function redactCathayPeriodOptions(options: readonly string[]) {
+  return options
+    .slice(0, 20)
+    .map((option) =>
+      cathayPeriodDays(option) !== undefined ? option : "[redacted]",
+    );
+}
 
 /**
  * 在頁面內執行的期間選單操作；puppeteer 會序列化函式原始碼，因此必須自給自足。
@@ -1464,11 +1469,7 @@ async function selectTransactionPeriod(
       event: "cathaybk_period_option_unrecognized",
       comboboxFound: result.found,
       clicked: Boolean(result.chosen),
-      options: result.options
-        .slice(0, 20)
-        .map((option) =>
-          PERIOD_LOG_TEXT.test(option) ? option : "[redacted]",
-        ),
+      options: redactCathayPeriodOptions(result.options),
     }),
   );
   return {

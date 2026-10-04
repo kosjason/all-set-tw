@@ -12,6 +12,8 @@ import {
 
 export class DefaultSyncScheduleMissingError extends Error {}
 export class SyncJobNotFoundError extends Error {}
+/** 中信只支援網銀半自動匯入，不能開啟排程。 */
+export class SyncJobScheduleUnsupportedError extends Error {}
 
 export async function getDefaultSyncSchedule(db: D1Database) {
   const schedule = await findDefaultSyncSchedule(db);
@@ -81,6 +83,9 @@ export async function editSyncJob(
 ) {
   const job = await findSyncJob(db, connectorId, scope);
   if (!job) throw new SyncJobNotFoundError();
+  if (connectorId === "ctbc" && input.enabled === true) {
+    throw new SyncJobScheduleUnsupportedError();
+  }
   const now = new Date();
   const scheduleMode = input.scheduleMode ?? job.schedule_mode;
   const defaultSchedule =

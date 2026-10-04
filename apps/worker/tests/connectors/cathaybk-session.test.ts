@@ -22,6 +22,7 @@ import {
   chooseCathayPeriodOption,
   dismissCathaySystemMessageIfPresent,
   pickCathayPeriodOption,
+  redactCathayPeriodOptions,
   isCathayAuthenticatedUrl,
   loginCathay,
   normalizeCathayAuthorizedAt,
@@ -1407,4 +1408,16 @@ describe("Cathay period combobox", () => {
     ).resolves.toEqual({ found: true, options: ["自訂"] });
     expect(page.keyboard.press).toHaveBeenLastCalledWith("Escape");
   });
+});
+
+it("redacts anything but recognisable period labels from logs", () => {
+  expect(
+    redactCathayPeriodOptions([
+      "近 90 天",
+      "123456789012",
+      "1234-5678-9012",
+      "近三個月",
+      "王小明",
+    ]),
+  ).toEqual(["近 90 天", "[redacted]", "[redacted]", "近三個月", "[redacted]"]);
 });

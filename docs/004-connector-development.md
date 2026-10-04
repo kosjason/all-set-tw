@@ -320,8 +320,8 @@ ArrowDown 開啟選單，選項為 `[id*='-option-']` 元素；帳號選項以�
 「近 1 年」），`pickCathayPeriodOption` 選涵蓋 `BANK_SYNC_MONTHS × 30` 天的最短選項，
 都不夠長時選最長並帶警告；點擊後回讀控制項文字（以結尾比對）確認已選上。選單或選項
 無法辨識、點擊未生效，或操作時發生頁面錯誤（被登出仍整次失敗）時沿用頁面預設期間繼續，`SyncResult.warnings` 說明只取得預設期間，log 記錄
-`cathaybk_period_option_unrecognized`，選項文字只保留像期間的短文字，其他記為
-`[redacted]`。
+`cathaybk_period_option_unrecognized`，選項文字只保留能由 `cathayPeriodDays` 換算的
+期間，其他記為 `[redacted]`。
 進入明細頁時自動送出的 30 天查詢要先等它回應，每個帳戶再自行按「查詢」。
 `B_ACCT_Q_TransferDetail` 回應的 `accountNumber` 會補零（例如 12 碼帳號回傳 16 碼），
 以結尾比對（前面只能是 0）確認屬於目前帳戶。找不到帳號、回應不是 JSON、
