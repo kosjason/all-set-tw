@@ -1323,12 +1323,14 @@ describe("Cathay period combobox", () => {
     page.click = vi.fn(async () => {
       open = true;
     });
+    period.getAttribute = (name: string) =>
+      name === "aria-expanded" ? (open ? "true" : "false") : null;
     const base = globalThis.document as unknown as {
       querySelectorAll: (selector: string) => unknown[];
     };
     const original = base.querySelectorAll;
     base.querySelectorAll = (selector: string) =>
-      selector === "[class*='option']"
+      selector.includes("[class*='option']")
         ? open
           ? [option]
           : []
@@ -1374,15 +1376,33 @@ describe("Cathay period combobox", () => {
     });
   });
 
+  it("ignores period-like options elsewhere while the menu is not expanded", async () => {
+    // 頁面其他地方的選項（id 與輸入框前綴不同）在選單沒展開時不算，仍走預設期間。
+    const { page, optionElements } = setup([
+      ["other-select-option-0", "近 3 個月"],
+    ]);
+    for (const option of optionElements) {
+      (option as unknown as { offsetParent: unknown }).offsetParent = {};
+    }
+
+    await expect(
+      chooseCathayPeriodOption(page as never, 90, fast),
+    ).resolves.toMatchObject({ found: true, options: [] });
+    expect(optionElements[0]!.click).not.toHaveBeenCalled();
+  });
+
   it("falls back to visible options when ids do not follow the input id", async () => {
     // 自訂 inputId 時，選項 id 與輸入框 id 前綴對不上；改讀目前看得到的選項。
-    const { page, optionElements } = setup([
+    const { page, period, optionElements } = setup([
       ["react-select-7-option-0", "近1個月"],
       ["react-select-7-option-1", "近3個月"],
     ]);
     for (const option of optionElements) {
       (option as unknown as { offsetParent: unknown }).offsetParent = {};
     }
+    // 選單展開時 react-select 會設 aria-expanded，才會讀整頁的選項。
+    period.getAttribute = (name: string) =>
+      name === "aria-expanded" ? "true" : null;
 
     await expect(
       chooseCathayPeriodOption(page as never, 90, fast),

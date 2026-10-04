@@ -1212,7 +1212,7 @@ type CathayCombobox = "account" | "period";
  * `<id>-option-N`、所在容器、整頁讀取；class 以完整字詞比對（`-option`、`__option`）。
  */
 export function cathayComboboxPageAction(
-  // "expanded" | "has-options" | "mark-control" | "label" | "click-account" | "click-text"
+  // "expanded" | "has-options" | "texts" | "mark-control" | "label" | "click-account" | "click-text"
   kind: string,
   action: string,
   arg = "",
@@ -1282,7 +1282,18 @@ export function cathayComboboxPageAction(
         const found = collect(node);
         if (found.length) return found;
       }
-      if (/(^|[\s_-])container(\s|$)/.test(classOf(node))) break;
+      // react-select 的外層 container；不要停在內部的 input／value／indicators container。
+      if (
+        classOf(node)
+          .split(/\s+/)
+          .some(
+            (token) =>
+              /container$/i.test(token) &&
+              !/(input|value|indicators)[-_]?container$/i.test(token),
+          )
+      ) {
+        break;
+      }
       node = node.parentElement;
     }
     // 整頁只在選單確定展開時才讀，避免頁面其他地方的選項讓人誤判選單已開。
@@ -1293,6 +1304,11 @@ export function cathayComboboxPageAction(
   if (action === "expanded")
     return input?.getAttribute("aria-expanded") ?? null;
   if (action === "has-options") return options().length > 0;
+  if (action === "texts") {
+    return options().map((option) =>
+      (option.textContent ?? "").replace(/\s+/g, " ").trim(),
+    );
+  }
   if (action === "label") return input ? labelOf(input) : "";
   if (action === "mark-control") {
     for (const element of Array.from(
@@ -1606,14 +1622,13 @@ export function redactCathayPeriodOptions(options: readonly string[]) {
 }
 
 /**
- * 在頁面內執行的期間選單操作；puppeteer 會序列化函式原始碼，因此必須自給自足。
- * 選項依序從 react-select 的 `<id>-option-N`、aria-controls listbox、期間選單所在容器
- * 內看得到的選項讀取，都沒有時才讀頁面上看得到的選項（同時只會開一個選單）。
+ * 在頁面內標記期間選單；puppeteer 會序列化函式原始碼，因此必須自給自足。
+ * 優先挑目前顯示文字本身就是期間的 combobox，找不到再退回寬鬆條件。讀選項、點擊與回讀
+ * 都改用 `cathayComboboxPageAction`，與帳號選單共用同一套範圍規則。
  */
 export function cathayPeriodPageAction(
-  // "mark" | "options" | "click" | "label"；puppeteer 的型別要求參數為 string。
+  // 目前只有 "mark"；puppeteer 的型別要求參數為 string。
   action: string,
-  target = "",
 ): unknown {
   const normalize = (value: string) => value.replace(/\s+/g, "");
   const labelOf = (input: HTMLElement) => {
@@ -1649,77 +1664,7 @@ export function cathayPeriodPageAction(
     input.dataset.cathayCombobox = "period";
     return true;
   }
-  const marked = document.querySelector<HTMLElement>(
-    '[data-cathay-combobox="period"]',
-  );
-  if (!marked)
-    return action === "options" ? [] : action === "label" ? "" : false;
-  if (action === "label") return labelOf(marked);
-  const OPTION = "[role='option'], [id*='-option-']";
-  // 依序：react-select 的 `<id>-option-N`（自訂 inputId 時對不上）、aria-controls
-  // listbox、期間選單所在容器內的選項、頁面上目前看得到的選項（同時只會開一個選單）。
-  const prefix = /^(.*)-input$/.exec(marked.id)?.[1];
-  let options: HTMLElement[] = prefix
-    ? Array.from(
-        document.querySelectorAll<HTMLElement>("[id*='-option-']"),
-      ).filter(
-        (option) =>
-          option.id.startsWith(`${prefix}-option-`) &&
-          option.offsetParent !== null,
-      )
-    : [];
-  if (options.length === 0) {
-    const listId = marked.getAttribute("aria-controls");
-    const list = listId ? document.getElementById(listId) : null;
-    if (list) {
-      options = Array.from(list.querySelectorAll<HTMLElement>(OPTION)).filter(
-        (option) => option.offsetParent !== null,
-      );
-    }
-  }
-  // 往上找到 react-select 的 container 為止（最多 5 層），不爬到整頁。
-  let container: HTMLElement | null = marked.parentElement;
-  for (
-    let depth = 0;
-    options.length === 0 && container && depth < 5;
-    depth += 1
-  ) {
-    if (typeof container.querySelectorAll === "function") {
-      options = Array.from(
-        container.querySelectorAll<HTMLElement>(OPTION),
-      ).filter((option) => option.offsetParent !== null);
-    }
-    if (
-      /(^|[\s_-])container(\s|$)/.test(container.getAttribute?.("class") ?? "")
-    ) {
-      break;
-    }
-    container = container.parentElement;
-  }
-  if (options.length === 0) {
-    options = Array.from(document.querySelectorAll<HTMLElement>(OPTION)).filter(
-      (option) => option.offsetParent !== null,
-    );
-  }
-  if (options.length === 0) {
-    options = Array.from(
-      document.querySelectorAll<HTMLElement>("[class*='option']"),
-    ).filter(
-      (option) =>
-        /(^|[\s_-])option(\s|$)/.test(option.getAttribute?.("class") ?? "") &&
-        option.offsetParent !== null,
-    );
-  }
-  if (action === "options") {
-    return options.map((option) =>
-      (option.textContent ?? "").replace(/\s+/g, " ").trim(),
-    );
-  }
-  const option = options.find(
-    (candidate) => normalize(candidate.textContent ?? "") === normalize(target),
-  );
-  option?.click();
-  return Boolean(option);
+  return false;
 }
 
 async function pollPage<T>(
@@ -1757,7 +1702,7 @@ export async function chooseCathayPeriodOption(
   }
   const readOptions = async (timeoutMs: number) =>
     (await pollPage(
-      () => page.evaluate(cathayPeriodPageAction, "options"),
+      () => page.evaluate(cathayComboboxPageAction, "period", "texts"),
       (value) => Array.isArray(value) && value.length > 0,
       timeoutMs,
     )) as string[];
@@ -1793,7 +1738,12 @@ export async function chooseCathayPeriodOption(
   const chosen = index >= 0 ? options[index] : undefined;
   if (
     !chosen ||
-    !(await page.evaluate(cathayPeriodPageAction, "click", chosen))
+    !(await page.evaluate(
+      cathayComboboxPageAction,
+      "period",
+      "click-text",
+      chosen,
+    ))
   ) {
     await page.keyboard.press("Escape").catch(() => null);
     return { found: true, options };
@@ -1803,7 +1753,7 @@ export async function chooseCathayPeriodOption(
   const matches = (value: unknown) =>
     typeof value === "string" && value.endsWith(target);
   const label = await pollPage(
-    () => page.evaluate(cathayPeriodPageAction, "label"),
+    () => page.evaluate(cathayComboboxPageAction, "period", "label"),
     matches,
     timeouts.labelMs,
   );

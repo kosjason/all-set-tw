@@ -316,14 +316,15 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 且 input 的 `aria-expanded` 不是 `true` 時，改用滑鼠點外層 react-select control（已
 展開時再點會把選單關掉）。`cathayComboboxPageAction` 只讀看得到、最內層的選項，依序從
 `aria-controls`／`aria-owns`、`<id>-option-N`、所在 react-select container（最多往上
-5 層，遇到 class 含 `container` 就停）讀取，只有 `aria-expanded` 為 `true` 時才讀整頁；
+5 層，遇到外層 `…container` 就停，不含 input／value／indicators container）讀取，只有
+`aria-expanded` 為 `true` 時才讀整頁；期間選單的讀選項、點擊與回讀也走同一套規則；
 class 以完整字詞比對（`-option`、`__option`）。帳號選項以完整帳號比對，點擊後回讀控制項確認帳號已切換，否則
 視為失敗（查詢回應的 `accountNumber` 也會再核對一次）。
 期間選單優先挑目前顯示文字本身就是期間的 combobox，找不到再退回外層文字含
-「天／週／月／年」且不含長數字者；選項依序從 react-select 的 `<id>-option-N`、
-`aria-controls` listbox、期間選單所在容器讀取，都沒有時才讀頁面上目前看得到的選項
-（自訂 `inputId` 時選項 id 與輸入框對不上；同時只會開一個選單）。沒有點到選項時一律按
-Escape 關閉選單，避免之後的帳號選單讀到期間選項。帳號選單比對失敗時記錄 `cathaybk_account_selector_unmatched`，只含
+「天／週／月／年」且不含長數字者；讀選項、點擊與回讀用與帳號選單相同的
+`cathayComboboxPageAction` 範圍規則（自訂 `inputId` 時選項 id 與輸入框對不上，要靠
+container 或展開時的整頁讀取）。沒有點到選項時一律按 Escape 關閉選單，避免之後的帳號
+選單讀到期間選項。帳號選單比對失敗時記錄 `cathaybk_account_selector_unmatched`，只含
 combobox 與選項的數量、可見數與「數字段長度」形狀（例如 `[4,4,4]`），不含帳號或名稱。兩種失敗 log 也附鍵盤後與點擊後的 `cathayMenuStructure`：`aria-expanded`、readonly、
 disabled、control 是否找到與點擊位置命中的元素、各種選項選擇器數量、原生 `select`、
 `aria-haspopup`、iframe、shadow host 數量，以及 input 往上的 class 字詞，不含使用者文字。選項文字由
