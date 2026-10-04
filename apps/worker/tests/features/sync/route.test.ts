@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  CtbcConnectionError,
   ObankConnectionError,
   SkbankConnectionError,
 } from "@taiwan-fin-hub/connectors";
@@ -82,6 +81,11 @@ vi.mock("../../../src/features/sync/scheduler-queue", () => ({
 vi.mock("../../../src/features/sync/service", () => ({
   NeedsUserActionError: class NeedsUserActionError extends Error {},
   NextbankCaptchaRequiredError: class NextbankCaptchaRequiredError extends Error {},
+  CtbcAutoSyncPausedError: class CtbcAutoSyncPausedError extends Error {
+    constructor() {
+      super("中信不支援自動同步，請改用網銀半自動匯入。");
+    }
+  },
   prepareSinopacCaptchaSession: mocks.prepareSinopacCaptchaSession,
   prepareHncbCaptchaSession: mocks.prepareHncbCaptchaSession,
   prepareKgibankCaptchaSession: mocks.prepareKgibankCaptchaSession,
@@ -410,30 +414,21 @@ describe("TDCC sync route", () => {
 });
 
 describe("CTBC sync route", () => {
-  it("dispatches a manual sync", async () => {
+  it("rejects automatic sync and points to the semi-automatic import", async () => {
     const response = await syncRoutes.request(
       "/connectors/ctbc/sync",
       { method: "POST" },
       env,
     );
 
-    expect(response.status).toBe(200);
-    expect(mocks.syncCtbc).toHaveBeenCalledWith(env, "manual");
-  });
-
-  it("maps mobile API connection failures", async () => {
-    mocks.syncCtbc.mockRejectedValueOnce(
-      new CtbcConnectionError("schema drift"),
-    );
-    const failed = await syncRoutes.request(
-      "/connectors/ctbc/sync",
-      { method: "POST" },
-      env,
-    );
-    expect(failed.status).toBe(502);
-    await expect(failed.json()).resolves.toMatchObject({
-      error: { code: "CTBC_CONNECTION_FAILED" },
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "CTBC_AUTO_SYNC_PAUSED",
+        message: expect.stringContaining("半自動匯入"),
+      },
     });
+    expect(mocks.syncCtbc).not.toHaveBeenCalled();
   });
 });
 

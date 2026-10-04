@@ -1232,7 +1232,7 @@ export async function chooseCathayComboboxOption(
     ).find((candidate) => {
       const label = labelOf(candidate);
       return target === "period"
-        ? !/\d{10,}/.test(label) && /(天|日|週|周|月|年)/.test(label)
+        ? /^近\d+(天|個?月|年)$/.test(label)
         : /\d{10,}/.test(label);
     });
     if (!input) return false;
@@ -1275,71 +1275,151 @@ export async function chooseCathayComboboxOption(
 }
 
 type CathayPeriodResult =
-  | { status: "selected"; label: string; days: number }
+  | { status: "selected"; label: string }
+  | { status: "partial"; label: string; warning: string }
   | { status: "default"; warning: string };
 
-/** 期間選單：讀出選項文字（只有期間，不含帳號）在 Node 端挑選，再點擊該選項。 */
-async function chooseCathayPeriodOption(
-  page: Page,
-  days: number,
-): Promise<{ found: boolean; options: string[]; chosen?: string }> {
-  const marked = await page.evaluate(() => {
-    const labelOf = (input: HTMLInputElement) => {
-      let node: HTMLElement | null = input;
-      for (let depth = 0; depth < 5 && node; depth += 1) {
-        node = node.parentElement;
-        const text = (node?.innerText ?? "").replace(/\s+/g, "");
-        if (text) return text;
-      }
-      return "";
-    };
-    const input = Array.from(
+/** 只記錄看起來像期間的短文字，其他一律遮蔽，避免誤選其他選單時把帳號等寫進 log。 */
+const PERIOD_LOG_TEXT =
+  /^[近最前內\d一二兩三四五六七八九十天日週周星期個月年 ]{1,20}$/;
+
+/**
+ * 在頁面內執行的期間選單操作；puppeteer 會序列化函式原始碼，因此必須自給自足。
+ * 選項只從被標記的期間選單讀取（react-select 的 `<id>-option-N` 或 aria-controls 的
+ * listbox），不掃整份 document。
+ */
+export function cathayPeriodPageAction(
+  // "mark" | "options" | "click" | "label"；puppeteer 的型別要求參數為 string。
+  action: string,
+  target = "",
+): unknown {
+  const normalize = (value: string) => value.replace(/\s+/g, "");
+  const labelOf = (input: HTMLElement) => {
+    let node: HTMLElement | null = input;
+    for (let depth = 0; depth < 5 && node; depth += 1) {
+      node = node.parentElement;
+      const text = normalize(node?.innerText ?? "");
+      if (text) return text;
+    }
+    return "";
+  };
+  if (action === "mark") {
+    for (const element of Array.from(
+      document.querySelectorAll<HTMLElement>('[data-cathay-combobox="period"]'),
+    )) {
+      delete element.dataset.cathayCombobox;
+    }
+    const inputs = Array.from(
       document.querySelectorAll<HTMLInputElement>("input[role='combobox']"),
-    ).find((candidate) => {
-      const label = labelOf(candidate);
-      return !/\d{10,}/.test(label) && /(天|日|週|周|月|年)/.test(label);
-    });
+    );
+    // 優先挑目前顯示文字本身就是期間的選單，找不到再退回寬鬆條件。
+    const input =
+      inputs.find((candidate) =>
+        /^(?:近|最近|前)?(?:\d+|[一二兩三四五六七八九十]+)(?:天|日|週|周|星期|個?月|年)(?:內)?$/.test(
+          labelOf(candidate),
+        ),
+      ) ??
+      inputs.find((candidate) => {
+        const label = labelOf(candidate);
+        return !/\d{10,}/.test(label) && /(天|週|周|月|年)/.test(label);
+      });
     if (!input) return false;
     input.dataset.cathayCombobox = "period";
     return true;
-  });
-  if (!marked) return { found: false, options: [] };
+  }
+  const marked = document.querySelector<HTMLElement>(
+    '[data-cathay-combobox="period"]',
+  );
+  if (!marked)
+    return action === "options" ? [] : action === "label" ? "" : false;
+  if (action === "label") return labelOf(marked);
+  const prefix = /^(.*)-input$/.exec(marked.id)?.[1];
+  let options: HTMLElement[] = [];
+  if (prefix) {
+    options = Array.from(
+      document.querySelectorAll<HTMLElement>("[id*='-option-']"),
+    ).filter((option) => option.id.startsWith(`${prefix}-option-`));
+  } else {
+    const listId = marked.getAttribute("aria-controls");
+    const list = listId ? document.getElementById(listId) : null;
+    options = list
+      ? Array.from(
+          list.querySelectorAll<HTMLElement>(
+            "[role='option'], [id*='-option-']",
+          ),
+        )
+      : [];
+  }
+  if (action === "options") {
+    return options.map((option) =>
+      (option.textContent ?? "").replace(/\s+/g, " ").trim(),
+    );
+  }
+  const option = options.find(
+    (candidate) => normalize(candidate.textContent ?? "") === normalize(target),
+  );
+  option?.click();
+  return Boolean(option);
+}
 
+async function pollPage<T>(
+  read: () => Promise<T>,
+  done: (value: T) => boolean,
+  timeoutMs: number,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let value = await read();
+  while (!done(value) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    value = await read();
+  }
+  return value;
+}
+
+/** 開啟期間選單、在 Node 端挑選項目、點擊後回讀控制項文字確認真的選上。 */
+export async function chooseCathayPeriodOption(
+  page: Pick<Page, "evaluate" | "focus" | "keyboard">,
+  days: number,
+  timeouts = { optionsMs: 5000, labelMs: 2000 },
+): Promise<{
+  found: boolean;
+  options: string[];
+  chosen?: string;
+  applied?: boolean;
+}> {
+  if (!(await page.evaluate(cathayPeriodPageAction, "mark"))) {
+    return { found: false, options: [] };
+  }
   await page.focus('[data-cathay-combobox="period"]');
   await page.keyboard.press("ArrowDown");
-  await page
-    .waitForFunction(
-      () =>
-        document.querySelectorAll("[role='option'], [id*='-option-']").length >
-        0,
-      { timeout: 5000 },
-    )
-    .catch(() => null);
-  const options = await page.evaluate(() =>
-    Array.from(
-      document.querySelectorAll<HTMLElement>(
-        "[role='option'], [id*='-option-']",
-      ),
-    ).map((option) => (option.textContent ?? "").replace(/\s+/g, " ").trim()),
-  );
+  const options = (await pollPage(
+    () => page.evaluate(cathayPeriodPageAction, "options"),
+    (value) => Array.isArray(value) && value.length > 0,
+    timeouts.optionsMs,
+  )) as string[];
+  // 選單沒打開就不按 Escape，避免作用在已關閉的選單上。
+  if (options.length === 0) return { found: true, options };
   const index = pickCathayPeriodOption(options, days);
-  if (index < 0) {
+  const chosen = index >= 0 ? options[index] : undefined;
+  if (
+    !chosen ||
+    !(await page.evaluate(cathayPeriodPageAction, "click", chosen))
+  ) {
     await page.keyboard.press("Escape").catch(() => null);
     return { found: true, options };
   }
-  await page.evaluate((target: number) => {
-    Array.from(
-      document.querySelectorAll<HTMLElement>(
-        "[role='option'], [id*='-option-']",
-      ),
-    )[target]?.click();
-  }, index);
-  return { found: true, options, chosen: options[index] };
+  const target = chosen.replace(/\s+/g, "");
+  const label = await pollPage(
+    () => page.evaluate(cathayPeriodPageAction, "label"),
+    (value) => value === target,
+    timeouts.labelMs,
+  );
+  return { found: true, options, chosen, applied: label === target };
 }
 
 /**
- * 選擇交易期間。國泰改版導致選單或選項無法辨識時，不讓整次同步失敗：沿用頁面預設期間
- * 繼續，回傳警告，並記錄期間選項文字（不含帳號）供之後對照。
+ * 選擇交易期間。國泰改版導致選單或選項無法辨識、或點擊後沒有生效時，不讓整次同步失敗：
+ * 沿用頁面預設期間繼續並回傳警告，log 只記錄像期間的選項文字。
  */
 async function selectTransactionPeriod(
   page: Page,
@@ -1349,24 +1429,27 @@ async function selectTransactionPeriod(
   const chosenDays = result.chosen
     ? cathayPeriodDays(result.chosen)
     : undefined;
-  if (result.chosen && chosenDays !== undefined) {
+  if (result.chosen && result.applied && chosenDays !== undefined) {
     console.log(`[cathaybk] set period to "${result.chosen}"`);
     if (chosenDays < days) {
       return {
-        status: "default",
+        status: "partial",
+        label: result.chosen,
         warning: `國泰存款明細最長只能查「${result.chosen}」，較早的交易可能未取得。`,
       };
     }
-    return { status: "selected", label: result.chosen, days: chosenDays };
+    return { status: "selected", label: result.chosen };
   }
   console.warn(
     JSON.stringify({
       event: "cathaybk_period_option_unrecognized",
       comboboxFound: result.found,
-      // 期間選項只含「近 N 天」之類文字；仍遮蔽長數字以防誤含帳號。
+      clicked: Boolean(result.chosen),
       options: result.options
         .slice(0, 20)
-        .map((option) => option.replace(/\d{5,}/g, "#").slice(0, 40)),
+        .map((option) =>
+          PERIOD_LOG_TEXT.test(option) ? option : "[redacted]",
+        ),
     }),
   );
   return {
@@ -1491,7 +1574,7 @@ async function scrapeDeposits(
     assertCathayNotLoggedOut(page);
 
     const period = await selectTransactionPeriod(page, lookbackDays);
-    if (period.status === "default" && !warnings.includes(period.warning)) {
+    if (period.status !== "selected" && !warnings.includes(period.warning)) {
       warnings.push(period.warning);
     }
     // Let any query triggered by switching the selectors settle first.
@@ -1531,7 +1614,7 @@ async function scrapeDeposits(
     }
     const details: TransferDetail[] = datas.flatMap((d) => d.details ?? []);
     console.log(
-      `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: ${details.length} tx (period=${period.status === "selected" ? period.label : "default"})`,
+      `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: ${details.length} tx (period=${period.status === "default" ? "default" : period.label})`,
     );
 
     appendCathayDepositTransactions(

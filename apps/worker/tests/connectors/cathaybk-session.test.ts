@@ -19,6 +19,7 @@ import {
   completeCathayTrustedDeviceSetup,
   createCathaybkConnector,
   cathayPeriodDays,
+  chooseCathayPeriodOption,
   dismissCathaySystemMessageIfPresent,
   pickCathayPeriodOption,
   isCathayAuthenticatedUrl,
@@ -1299,5 +1300,111 @@ describe("Cathay transaction period options", () => {
   it("returns -1 when no option is recognised", () => {
     expect(pickCathayPeriodOption(["自訂", "全部"], 90)).toBe(-1);
     expect(pickCathayPeriodOption([], 90)).toBe(-1);
+  });
+});
+
+describe("Cathay period combobox", () => {
+  type FakeElement = {
+    id: string;
+    textContent: string;
+    dataset: Record<string, string | undefined>;
+    parentElement: { innerText: string; parentElement: null };
+    getAttribute: (name: string) => string | null;
+    click: ReturnType<typeof vi.fn>;
+  };
+
+  function element(id: string, label: string): FakeElement {
+    return {
+      id,
+      textContent: label,
+      dataset: {},
+      parentElement: { innerText: label, parentElement: null },
+      getAttribute: () => null,
+      click: vi.fn(),
+    };
+  }
+
+  function setup(options: Array<[string, string]>, applyOnClick = true) {
+    const period = element("react-select-3-input", "近 30 天");
+    const account = element("react-select-2-input", "123456789012 活期存款");
+    const optionElements = options.map(([id, text]) => {
+      const option = element(id, text);
+      option.click = vi.fn(() => {
+        if (applyOnClick) period.parentElement.innerText = text;
+      });
+      return option;
+    });
+    const inputs = [account, period];
+    vi.stubGlobal("document", {
+      querySelectorAll: (selector: string) => {
+        if (selector.includes("data-cathay-combobox"))
+          return inputs.filter((input) => input.dataset.cathayCombobox);
+        if (selector.includes("combobox")) return inputs;
+        return optionElements;
+      },
+      querySelector: () =>
+        inputs.find((input) => input.dataset.cathayCombobox === "period") ??
+        null,
+      getElementById: () => null,
+    });
+    const page = {
+      evaluate: vi.fn(
+        async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
+          fn(...args),
+      ),
+      focus: vi.fn().mockResolvedValue(undefined),
+      keyboard: { press: vi.fn().mockResolvedValue(undefined) },
+    };
+    return { page, period, account, optionElements };
+  }
+
+  const fast = { optionsMs: 0, labelMs: 0 };
+
+  it("reads only the period menu's options and confirms the selection", async () => {
+    const { page, period, account, optionElements } = setup([
+      ["react-select-2-option-0", "123456789012 活期存款"],
+      ["react-select-3-option-0", "近 1 個月"],
+      ["react-select-3-option-1", "近 3 個月"],
+    ]);
+
+    await expect(
+      chooseCathayPeriodOption(page as never, 90, fast),
+    ).resolves.toEqual({
+      found: true,
+      options: ["近 1 個月", "近 3 個月"],
+      chosen: "近 3 個月",
+      applied: true,
+    });
+    expect(period.dataset.cathayCombobox).toBe("period");
+    expect(account.dataset.cathayCombobox).toBeUndefined();
+    expect(optionElements[2]!.click).toHaveBeenCalledOnce();
+    expect(page.keyboard.press).not.toHaveBeenCalledWith("Escape");
+  });
+
+  it("reports a click that did not change the selected period", async () => {
+    const { page } = setup([["react-select-3-option-0", "近 90 天"]], false);
+
+    await expect(
+      chooseCathayPeriodOption(page as never, 90, fast),
+    ).resolves.toMatchObject({ chosen: "近 90 天", applied: false });
+  });
+
+  it("does not press Escape when the menu did not open", async () => {
+    const { page } = setup([]);
+
+    await expect(
+      chooseCathayPeriodOption(page as never, 90, fast),
+    ).resolves.toEqual({ found: true, options: [] });
+    expect(page.keyboard.press).toHaveBeenCalledTimes(1);
+    expect(page.keyboard.press).toHaveBeenCalledWith("ArrowDown");
+  });
+
+  it("closes the menu when no option is recognised", async () => {
+    const { page } = setup([["react-select-3-option-0", "自訂"]]);
+
+    await expect(
+      chooseCathayPeriodOption(page as never, 90, fast),
+    ).resolves.toEqual({ found: true, options: ["自訂"] });
+    expect(page.keyboard.press).toHaveBeenLastCalledWith("Escape");
   });
 });

@@ -672,5 +672,7 @@ it("shows the semi-automatic import hint instead of a sync button for CTBC", asy
     "半自動匯入",
   );
   expect(queryByRole("button", { name: "同步" })).toBeNull();
+  expect(queryByRole("button", { name: "開啟" })).toBeNull();
+  expect(queryByRole("button", { name: "關閉" })).toBeNull();
   expect(post).not.toHaveBeenCalled();
 });

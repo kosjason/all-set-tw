@@ -10,7 +10,7 @@ import {
   prepareFirstbankCaptchaSession,
   prepareMegabankCaptchaSession,
   syncCathaybk,
-  syncCtbc,
+  CtbcAutoSyncPausedError,
   syncSkbank,
   syncEsun,
   syncSinopac,
@@ -78,7 +78,10 @@ export const connectorRuntimeRegistry: Record<
       syncCathaybk(env, trigger, overrides as CathaySyncOverrides),
   },
   ctbc: {
-    run: (env, trigger) => syncCtbc(env, trigger),
+    // 排程與手動同步都不再嘗試中信登入；資料改由網銀半自動匯入（/connectors/ctbc/import）。
+    run: async () => {
+      throw new CtbcAutoSyncPausedError();
+    },
   },
   skbank: {
     run: (env, trigger) => syncSkbank(env, trigger),

@@ -49,6 +49,7 @@ import { jsonError } from "../../platform/http";
 import { validationHook } from "../../platform/validation";
 import {
   NeedsUserActionError,
+  CtbcAutoSyncPausedError,
   NextbankCaptchaRequiredError,
   safeErrorMessage,
   SyncAlreadyRunningError,
@@ -813,6 +814,9 @@ async function syncRouteResponse(
         safeErrorMessage(error),
         400,
       );
+    }
+    if (error instanceof CtbcAutoSyncPausedError) {
+      return jsonError("CTBC_AUTO_SYNC_PAUSED", safeErrorMessage(error), 409);
     }
     if (error instanceof NeedsUserActionError) {
       return jsonError("USER_ACTION_REQUIRED", safeErrorMessage(error), 400);
