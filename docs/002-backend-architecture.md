@@ -403,7 +403,8 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
   避免發票被當成另一筆消費；使用者先在發票上設代墊、之後配對到刷卡時，
   `carryInvoiceAdvancesToTransactions` 在讀取時把代墊與對象帶到該交易（月份與搜尋兩條路徑都套用；
   只帶 `advance`；交易自己有 override 時以交易為準）。帶過去的交易 `roleReason = invoice_override`，
-  不能從交易「恢復自動判斷」（設定存在發票上），商家規則也不會覆蓋。有歧義的發票判斷同樣把
+  從交易「恢復自動判斷」時前端刪除的是發票上的設定（`matchedInvoiceId`）；已配對但自己有
+  override 的發票仍可修改或恢復；商家規則不會覆蓋。有歧義的發票判斷同樣把
   代墊刷卡視為候選。信用卡未出帳與帳單推估把 `advance` 與 `spending` 一起計入（卡費仍要繳）。
   匯出的活動帶 `advanceCounterparty`（遮蔽長數字）。
 - 即時消費入帳時，使用者在舊交易上的角色（含代墊對象）與備註會搬到新交易：共用的

@@ -3,7 +3,10 @@ import {
   type EconomicRole,
   type EconomicRoleReason,
 } from "@taiwan-fin-hub/core";
-import { ECONOMIC_ROLE_LABELS } from "@/data/activity/roles";
+import {
+  ECONOMIC_ROLE_LABELS,
+  activityRoleTarget,
+} from "@/data/activity/roles";
 import { activitySourceLabel } from "./labels";
 import type { ActivityItem } from "./types";
 
@@ -168,9 +171,22 @@ export function activityRoleReasonLabel(
   }
 }
 
-/** 目前角色來自使用者覆寫，可「恢復自動判斷」。 */
+/**
+ * 目前角色來自使用者覆寫，可「恢復自動判斷」。帶自配對發票的代墊（invoice_override）
+ * 也可以：恢復時刪除發票上的設定。
+ */
 export function hasRoleOverride(item: ActivityItem) {
-  return item.roleReason === "override";
+  return (
+    item.roleReason === "override" ||
+    (item.roleReason === "invoice_override" && Boolean(item.matchedInvoiceId))
+  );
+}
+
+/** 「恢復自動判斷」要刪除的覆寫：帶自配對發票的代墊刪發票上的設定。 */
+export function roleResetTarget(item: ActivityItem) {
+  if (item.roleReason === "invoice_override" && item.matchedInvoiceId)
+    return { targetKind: "invoice" as const, targetId: item.matchedInvoiceId };
+  return activityRoleTarget(item);
 }
 
 /**

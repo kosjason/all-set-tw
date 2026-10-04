@@ -96,6 +96,7 @@
     duplicateTargetLabel,
     findDuplicateTarget,
     roleOverridePath,
+    roleResetTarget,
   } from "./model/roles";
   import {
     activityHash,
@@ -851,7 +852,7 @@
   }
   const roleResetMutation = createMutation({
     mutationFn: (item: ActivityItem) => {
-      const target = activityRoleTarget(item);
+      const target = roleResetTarget(item);
       if (!target) throw new Error("此活動不支援調整角色。");
       return api.delete(roleOverridePath(target));
     },

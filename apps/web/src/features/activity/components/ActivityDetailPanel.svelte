@@ -123,8 +123,11 @@
   }: ActivityDetailPanelProps = $props();
   const invoiceCurrency = $derived(invoice?.currency ?? "TWD");
   const amount = $derived(activityDisplayAmount(item));
+  // 已併入另一筆的重複項目不能改角色；但使用者自己在它上面設過角色（例如先在發票上標代墊，
+  // 之後才配對到刷卡）時仍可修改或恢復，否則設定會被卡住。
   const roleEditable = $derived(
-    activityRoleTarget(item) != null && !item.duplicateOf,
+    activityRoleTarget(item) != null &&
+      (!item.duplicateOf || item.roleReason === "override"),
   );
   const reviewing = $derived(needsReview(item));
   const roleReason = $derived(activityRoleReasonLabel(item));

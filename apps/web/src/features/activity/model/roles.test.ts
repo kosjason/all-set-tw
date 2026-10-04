@@ -12,6 +12,7 @@ import {
   excludedStatusLabel,
   findDuplicateTarget,
   hasRoleOverride,
+  roleResetTarget,
   isExcludedActivity,
   roleOverridePath,
   showsRoleInsteadOfCategory,
@@ -288,5 +289,48 @@ describe("account column", () => {
       primary: "國泰世華",
       secondary: "薪轉戶",
     });
+  });
+});
+
+describe("resetting an advance carried from a matched invoice", () => {
+  const base = {
+    id: "card-1",
+    source: "card" as const,
+    date: "2026-09-29",
+    title: "虛構電信門市",
+    subtitle: "",
+    amount: -31300,
+    currency: "TWD",
+    status: "posted",
+    economicRole: "advance" as const,
+  };
+
+  it("deletes the invoice override when the advance came from the invoice", () => {
+    const item = {
+      ...base,
+      roleReason: "invoice_override" as const,
+      matchedInvoiceId: "inv-1",
+    } as ActivityItem;
+    expect(hasRoleOverride(item)).toBe(true);
+    expect(roleResetTarget(item)).toEqual({
+      targetKind: "invoice",
+      targetId: "inv-1",
+    });
+  });
+
+  it("keeps the transaction target for its own override", () => {
+    const item = { ...base, roleReason: "override" as const } as ActivityItem;
+    expect(hasRoleOverride(item)).toBe(true);
+    expect(roleResetTarget(item)).toEqual({
+      targetKind: "bank_transaction",
+      targetId: "card-1",
+    });
+    expect(
+      hasRoleOverride({
+        ...base,
+        roleReason: "invoice_override",
+        matchedInvoiceId: null,
+      } as ActivityItem),
+    ).toBe(false);
   });
 });
