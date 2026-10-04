@@ -282,7 +282,8 @@
               >
                 若這張發票不是那筆交易，請在下方「發票配對」選擇分開記錄。
               </p>{/if}
-          {:else if roleEditable && item.economicRole}
+          {/if}
+          {#if roleEditable && item.economicRole}
             <div
               class="mt-3 flex flex-wrap gap-2"
               role="group"
@@ -303,7 +304,7 @@
             {#if reviewing}<p class="mt-2 text-caption text-amber-900">
                 系統無法確定這筆的角色，選擇後就會確認並重新計算本月收支。
               </p>{/if}
-          {:else if item.economicRole}
+          {:else if !item.duplicateOf && item.economicRole}
             <p class="mt-2">
               <Badge variant="secondary"
                 >{ECONOMIC_ROLE_LABELS[item.economicRole]}</Badge
