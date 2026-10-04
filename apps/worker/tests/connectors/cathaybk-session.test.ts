@@ -1466,7 +1466,10 @@ it("redacts anything but recognisable period labels from logs", () => {
 it("describes the account selector without exposing account text", () => {
   const input = {
     dataset: { cathayCombobox: "account" },
-    parentElement: { innerText: "1234-5678-9012 王小明", parentElement: null },
+    parentElement: {
+      innerText: "1234-5678-9012 王小明 餘額 1,234,567",
+      parentElement: null,
+    },
   };
   const option = {
     textContent: "123456789012 活期存款",

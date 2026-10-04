@@ -1279,8 +1279,12 @@ export async function chooseCathayComboboxOption(
  * 不回傳任何帳號或名稱文字。在頁面內執行，必須自給自足。
  */
 export function cathayAccountSelectorShape(accountLength: number) {
+  // 只留 4 位以上的數字段（帳號分段），避免透露「1,234,567」這類金額的位數。
   const shape = (text: string) =>
-    (text.match(/\d+/g) ?? []).map((digits) => digits.length);
+    (text.match(/\d+/g) ?? [])
+      .map((digits) => digits.length)
+      .filter((length) => length >= 4)
+      .slice(0, 10);
   const labelOf = (input: HTMLElement) => {
     let node: HTMLElement | null = input;
     for (let depth = 0; depth < 5 && node; depth += 1) {
