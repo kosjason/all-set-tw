@@ -5,16 +5,20 @@ import {
   collectCtbcPayloads,
   CtbcWebImportError,
   depositQueryStrategies,
+  describeEnvelopeDiff,
   extractRequestTemplate,
   formatImportResult,
   formatResourceLog,
   formatStatementMonth,
   AuthTokenTracker,
+  mergeDepositDetailLists,
+  pageDepositDetailLists,
   parseArgs,
   prepareFixedProfile,
   userDataDirPattern,
   pickTemplateHeaders,
   redactMessage,
+  responseDesc,
   RESOURCES,
   statementDetailQueries,
   statementMonthsToFetch,
@@ -63,7 +67,7 @@ test("parseArgs applies defaults and validates options", () => {
     loginUrl: "https://www.ctbcbank.com/twrbc/",
     loginTimeoutMinutes: 10,
     profileDir: undefined,
-    depositWaitSeconds: 60,
+    depositWaitSeconds: 600,
     dryRun: false,
     help: false,
     accessClientId: undefined,
@@ -489,14 +493,173 @@ test("collectCtbcPayloads prefers the query the page itself sent", async () => {
   });
 });
 
+test("collectCtbcPayloads imports the page's own deposit results when replays fail", async () => {
+  const lines = [];
+  const { call } = fakeBank();
+  const pageItem = { memo1: "虛構轉帳存入", crAmt: "31520", balanceAmt: "9" };
+  const result = await collectCtbcPayloads(call, {
+    log: (line) => lines.push(line),
+    now: new Date("2026-10-04T04:00:00.000Z"),
+    pageDeposits: () => [
+      {
+        rqData: { accountId: ACCOUNT_A, type: "m0" },
+        response: { code: "0000", rsData: { detailList: [pageItem] } },
+      },
+      // 同一查詢再開一次：同一筆只算一次。
+      {
+        rqData: { accountId: ACCOUNT_A, type: "m0" },
+        response: { code: "0000", rsData: { detailList: [pageItem] } },
+      },
+      {
+        rqData: { accountId: ACCOUNT_B, type: "m0" },
+        response: { code: "H404", desc: "查無資料" },
+      },
+      {
+        rqData: { accountId: "0000999999999999", type: "m0" },
+        response: {
+          code: "0000",
+          rsData: { detailList: [{ memo1: "別的帳戶" }] },
+        },
+      },
+    ],
+  });
+
+  assert.equal(result.depositTransactionsUnavailable, false);
+  assert.equal(result.depositStrategy, "page");
+  assert.deepEqual(result.payloads.depositTransactions.rsData.detailList, [
+    { ...pageItem, sourceAccountId: ACCOUNT_A },
+  ]);
+  const output = lines.join("\n");
+  assert.ok(output.includes("使用頁面查詢結果 1 筆"));
+  for (const secret of [ACCOUNT_A, ACCOUNT_B, "31520", "虛構"]) {
+    assert.ok(!output.includes(secret), `log leaked ${secret}`);
+  }
+});
+
+test("collectCtbcPayloads skips replays for accounts the page already showed", async () => {
+  const { call, calls } = fakeBank();
+  const result = await collectCtbcPayloads(call, {
+    pageDeposits: () => [
+      {
+        rqData: { accountId: ACCOUNT_A, type: "m0" },
+        response: {
+          code: "0000",
+          rsData: { detailList: [{ memo1: "虛構本月", balanceAmt: "2" }] },
+        },
+      },
+      // 使用者切換到前幾個月：與本月重疊的紀錄只算一次。
+      {
+        rqData: { accountId: ACCOUNT_A, type: "m2" },
+        response: {
+          code: "0000",
+          rsData: {
+            detailList: [
+              { memo1: "虛構上月", balanceAmt: "1" },
+              { balanceAmt: "2", memo1: "虛構本月" },
+            ],
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(result.depositStrategy, "page");
+  assert.equal(result.depositTransactionsUnavailable, false);
+  assert.deepEqual(
+    result.payloads.depositTransactions.rsData.detailList.map(
+      (item) => `${item.memo1}:${item.sourceAccountId === ACCOUNT_A}`,
+    ),
+    ["虛構本月:true", "虛構上月:true"],
+  );
+  const replayed = (accountId) =>
+    calls.some(
+      (entry) =>
+        entry.resource === RESOURCES.depositTransactions &&
+        entry.rqData.accountId === accountId,
+    );
+  assert.equal(replayed(ACCOUNT_A), false);
+  assert.equal(replayed(ACCOUNT_B), true);
+});
+
+test("mergeDepositDetailLists keeps repeated records within one list", () => {
+  const same = { memo1: "虛構", amount: 1 };
+  assert.deepEqual(
+    mergeDepositDetailLists([
+      [same, { ...same }],
+      [{ amount: 1, memo1: "虛構" }, { memo1: "其他" }],
+    ]),
+    [same, same, { memo1: "其他" }],
+  );
+  assert.deepEqual(
+    pageDepositDetailLists(
+      [
+        { rqData: { accountId: ` ${ACCOUNT_A} ` }, response: { code: "0000" } },
+        { rqData: null, response: { code: "0000" } },
+        "not-a-capture",
+      ],
+      [ACCOUNT_A],
+    ),
+    [[]],
+  );
+});
+
+test("describeEnvelopeDiff reports field names without values", () => {
+  const template = extractRequestTemplate(
+    RESOURCE_URL,
+    JSON.stringify(pageBody()),
+    pageHeaders,
+  );
+  const { model: _model, ...withoutModel } = pageBody({
+    seed: "different-seed-value",
+    funcCode: "secret-func-value",
+    resource: RESOURCES.depositTransactions,
+    rqData: { accountId: ACCOUNT_A, type: "m0" },
+  });
+  const diff = describeEnvelopeDiff(
+    template,
+    RESOURCE_URL,
+    withoutModel,
+    pageHeaders,
+  );
+  assert.deepEqual(diff, {
+    bodyKeys: ["seed(值不同)", "funcCode(工具沒有)", "model(頁面沒有)"],
+    headerNames: ["x-fake-shape-a"],
+    queryNames: ["IIhfvu"],
+  });
+  const text = JSON.stringify(diff);
+  for (const secret of [
+    "different-seed-value",
+    "secret-func-value",
+    SEED,
+    AUTH_TOKEN,
+    ACCOUNT_A,
+    "per-request-value",
+    '"fake"',
+  ]) {
+    assert.ok(!text.includes(secret), `diff leaked ${secret}`);
+  }
+});
+
 test("collectCtbcPayloads stops without importing when a required resource fails", async () => {
   const { call } = fakeBank({ failResource: RESOURCES.creditCardBills });
   await assert.rejects(collectCtbcPayloads(call), (error) => {
     assert.ok(error instanceof CtbcWebImportError);
-    assert.match(error.message, /\/twrbc-card\/qu002\/010.*code=9991/);
+    assert.match(error.message, /\/twrbc-card\/qu002\/010.*code=9991：未提供/);
     assert.ok(!error.message.includes(ACCOUNT_A));
     return true;
   });
+});
+
+test("responseDesc keeps the bank's message but hides numbers and tokens", () => {
+  assert.equal(
+    responseDesc({ code: "9994", desc: " 請重新登入 " }),
+    "請重新登入",
+  );
+  assert.equal(
+    responseDesc({ desc: `帳號 ${ACCOUNT_A} token ${AUTH_TOKEN}` }),
+    "帳號 [redacted] token [redacted]",
+  );
+  assert.equal(responseDesc({ desc: "請".repeat(100) }).length, 40);
+  assert.equal(responseDesc(null), "");
 });
 
 test("formatImportResult prints counts and redacts worker messages", () => {
