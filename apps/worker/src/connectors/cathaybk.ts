@@ -1274,6 +1274,45 @@ export async function chooseCathayComboboxOption(
   );
 }
 
+/**
+ * 帳號選單比對失敗時的診斷：只回傳數量與「數字段長度」形狀（例如 [3,3,6]），
+ * 不回傳任何帳號或名稱文字。在頁面內執行，必須自給自足。
+ */
+export function cathayAccountSelectorShape(accountLength: number) {
+  const shape = (text: string) =>
+    (text.match(/\d+/g) ?? []).map((digits) => digits.length);
+  const labelOf = (input: HTMLElement) => {
+    let node: HTMLElement | null = input;
+    for (let depth = 0; depth < 5 && node; depth += 1) {
+      node = node.parentElement;
+      const text = (node?.innerText ?? "").replace(/\s+/g, "");
+      if (text) return text;
+    }
+    return "";
+  };
+  const comboboxes = Array.from(
+    document.querySelectorAll<HTMLInputElement>("input[role='combobox']"),
+  );
+  const options = Array.from(
+    document.querySelectorAll<HTMLElement>("[role='option'], [id*='-option-']"),
+  );
+  return {
+    accountLength,
+    markedAccount: comboboxes.some(
+      (input) => input.dataset.cathayCombobox === "account",
+    ),
+    comboboxLabelShapes: comboboxes
+      .slice(0, 5)
+      .map((input) => shape(labelOf(input))),
+    optionCount: options.length,
+    visibleOptionCount: options.filter((option) => option.offsetParent !== null)
+      .length,
+    optionShapes: options
+      .slice(0, 10)
+      .map((option) => shape(option.textContent ?? "")),
+  };
+}
+
 type CathayPeriodResult =
   | { status: "selected"; label: string }
   | { status: "partial"; label: string; warning: string }
@@ -1290,8 +1329,8 @@ export function redactCathayPeriodOptions(options: readonly string[]) {
 
 /**
  * 在頁面內執行的期間選單操作；puppeteer 會序列化函式原始碼，因此必須自給自足。
- * 選項只從被標記的期間選單讀取（react-select 的 `<id>-option-N` 或 aria-controls 的
- * listbox），不掃整份 document。
+ * 選項依序從 react-select 的 `<id>-option-N`、aria-controls listbox、期間選單所在容器
+ * 內看得到的選項讀取，都沒有時才讀頁面上看得到的選項（同時只會開一個選單）。
  */
 export function cathayPeriodPageAction(
   // "mark" | "options" | "click" | "label"；puppeteer 的型別要求參數為 string。
@@ -1359,7 +1398,9 @@ export function cathayPeriodPageAction(
     depth += 1
   ) {
     if (typeof container.querySelectorAll === "function") {
-      options = Array.from(container.querySelectorAll<HTMLElement>(OPTION));
+      options = Array.from(
+        container.querySelectorAll<HTMLElement>(OPTION),
+      ).filter((option) => option.offsetParent !== null);
     }
     container = container.parentElement;
   }
@@ -1604,6 +1645,15 @@ async function scrapeDeposits(
       !(await chooseCathayComboboxOption(page, "account", acct.acctNo))
     ) {
       assertCathayNotLoggedOut(page);
+      console.warn(
+        JSON.stringify({
+          event: "cathaybk_account_selector_unmatched",
+          ...(await page
+            .evaluate(cathayAccountSelectorShape, acct.acctNo.length)
+            .catch(() => ({ unavailable: true }))),
+        }),
+      );
+      await page.keyboard.press("Escape").catch(() => null);
       throw new Error(
         "Cathay Bank account was not found in the transaction account selector.",
       );

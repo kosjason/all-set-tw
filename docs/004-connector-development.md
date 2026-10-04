@@ -317,7 +317,8 @@ ArrowDown 開啟選單，選項為 `[id*='-option-']` 元素；帳號選項以�
 「天／週／月／年」且不含長數字者；選項依序從 react-select 的 `<id>-option-N`、
 `aria-controls` listbox、期間選單所在容器讀取，都沒有時才讀頁面上目前看得到的選項
 （自訂 `inputId` 時選項 id 與輸入框對不上；同時只會開一個選單）。沒有點到選項時一律按
-Escape 關閉選單，避免之後的帳號選單讀到期間選項。選項文字由
+Escape 關閉選單，避免之後的帳號選單讀到期間選項。帳號選單比對失敗時記錄 `cathaybk_account_selector_unmatched`，只含
+combobox 與選項的數量、可見數與「數字段長度」形狀（例如 `[4,4,4]`），不含帳號或名稱。選項文字由
 `cathayPeriodDays` 換算天數（支援阿拉伯數字與中文數字，例如「近 90 天」「近三個月」
 「近 1 年」），`pickCathayPeriodOption` 選涵蓋 `BANK_SYNC_MONTHS × 30` 天的最短選項，
 都不夠長時選最長並帶警告；點擊後回讀控制項文字（以結尾比對）確認已選上。選單或選項
