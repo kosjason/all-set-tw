@@ -312,17 +312,20 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 切換，不要回到存款總覽：在帳戶之間重新開啟總覽，國泰會導向
 `/OnlineBanking/Logout/SystemError` 並結束工作階段。帳號與查詢期間都是 react-select
 選單，`input[role=combobox]` 的 value 為空，要以外層控制項的文字辨識。開啟選單先用
-鍵盤 ArrowDown；2026-10 改版後鍵盤開不了（實測選項數為 0），因此 2 秒內沒出現選項時
-改用滑鼠點外層 react-select control。選項先找 `[role=option]`／`[id*='-option-']`，
-沒有時改找 `[class*=menu]` 內的 `[class*=option]`（react-select 的 class 命名）；帳號
-選項以完整帳號比對。
+鍵盤 ArrowDown；2026-10 改版後鍵盤開不了（實測選項數為 0），因此 2 秒內沒出現選項、
+且 input 的 `aria-expanded` 不是 `true` 時，改用滑鼠點外層 react-select control（已
+展開時再點會把選單關掉）。`cathayComboboxPageAction` 只讀看得到、最內層的選項，依序從
+`aria-controls`／`aria-owns`、`<id>-option-N`、所在容器、整頁讀取，class 以完整字詞比對
+（`-option`、`__option`）。帳號選項以完整帳號比對，點擊後回讀控制項確認帳號已切換，否則
+視為失敗（查詢回應的 `accountNumber` 也會再核對一次）。
 期間選單優先挑目前顯示文字本身就是期間的 combobox，找不到再退回外層文字含
 「天／週／月／年」且不含長數字者；選項依序從 react-select 的 `<id>-option-N`、
 `aria-controls` listbox、期間選單所在容器讀取，都沒有時才讀頁面上目前看得到的選項
 （自訂 `inputId` 時選項 id 與輸入框對不上；同時只會開一個選單）。沒有點到選項時一律按
 Escape 關閉選單，避免之後的帳號選單讀到期間選項。帳號選單比對失敗時記錄 `cathaybk_account_selector_unmatched`，只含
-combobox 與選項的數量、可見數與「數字段長度」形狀（例如 `[4,4,4]`），不含帳號或名稱。兩種失敗 log 也附 `cathayMenuStructure`：`aria-expanded`、readonly、control 是否找到、
-各種選項選擇器的數量，以及前幾個 menu／option 元素的 class 名稱，供判斷新選單結構。選項文字由
+combobox 與選項的數量、可見數與「數字段長度」形狀（例如 `[4,4,4]`），不含帳號或名稱。兩種失敗 log 也附鍵盤後與點擊後的 `cathayMenuStructure`：`aria-expanded`、readonly、
+disabled、control 是否找到與點擊位置命中的元素、各種選項選擇器數量、原生 `select`、
+`aria-haspopup`、iframe、shadow host 數量，以及 input 往上的 class 字詞，不含使用者文字。選項文字由
 `cathayPeriodDays` 換算天數（支援阿拉伯數字與中文數字，例如「近 90 天」「近三個月」
 「近 1 年」），`pickCathayPeriodOption` 選涵蓋 `BANK_SYNC_MONTHS × 30` 天的最短選項，
 都不夠長時選最長並帶警告；點擊後回讀控制項文字（以結尾比對）確認已選上。選單或選項
