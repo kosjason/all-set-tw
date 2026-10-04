@@ -20,6 +20,7 @@ import {
   createCathaybkConnector,
   cathayAccountSelectorShape,
   cathayMenuStructure,
+  dismissCathayTransactionModals,
   chooseCathayComboboxOptionWithDiagnostics,
   cathayPeriodDays,
   chooseCathayPeriodOption,
@@ -1803,5 +1804,138 @@ describe("Cathay account combobox", () => {
     expect(cathayMenuStructure("account").ancestorClasses[0]).toBe(
       "css-13cymwt-control",
     );
+  });
+});
+
+describe("Cathay transaction page modal", () => {
+  function modalPage(root: FakeNode, onEscape?: () => void) {
+    vi.stubGlobal("document", fakeDocument(root));
+    return {
+      evaluate: vi.fn(
+        async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
+          fn(...args),
+      ),
+      keyboard: {
+        press: vi.fn(async (key: string) => {
+          if (key === "Escape") onEscape?.();
+        }),
+      },
+    };
+  }
+
+  function dialog(...buttons: FakeNode[]) {
+    const container = fakeNode("div", {
+      class: "chakra-modal__content-container css-1a6i8n5",
+    });
+    append(container, ...buttons);
+    return container;
+  }
+
+  it("does nothing when no modal is open", async () => {
+    const page = modalPage(fakeNode("div"));
+    await expect(
+      dismissCathayTransactionModals(page as never, 0),
+    ).resolves.toEqual({ before: 0, after: 0 });
+    expect(page.keyboard.press).not.toHaveBeenCalled();
+  });
+
+  it("closes the modal with Escape", async () => {
+    const root = fakeNode("div");
+    const modal = dialog(fakeNode("button", {}, "我知道了"));
+    append(root, modal);
+    const page = modalPage(root, () => {
+      modal.offsetParent = null;
+    });
+
+    await expect(
+      dismissCathayTransactionModals(page as never, 0),
+    ).resolves.toEqual({ before: 1, after: 0, method: "escape" });
+  });
+
+  it("falls back to the close button when Escape does not work", async () => {
+    const root = fakeNode("div");
+    const close = fakeNode("button", {
+      class: "chakra-modal__close-btn css-1ik4h6n",
+    });
+    const confirm = fakeNode("button", {}, "確定");
+    const modal = dialog(confirm, close);
+    close.click = vi.fn(() => {
+      modal.offsetParent = null;
+    });
+    append(root, modal);
+    const page = modalPage(root);
+
+    await expect(
+      dismissCathayTransactionModals(page as never, 0),
+    ).resolves.toEqual({ before: 1, after: 0, method: "close-icon" });
+    expect(close.click).toHaveBeenCalledOnce();
+    expect(confirm.click).not.toHaveBeenCalled();
+  });
+
+  it("only presses buttons that do not agree to anything", async () => {
+    const root = fakeNode("div");
+    const confirm = fakeNode("button", {}, "確定");
+    const later = fakeNode("button", {}, "稍後再說");
+    const modal = dialog(confirm, later);
+    later.click = vi.fn(() => {
+      modal.offsetParent = null;
+    });
+    append(root, modal);
+
+    await dismissCathayTransactionModals(modalPage(root) as never, 0);
+    expect(later.click).toHaveBeenCalledOnce();
+    expect(confirm.click).not.toHaveBeenCalled();
+  });
+
+  it("logs only counts and the method, never button text", async () => {
+    const root = fakeNode("div");
+    append(
+      root,
+      dialog(
+        fakeNode("button", {}, "確定"),
+        fakeNode("button", {}, "王小明 轉入 123456789012"),
+      ),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await dismissCathayTransactionModals(modalPage(root) as never, 0);
+    const line = String(log.mock.calls.at(-1)?.[0]);
+    expect(JSON.parse(line)).toEqual({
+      event: "cathaybk_modal_detected",
+      before: 1,
+      after: 1,
+      dismissed: false,
+      method: "none",
+    });
+    expect(line).not.toMatch(/確定|王小明|1234/);
+    log.mockRestore();
+  });
+
+  it("ignores non-modal dialogs, hidden dialogs and counts a modal once", async () => {
+    const root = fakeNode("div");
+    // Chakra Popover：role=dialog 但沒有 aria-modal。
+    append(root, fakeNode("section", { role: "dialog" }));
+    // 藏在 aria-hidden 祖先下的 modal。
+    const hiddenWrap = fakeNode("div", { "aria-hidden": "true" });
+    append(
+      hiddenWrap,
+      fakeNode("section", { role: "dialog", "aria-modal": "true" }),
+    );
+    append(root, hiddenWrap);
+    // 同一個 Chakra modal：container 內還有 role=dialog。
+    const modal = dialog();
+    append(
+      modal,
+      fakeNode("section", { role: "dialog", "aria-modal": "true" }),
+    );
+    append(root, modal);
+    const page = modalPage(root, () => {
+      modal.offsetParent = null;
+      for (const child of modal.children) child.offsetParent = null;
+    });
+
+    await expect(
+      dismissCathayTransactionModals(page as never, 0),
+    ).resolves.toEqual({ before: 1, after: 0, method: "escape" });
   });
 });
