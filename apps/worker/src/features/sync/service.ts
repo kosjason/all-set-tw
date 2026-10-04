@@ -856,6 +856,7 @@ export async function syncCathaybk(
     cursorUpdated: Boolean(
       persistedCursor && persistedCursor !== settings.sync_cursor,
     ),
+    ...(result.warnings?.length ? { warnings: result.warnings } : {}),
   };
 }
 

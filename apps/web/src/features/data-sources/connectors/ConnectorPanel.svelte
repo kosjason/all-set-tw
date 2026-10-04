@@ -806,6 +806,13 @@
         <span class="text-sm text-muted-foreground"
           >在下方查看進度與同步帳戶</span
         >
+      {:else if connectorId === "ctbc"}
+        <!-- 中信會擋自動登入（App 回 0131、網銀防機器人），只提供網銀半自動匯入。 -->
+        <span
+          class="text-sm text-muted-foreground"
+          data-testid="ctbc-import-only"
+          >中信不支援自動同步，請用網銀半自動匯入</span
+        >
       {:else if browserBank}
         {#if browserBankSessionAvailable}
           <Button

@@ -629,3 +629,48 @@ describe("Nextbank CAPTCHA recovery", () => {
     },
   );
 });
+
+it("shows the semi-automatic import hint instead of a sync button for CTBC", async () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  const post = vi.fn();
+  const api = {
+    get: vi.fn((path: string) => {
+      if (path === "/api/sync-jobs")
+        return Promise.resolve([
+          syncJob({ id: "ctbc:all", connectorId: "ctbc" }),
+        ]);
+      if (path === "/api/connectors/ctbc/settings")
+        return Promise.resolve({
+          configured: true,
+          credentialsComplete: true,
+          sessionAvailable: false,
+        });
+      return Promise.resolve({});
+    }),
+    post,
+  } as unknown as ApiClient;
+  const { findByTestId, queryByRole } = render(
+    ConnectorPanel,
+    {
+      props: {
+        api,
+        connectorId: "ctbc",
+        demoMode: false,
+        title: "中國信託銀行",
+        fields: connectorFields.ctbc as ConnectorField[],
+      },
+    },
+    {
+      wrapper: QueryClientProvider,
+      wrapperProps: { client: queryClient },
+    },
+  );
+
+  expect((await findByTestId("ctbc-import-only")).textContent).toContain(
+    "半自動匯入",
+  );
+  expect(queryByRole("button", { name: "同步" })).toBeNull();
+  expect(post).not.toHaveBeenCalled();
+});

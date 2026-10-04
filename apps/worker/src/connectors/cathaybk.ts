@@ -91,6 +91,7 @@ type Scraped = {
   bankBalanceSnapshots: Array<Omit<BankBalanceSnapshot, "id" | "connectorId">>;
   bankTransactions: Array<Omit<BankTransaction, "id" | "connectorId">>;
   creditCardBills: Array<Omit<CreditCardBill, "id" | "connectorId">>;
+  warnings?: string[];
 };
 
 export function createCathaybkConnector(browser?: Fetcher) {
@@ -119,6 +120,7 @@ export function createCathaybkConnector(browser?: Fetcher) {
         creditCardBills,
         freshCookies,
         sessionExpiresAt,
+        warnings,
       } = await scrapeWithBrowser(browser, config);
 
       return {
@@ -132,6 +134,7 @@ export function createCathaybkConnector(browser?: Fetcher) {
           sessionExpiresAt,
           syncedAt: new Date().toISOString(),
         }),
+        ...(warnings?.length ? { warnings } : {}),
       };
     },
   };
@@ -247,6 +250,7 @@ async function scrapeWithBrowser(
       creditCardBills: cards.creditCardBills,
       freshCookies: trustedState.sessionCookies,
       sessionExpiresAt: trustedState.sessionExpiresAt,
+      ...(deposits.warnings?.length ? { warnings: deposits.warnings } : {}),
     };
   } catch (error) {
     console.error(
@@ -1128,11 +1132,76 @@ async function scrapeDomAccounts(page: Page): Promise<DomAccount[]> {
   });
 }
 
-// Maps lookbackDays to the period dropdown label in the bank UI
-function periodLabel(days: number): string {
-  if (days <= 30) return "近 30 天";
-  if (days <= 90) return "近 90 天";
-  return "近 1 年";
+const CHINESE_DIGITS: Record<string, number> = {
+  一: 1,
+  二: 2,
+  兩: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+};
+
+function parseCathayCount(text: string): number | undefined {
+  if (/^\d+$/.test(text)) return Number(text);
+  // 一、三、十、十二、二十
+  const match = /^([一二兩三四五六七八九])?(十)?([一二三四五六七八九])?$/.exec(
+    text,
+  );
+  if (!match || (!match[1] && !match[2])) return undefined;
+  if (!match[2]) return match[3] ? undefined : CHINESE_DIGITS[match[1]!];
+  const tens = match[1] ? CHINESE_DIGITS[match[1]]! : 1;
+  const ones = match[3] ? CHINESE_DIGITS[match[3]]! : 0;
+  return tens * 10 + ones;
+}
+
+/**
+ * 把期間選項文字換算成天數，例如「近 90 天」「近3個月」「近三個月」「近1年」「近一週」。
+ * 無法辨識時回傳 undefined。
+ */
+export function cathayPeriodDays(label: string): number | undefined {
+  const text = label.replace(/\s+/g, "");
+  const match =
+    /^(?:近|最近|前)?(\d+|[一二兩三四五六七八九十]+)(天|日|週|周|星期|個?月|年)(?:內)?$/.exec(
+      text,
+    );
+  if (!match) return undefined;
+  const count = parseCathayCount(match[1]!);
+  if (!count) return undefined;
+  const unit = match[2]!;
+  if (unit === "天" || unit === "日") return count;
+  if (unit === "週" || unit === "周" || unit === "星期") return count * 7;
+  if (unit.endsWith("月")) return count * 30;
+  return count * 365;
+}
+
+/**
+ * 選出涵蓋所需天數的最短期間；都不夠長時選最長的。回傳選項索引，沒有可辨識的選項時回傳 -1。
+ */
+export function pickCathayPeriodOption(
+  options: readonly string[],
+  days: number,
+): number {
+  let best = -1;
+  let bestDays = 0;
+  options.forEach((option, index) => {
+    const optionDays = cathayPeriodDays(option);
+    if (optionDays === undefined) return;
+    const bestCovers = best >= 0 && bestDays >= days;
+    const covers = optionDays >= days;
+    if (
+      best < 0 ||
+      (covers && (!bestCovers || optionDays < bestDays)) ||
+      (!covers && !bestCovers && optionDays > bestDays)
+    ) {
+      best = index;
+      bestDays = optionDays;
+    }
+  });
+  return best;
 }
 
 type CathayCombobox = "account" | "period";
@@ -1163,7 +1232,7 @@ export async function chooseCathayComboboxOption(
     ).find((candidate) => {
       const label = labelOf(candidate);
       return target === "period"
-        ? /^近\d+(天|個?月|年)$/.test(label)
+        ? !/\d{10,}/.test(label) && /(天|日|週|周|月|年)/.test(label)
         : /\d{10,}/.test(label);
     });
     if (!input) return false;
@@ -1205,16 +1274,105 @@ export async function chooseCathayComboboxOption(
   );
 }
 
+type CathayPeriodResult =
+  | { status: "selected"; label: string; days: number }
+  | { status: "default"; warning: string };
+
+/** 期間選單：讀出選項文字（只有期間，不含帳號）在 Node 端挑選，再點擊該選項。 */
+async function chooseCathayPeriodOption(
+  page: Page,
+  days: number,
+): Promise<{ found: boolean; options: string[]; chosen?: string }> {
+  const marked = await page.evaluate(() => {
+    const labelOf = (input: HTMLInputElement) => {
+      let node: HTMLElement | null = input;
+      for (let depth = 0; depth < 5 && node; depth += 1) {
+        node = node.parentElement;
+        const text = (node?.innerText ?? "").replace(/\s+/g, "");
+        if (text) return text;
+      }
+      return "";
+    };
+    const input = Array.from(
+      document.querySelectorAll<HTMLInputElement>("input[role='combobox']"),
+    ).find((candidate) => {
+      const label = labelOf(candidate);
+      return !/\d{10,}/.test(label) && /(天|日|週|周|月|年)/.test(label);
+    });
+    if (!input) return false;
+    input.dataset.cathayCombobox = "period";
+    return true;
+  });
+  if (!marked) return { found: false, options: [] };
+
+  await page.focus('[data-cathay-combobox="period"]');
+  await page.keyboard.press("ArrowDown");
+  await page
+    .waitForFunction(
+      () =>
+        document.querySelectorAll("[role='option'], [id*='-option-']").length >
+        0,
+      { timeout: 5000 },
+    )
+    .catch(() => null);
+  const options = await page.evaluate(() =>
+    Array.from(
+      document.querySelectorAll<HTMLElement>(
+        "[role='option'], [id*='-option-']",
+      ),
+    ).map((option) => (option.textContent ?? "").replace(/\s+/g, " ").trim()),
+  );
+  const index = pickCathayPeriodOption(options, days);
+  if (index < 0) {
+    await page.keyboard.press("Escape").catch(() => null);
+    return { found: true, options };
+  }
+  await page.evaluate((target: number) => {
+    Array.from(
+      document.querySelectorAll<HTMLElement>(
+        "[role='option'], [id*='-option-']",
+      ),
+    )[target]?.click();
+  }, index);
+  return { found: true, options, chosen: options[index] };
+}
+
+/**
+ * 選擇交易期間。國泰改版導致選單或選項無法辨識時，不讓整次同步失敗：沿用頁面預設期間
+ * 繼續，回傳警告，並記錄期間選項文字（不含帳號）供之後對照。
+ */
 async function selectTransactionPeriod(
   page: Page,
   days: number,
-): Promise<void> {
-  const label = periodLabel(days);
-  if (label === "近 30 天") return; // default, no action needed
-  if (!(await chooseCathayComboboxOption(page, "period", label))) {
-    throw new Error(`Cathay Bank period option "${label}" was not found.`);
+): Promise<CathayPeriodResult> {
+  const result = await chooseCathayPeriodOption(page, days);
+  const chosenDays = result.chosen
+    ? cathayPeriodDays(result.chosen)
+    : undefined;
+  if (result.chosen && chosenDays !== undefined) {
+    console.log(`[cathaybk] set period to "${result.chosen}"`);
+    if (chosenDays < days) {
+      return {
+        status: "default",
+        warning: `國泰存款明細最長只能查「${result.chosen}」，較早的交易可能未取得。`,
+      };
+    }
+    return { status: "selected", label: result.chosen, days: chosenDays };
   }
-  console.log(`[cathaybk] set period to "${label}"`);
+  console.warn(
+    JSON.stringify({
+      event: "cathaybk_period_option_unrecognized",
+      comboboxFound: result.found,
+      // 期間選項只含「近 N 天」之類文字；仍遮蔽長數字以防誤含帳號。
+      options: result.options
+        .slice(0, 20)
+        .map((option) => option.replace(/\d{5,}/g, "#").slice(0, 40)),
+    }),
+  );
+  return {
+    status: "default",
+    warning: "國泰存款明細的期間選單改版，本次只取得頁面預設期間的交易。",
+  };
 }
 
 function waitForDepositTransactions(page: Page) {
@@ -1239,6 +1397,7 @@ async function scrapeDeposits(
   const bankAccounts: Scraped["bankAccounts"] = [];
   const bankBalanceSnapshots: Scraped["bankBalanceSnapshots"] = [];
   const bankTransactions: Scraped["bankTransactions"] = [];
+  const warnings: string[] = [];
   const asOfAt = new Date().toISOString();
 
   await page.goto(DEPOSIT_OVERVIEW_URL, {
@@ -1331,7 +1490,10 @@ async function scrapeDeposits(
     }
     assertCathayNotLoggedOut(page);
 
-    await selectTransactionPeriod(page, lookbackDays);
+    const period = await selectTransactionPeriod(page, lookbackDays);
+    if (period.status === "default" && !warnings.includes(period.warning)) {
+      warnings.push(period.warning);
+    }
     // Let any query triggered by switching the selectors settle first.
     await page
       .waitForNetworkIdle({ idleTime: 500, timeout: 10000 })
@@ -1369,7 +1531,7 @@ async function scrapeDeposits(
     }
     const details: TransferDetail[] = datas.flatMap((d) => d.details ?? []);
     console.log(
-      `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: ${details.length} tx (period=${periodLabel(lookbackDays)})`,
+      `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: ${details.length} tx (period=${period.status === "selected" ? period.label : "default"})`,
     );
 
     appendCathayDepositTransactions(
@@ -1385,6 +1547,7 @@ async function scrapeDeposits(
     bankBalanceSnapshots,
     bankTransactions,
     creditCardBills: [],
+    ...(warnings.length ? { warnings } : {}),
   };
 }
 

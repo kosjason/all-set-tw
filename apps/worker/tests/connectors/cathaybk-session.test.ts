@@ -18,7 +18,9 @@ import {
   chooseCathayComboboxOption,
   completeCathayTrustedDeviceSetup,
   createCathaybkConnector,
+  cathayPeriodDays,
   dismissCathaySystemMessageIfPresent,
+  pickCathayPeriodOption,
   isCathayAuthenticatedUrl,
   loginCathay,
   normalizeCathayAuthorizedAt,
@@ -1251,5 +1253,51 @@ describe("Cathay credit card overview", () => {
       unpaidAmount: 0,
       noPaymentNeeded: true,
     });
+  });
+});
+
+describe("Cathay transaction period options", () => {
+  it.each([
+    ["近 30 天", 30],
+    ["近90天", 90],
+    ["近 3 個月", 90],
+    ["近三個月", 90],
+    ["近六個月", 180],
+    ["近十二個月", 360],
+    ["近 1 年", 365],
+    ["近一週", 7],
+    ["最近 90 日", 90],
+    ["近90天內", 90],
+  ])("reads %s as %i days", (label, days) => {
+    expect(cathayPeriodDays(label)).toBe(days);
+  });
+
+  it.each(["自訂", "2026/09/01", "近期", "近十一十天", ""])(
+    "does not read %s",
+    (label) => {
+      expect(cathayPeriodDays(label)).toBeUndefined();
+    },
+  );
+
+  it("picks the shortest option that covers the window", () => {
+    expect(
+      pickCathayPeriodOption(
+        ["近 1 個月", "近 3 個月", "近 6 個月", "自訂"],
+        90,
+      ),
+    ).toBe(1);
+    expect(
+      pickCathayPeriodOption(["近 30 天", "近 90 天", "近 1 年"], 90),
+    ).toBe(1);
+    expect(pickCathayPeriodOption(["近 1 年", "近 6 個月"], 90)).toBe(1);
+  });
+
+  it("falls back to the longest option when none is long enough", () => {
+    expect(pickCathayPeriodOption(["近 7 天", "近 30 天", "自訂"], 90)).toBe(1);
+  });
+
+  it("returns -1 when no option is recognised", () => {
+    expect(pickCathayPeriodOption(["自訂", "全部"], 90)).toBe(-1);
+    expect(pickCathayPeriodOption([], 90)).toBe(-1);
   });
 });
