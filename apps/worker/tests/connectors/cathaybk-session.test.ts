@@ -1390,14 +1390,29 @@ describe("Cathay period combobox", () => {
     ).resolves.toMatchObject({ chosen: "近 90 天", applied: false });
   });
 
-  it("does not press Escape when the menu did not open", async () => {
+  it("closes the menu when no option could be read", async () => {
     const { page } = setup([]);
 
     await expect(
       chooseCathayPeriodOption(page as never, 90, fast),
     ).resolves.toEqual({ found: true, options: [] });
-    expect(page.keyboard.press).toHaveBeenCalledTimes(1);
-    expect(page.keyboard.press).toHaveBeenCalledWith("ArrowDown");
+    expect(page.keyboard.press).toHaveBeenLastCalledWith("Escape");
+  });
+
+  it("falls back to visible options when ids do not follow the input id", async () => {
+    // 自訂 inputId 時，選項 id 與輸入框 id 前綴對不上；改讀目前看得到的選項。
+    const { page, optionElements } = setup([
+      ["react-select-7-option-0", "近1個月"],
+      ["react-select-7-option-1", "近3個月"],
+    ]);
+    for (const option of optionElements) {
+      (option as unknown as { offsetParent: unknown }).offsetParent = {};
+    }
+
+    await expect(
+      chooseCathayPeriodOption(page as never, 90, fast),
+    ).resolves.toMatchObject({ chosen: "近3個月", applied: true });
+    expect(optionElements[1]!.click).toHaveBeenCalledOnce();
   });
 
   it("closes the menu when no option is recognised", async () => {

@@ -1338,22 +1338,35 @@ export function cathayPeriodPageAction(
   if (!marked)
     return action === "options" ? [] : action === "label" ? "" : false;
   if (action === "label") return labelOf(marked);
+  const OPTION = "[role='option'], [id*='-option-']";
+  // 依序：react-select 的 `<id>-option-N`（自訂 inputId 時對不上）、aria-controls
+  // listbox、期間選單所在容器內的選項、頁面上目前看得到的選項（同時只會開一個選單）。
   const prefix = /^(.*)-input$/.exec(marked.id)?.[1];
-  let options: HTMLElement[] = [];
-  if (prefix) {
-    options = Array.from(
-      document.querySelectorAll<HTMLElement>("[id*='-option-']"),
-    ).filter((option) => option.id.startsWith(`${prefix}-option-`));
-  } else {
+  let options: HTMLElement[] = prefix
+    ? Array.from(
+        document.querySelectorAll<HTMLElement>("[id*='-option-']"),
+      ).filter((option) => option.id.startsWith(`${prefix}-option-`))
+    : [];
+  if (options.length === 0) {
     const listId = marked.getAttribute("aria-controls");
     const list = listId ? document.getElementById(listId) : null;
-    options = list
-      ? Array.from(
-          list.querySelectorAll<HTMLElement>(
-            "[role='option'], [id*='-option-']",
-          ),
-        )
-      : [];
+    if (list) options = Array.from(list.querySelectorAll<HTMLElement>(OPTION));
+  }
+  let container: HTMLElement | null = marked.parentElement;
+  for (
+    let depth = 0;
+    options.length === 0 && container && depth < 8;
+    depth += 1
+  ) {
+    if (typeof container.querySelectorAll === "function") {
+      options = Array.from(container.querySelectorAll<HTMLElement>(OPTION));
+    }
+    container = container.parentElement;
+  }
+  if (options.length === 0) {
+    options = Array.from(document.querySelectorAll<HTMLElement>(OPTION)).filter(
+      (option) => option.offsetParent !== null,
+    );
   }
   if (action === "options") {
     return options.map((option) =>
@@ -1402,8 +1415,12 @@ export async function chooseCathayPeriodOption(
     (value) => Array.isArray(value) && value.length > 0,
     timeouts.optionsMs,
   )) as string[];
-  // 選單沒打開就不按 Escape，避免作用在已關閉的選單上。
-  if (options.length === 0) return { found: true, options };
+  // 沒點到選項一律按 Escape 關閉選單：選單若其實開著卻讀不到選項，留著會讓之後的
+  // 帳號選單讀到期間選項。react-select 預設 Escape 不清除已選的值。
+  if (options.length === 0) {
+    await page.keyboard.press("Escape").catch(() => null);
+    return { found: true, options };
+  }
   const index = pickCathayPeriodOption(options, days);
   const chosen = index >= 0 ? options[index] : undefined;
   if (
