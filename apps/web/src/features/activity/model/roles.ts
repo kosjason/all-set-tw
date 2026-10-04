@@ -123,6 +123,8 @@ export function activityRoleReasonLabel(
   switch (reason) {
     case "override":
       return "你手動指定的角色";
+    case "invoice_override":
+      return "依你在配對發票上指定的代墊";
     case "calculation_preference":
       return "依你在這筆交易設定的「是否計入收支」";
     case "own_account":

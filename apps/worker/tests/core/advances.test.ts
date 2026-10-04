@@ -214,7 +214,7 @@ describe("advances and e-invoice matching", () => {
     expect(carried).toMatchObject({
       economicRole: "advance",
       advanceCounterparty: "Irene",
-      roleReason: "override",
+      roleReason: "invoice_override",
     });
     // 交易自己有 override 時以交易為準。
     const [kept] = carryInvoiceAdvancesToTransactions(

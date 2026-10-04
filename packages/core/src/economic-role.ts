@@ -124,6 +124,11 @@ export interface ActivityRef {
 /** 角色的判定依據，供畫面說明與除錯；不影響金額。 */
 export type EconomicRoleReason =
   | "override"
+  /**
+   * 使用者在已配對的發票上指定了代墊，角色帶到這筆交易；設定仍存在發票上，
+   * 交易本身沒有 override（不能從交易「恢復自動判斷」）。
+   */
+  | "invoice_override"
   | "calculation_preference"
   | "own_account"
   | "unsynced_card"
@@ -454,7 +459,8 @@ export function deriveInvoiceEconomicRoles<I extends MatchingInvoice>(
   const unmatchedSpending = transactions.filter(
     (transaction) =>
       !matches.transactionToInvoice.has(transaction.id) &&
-      transaction.economicRole === "spending" &&
+      (transaction.economicRole === "spending" ||
+        transaction.economicRole === "advance") &&
       transaction.duplicateOf == null &&
       transaction.currency === "TWD" &&
       transaction.amount < 0 &&
@@ -954,10 +960,10 @@ export function carryInvoiceAdvancesToTransactions<
 ): T[] {
   const carried = new Map<string, EconomicRoleFields>();
   for (const fields of invoiceRoles.values()) {
+    // 只帶代墊（購買發票標成收回代墊沒有意義）；沒有對象的舊資料也帶，彙總時自然略過。
     if (
-      !isAdvanceRole(fields.economicRole) ||
+      fields.economicRole !== "advance" ||
       fields.roleReason !== "override" ||
-      !fields.advanceCounterparty ||
       fields.duplicateOf?.kind !== "bank_transaction"
     )
       continue;
@@ -972,9 +978,9 @@ export function carryInvoiceAdvancesToTransactions<
       ...transaction,
       economicRole: fields.economicRole,
       reviewStatus: "confirmed",
-      roleReason: "override",
+      roleReason: "invoice_override",
       investmentEventKind: null,
-      advanceCounterparty: fields.advanceCounterparty,
+      advanceCounterparty: fields.advanceCounterparty ?? null,
     };
   });
 }

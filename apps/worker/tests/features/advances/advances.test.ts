@@ -135,6 +135,36 @@ describe("advances", () => {
     });
   });
 
+  it("matches the e-invoice of an advance instead of counting it as spending", async () => {
+    await db
+      .prepare(
+        "INSERT INTO invoices (id, connector_id, source_id, invoice_date, seller_name, amount, raw_payload, created_at, updated_at) VALUES ('inv-phone', 'einvoice', 'inv-phone', '2026-09-29', '虛構電信門市', 31300, ?1, ?2, ?2)",
+      )
+      .bind(JSON.stringify({ detail: { invStatus: "開立" } }), CREATED)
+      .run();
+    const summary = (await (
+      await request("/activity/summary?month=2026-09")
+    ).json()) as { months: ActivityMonthSummary[] };
+    // 發票併入代墊的刷卡，不另算消費，代墊也只算一次。
+    expect(summary.months[0]).toMatchObject({
+      spending: 200,
+      advanceAmount: 31300,
+      advanceCount: 1,
+    });
+    const items = (await (
+      await request("/activity/items?month=2026-09")
+    ).json()) as {
+      items: Array<{ id: string; duplicateOf?: { id: string } | null }>;
+    };
+    expect(
+      items.items.find((item) => item.id === "inv-phone")?.duplicateOf,
+    ).toMatchObject({ id: "phone" });
+    const advances = await getAdvances(db, NOW);
+    expect(
+      advances.counterparties[0]!.entries.map((entry) => entry.id),
+    ).toEqual(["phone", "repay"]);
+  });
+
   it("sums each counterparty across months, case-insensitively", async () => {
     const response = await request("/activity/advances");
     expect(response.status).toBe(200);
