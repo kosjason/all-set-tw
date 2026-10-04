@@ -695,6 +695,7 @@ async function collectDepositTransactions(
   let usedPageResults = false;
   let missingWithBalance = 0;
   let missing = 0;
+  let missingZeroBalance = 0;
   // 使用者有在明細頁查看時，其他帳戶也不重送：工具重送一律 H404（差在頁面網址的防護參數，
   // 工具不重現），只會對網銀多送注定失敗的請求。
   const pageSeen =
@@ -757,15 +758,23 @@ async function collectDepositTransactions(
     if (items === null) {
       missing += 1;
       // 餘額為 0 的帳戶不算遺漏，避免閒置帳戶讓每次匯入都帶警告。
-      if (balance !== 0) missingWithBalance += 1;
+      if (balance === 0) missingZeroBalance += 1;
+      else missingWithBalance += 1;
       continue;
     }
     for (const item of items) {
       transactions.push({ ...item, sourceAccountId: accountId });
     }
   }
-  if (missing > 0 && missing < accounts.length) {
-    log(`存款明細：${missing} 個帳戶未取得（未在明細頁查看）`);
+  if (missingWithBalance > 0 && missing < accounts.length) {
+    log(
+      `存款明細：${missingWithBalance} 個有餘額的帳戶未取得（未在明細頁查看）`,
+    );
+  }
+  if (missingZeroBalance > 0 && missing < accounts.length) {
+    log(
+      `存款明細：${missingZeroBalance} 個餘額為 0 的帳戶未取得明細（不列為警告）`,
+    );
   }
 
   return {
@@ -918,7 +927,7 @@ async function collectPagedCardItems(
   return { rsData: { ...data, allItems } };
 }
 
-/** 存款總覽的帳戶與餘額；餘額無法解析時為 null。 */
+/** 存款總覽的帳戶與餘額；餘額去掉千分位、貨幣符號與空白後仍無法解析時為 null。 */
 export function extractDepositAccounts(payload) {
   const twd = recordValue(responseData(payload).twdAcctSummaryResponse);
   const demand = recordValue(twd.demDepBalSummaryResponse);
@@ -926,19 +935,17 @@ export function extractDepositAccounts(payload) {
     if (!isRecord(value)) return [];
     const accountId = stringValue(value.accountId).trim();
     if (!accountId) return [];
-    const balance = numberValue(value.balance);
-    return [{ accountId, balance: balance === undefined ? null : balance }];
+    const text =
+      typeof value.balance === "number"
+        ? String(value.balance)
+        : stringValue(value.balance).replace(/NT\$|[$,\s]/gi, "");
+    const balance = text ? Number(text) : Number.NaN;
+    return [{ accountId, balance: Number.isFinite(balance) ? balance : null }];
   });
 }
 
 export function extractDepositAccountIds(payload) {
-  const twd = recordValue(responseData(payload).twdAcctSummaryResponse);
-  const demand = recordValue(twd.demDepBalSummaryResponse);
-  return arrayValue(demand.infoList).flatMap((value) => {
-    if (!isRecord(value)) return [];
-    const accountId = stringValue(value.accountId).trim();
-    return accountId ? [accountId] : [];
-  });
+  return extractDepositAccounts(payload).map((account) => account.accountId);
 }
 
 function selectTransactionAccountId(payload, requestedAccountId) {
@@ -1328,6 +1335,7 @@ export class RequestTemplateWatcher {
     while (!shouldStop() && Date.now() < deadline) {
       if (
         this.#pageInFlight.size === 0 &&
+        this.#classifying.size === 0 &&
         this.#capturing === 0 &&
         Date.now() - this.#lastPageActivity >= quietMs
       ) {
@@ -1434,9 +1442,10 @@ export class RequestTemplateWatcher {
       }
       if (this.#finishedWhileClassifying.has(key)) {
         void this.#captureDeposit(params.requestId, sessionId, body.rqData);
-      } else {
+      } else if (this.#pageInFlight.has(key)) {
         this.#pendingDeposits.set(key, body.rqData);
       }
+      // 其餘情況是分類期間就載入失敗或分頁已 detach，不擷取。
     }
     if (this.template) return;
     const template = extractRequestTemplate(
@@ -1874,7 +1883,7 @@ async function run(argv) {
     session = new PageApiSession(browser, watcher);
     if (options.depositWaitSeconds > 0 && !watcher.observedDepositQuery) {
       console.log(
-        `已偵測到登入。請點進存款帳戶的交易明細，看到明細後工具才開始查詢（最多等 ${options.depositWaitSeconds} 秒，沒點也會繼續）。`,
+        `已偵測到登入。請點進存款帳戶的交易明細，看到明細後工具才開始查詢（最多等 ${formatSeconds(options.depositWaitSeconds)}，沒點也會繼續）。`,
       );
       const observed = await watcher.waitForDepositQuery(
         options.depositWaitSeconds * 1_000,
@@ -1953,7 +1962,7 @@ async function run(argv) {
     }
     if (result.depositTransactionsUnavailable) {
       console.log(
-        "depositTransactionsUnavailable：存款交易明細未取得，仍匯入餘額與信用卡資料。",
+        "depositTransactionsUnavailable：有存款帳戶未取得交易明細，這些帳戶只匯入餘額。",
       );
     }
     if (options.dryRun) {
@@ -1988,6 +1997,10 @@ function safeErrorText(error) {
 // ---------------------------------------------------------------------------
 // 小工具
 // ---------------------------------------------------------------------------
+
+function formatSeconds(seconds) {
+  return seconds % 60 === 0 ? `${seconds / 60} 分鐘` : `${seconds} 秒`;
+}
 
 function requestKey(sessionId, requestId) {
   return `${sessionId ?? ""}:${requestId}`;

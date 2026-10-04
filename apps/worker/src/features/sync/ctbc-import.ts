@@ -12,7 +12,7 @@ import type { SyncOutcome } from "./service";
 const CONNECTOR_ID = "ctbc";
 
 export const CTBC_DEPOSIT_TRANSACTIONS_UNAVAILABLE_WARNING =
-  "中信網銀匯入未取得存款交易明細，本次僅更新餘額與信用卡資料。";
+  "中信網銀匯入有存款帳戶未取得交易明細，這些帳戶本次只更新餘額。";
 
 /** 匯入資料無法解析或不含任何帳戶；訊息固定，不包含原始資料。 */
 export class CtbcImportPayloadError extends Error {

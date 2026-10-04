@@ -6,6 +6,7 @@ import {
   CtbcWebImportError,
   depositQueryStrategies,
   describeEnvelopeDiff,
+  extractDepositAccounts,
   extractRequestTemplate,
   formatImportResult,
   formatResourceLog,
@@ -533,7 +534,7 @@ test("collectCtbcPayloads imports the page's own deposit results when replays fa
   ]);
   const output = lines.join("\n");
   assert.ok(output.includes("使用頁面查詢結果 1 筆"));
-  assert.ok(output.includes("1 個帳戶未取得"));
+  assert.ok(output.includes("1 個有餘額的帳戶未取得"));
   for (const secret of [ACCOUNT_A, ACCOUNT_B, "31520", "虛構"]) {
     assert.ok(!output.includes(secret), `log leaked ${secret}`);
   }
@@ -563,7 +564,14 @@ test("collectCtbcPayloads skips every replay once the page showed deposits", asy
     },
   ];
   const { call, calls } = fakeBank({ balances: ["5000", "0"] });
-  const result = await collectCtbcPayloads(call, { pageDeposits });
+  const lines = [];
+  const result = await collectCtbcPayloads(call, {
+    pageDeposits,
+    log: (line) => lines.push(line),
+  });
+  assert.ok(
+    lines.includes("存款明細：1 個餘額為 0 的帳戶未取得明細（不列為警告）"),
+  );
   assert.equal(result.depositStrategy, "page");
   // 沒看的 B 餘額為 0：不算遺漏，不帶警告。
   assert.equal(result.depositTransactionsUnavailable, false);
@@ -582,6 +590,44 @@ test("collectCtbcPayloads skips every replay once the page showed deposits", asy
     pageDeposits,
   });
   assert.equal(withBalance.depositTransactionsUnavailable, true);
+
+  // 全部帳戶都沒取得時，即使餘額都是 0 也要警告。
+  const nothing = await collectCtbcPayloads(
+    fakeBank({ balances: ["0", "NT$ 0"] }).call,
+  );
+  assert.equal(nothing.depositTransactionsUnavailable, true);
+});
+
+test("extractDepositAccounts normalizes balances and keeps unknown ones as null", () => {
+  const accounts = extractDepositAccounts({
+    code: "0000",
+    rsData: {
+      twdAcctSummaryResponse: {
+        demDepBalSummaryResponse: {
+          infoList: [
+            { accountId: "a1", balance: "1,234" },
+            { accountId: "a2", balance: "NT$0" },
+            { accountId: "a3", balance: 0 },
+            { accountId: "a4", balance: "" },
+            { accountId: "a5", balance: "不明" },
+            { accountId: "a6" },
+            { accountId: " ", balance: "1" },
+          ],
+        },
+      },
+    },
+  });
+  assert.deepEqual(
+    accounts.map((account) => [account.accountId, account.balance]),
+    [
+      ["a1", 1234],
+      ["a2", 0],
+      ["a3", 0],
+      ["a4", null],
+      ["a5", null],
+      ["a6", null],
+    ],
+  );
 });
 
 test("mergeDepositDetailLists keeps repeated records within one list", () => {
@@ -1072,5 +1118,27 @@ test("RequestTemplateWatcher does not count the tool's own requests as page acti
   await flush();
   assert.equal(await watcher.waitForQuiet(10, 1_000), true);
   assert.equal(watcher.observedDepositQuery, null);
+  assert.equal(watcher.pageDeposits.length, 0);
+});
+
+test("RequestTemplateWatcher is not quiet while a finished request is still being classified", async () => {
+  const { cdp, watcher, request, release } = await startWatcher();
+  request("r1", "s1");
+  cdp.emit("Network.loadingFinished", { requestId: "r1" }, "s1");
+  assert.equal(await watcher.waitForQuiet(10, 300), false);
+  release();
+  assert.equal(await watcher.waitForQuiet(10, 1_000), true);
+  assert.equal(watcher.pageDeposits.length, 1);
+});
+
+test("RequestTemplateWatcher settles when reading the response body fails", async () => {
+  const { cdp, watcher, request } = await startWatcher({
+    "Network.getResponseBody": () => Promise.reject(new Error("gone")),
+  });
+  request("r1", "s1", depositPostData());
+  await flush();
+  cdp.emit("Network.loadingFinished", { requestId: "r1" }, "s1");
+  assert.equal(await watcher.waitForPageDeposit(300), false);
+  assert.equal(await watcher.waitForQuiet(10, 1_000), true);
   assert.equal(watcher.pageDeposits.length, 0);
 });
