@@ -56,7 +56,7 @@
       rates: $rates.data,
     }),
   );
-  /** 所有信用卡合計為溢繳（正餘額）時，負債欄改標溢繳並計入資產。 */
+  /** 所有信用卡合計為溢繳（正餘額）時，負債欄改標溢繳；溢繳在淨資產中加回。 */
   const cardOverpaid = $derived(
     !summary.hasUnknownCardBalance && summary.cardDebt < 0,
   );
