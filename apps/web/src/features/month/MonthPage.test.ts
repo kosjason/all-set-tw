@@ -10,7 +10,7 @@ import {
   currentActivityMonthKey,
   type ActivityItem,
   type ActivityMonthSummary,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "@/shared/api/client";
 import { summaryFixture } from "@/testing/activity-summary";

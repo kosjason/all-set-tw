@@ -4,7 +4,7 @@ import type {
   EconomicRole,
   EconomicRoleOverride,
   EconomicRoleTargetKind,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import type { ApiClient } from "@/shared/api/client";
 import type {
   CategorizeRequest,

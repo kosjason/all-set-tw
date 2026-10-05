@@ -1,0 +1,1943 @@
+import type { SyncResult } from "../types";
+import { launchBrowserWithRetry } from "../browser.js";
+import puppeteer, {
+  type Browser,
+  type CookieParam,
+  type HTTPRequest,
+  type Page,
+} from "@cloudflare/puppeteer";
+import type {
+  BankAccount,
+  BankBalanceSnapshot,
+  BankTransaction,
+  CreditCardBill,
+} from "@taiwan-fin-hub/shared";
+import { BANK_SYNC_MONTHS } from "../sync-window";
+import { isNoCreditCardMessage } from "../credit-card-status";
+import { type CathaybkConfig } from "./protocol";
+import {
+  deriveCathayDepositCounterparty,
+  maskCathayDepositRaw,
+} from "./deposit-counterparty";
+import {
+  type CathayReplayResponse,
+  cathayReplayInPage,
+  classifyCathayReplay,
+  describeCathayTransferQuery,
+  replayableHeaders,
+  rewriteCathayTransferQuery,
+} from "./transfer-query";
+
+const LOGIN_URL = "https://www.cathaybk.com.tw/MyBank/";
+const DEPOSIT_OVERVIEW_URL =
+  "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0101_DepInq";
+const CREDIT_CARD_OVERVIEW_URL =
+  "https://www.cathaybk.com.tw/OnlineBanking/CQuery/C0101_BillOverview";
+const CREDIT_CARD_BILL_URL =
+  "https://www.cathaybk.com.tw/OnlineBanking/CQuery/C0102_BillInq";
+
+const API_DEPOSIT_TX = "B_ACCT_Q_TransferDetail";
+const OTP_SESSION_TTL_MS = 2 * 60 * 1000;
+const TRUSTED_DEVICE_NAME = "ALL SET 同步";
+const OTP_SUBMIT_LABEL_PATTERN = /驗證|確認|確定|送出|登入/;
+const TRUST_DEVICE_CONTEXT_PATTERN =
+  /登入安全再升級|立即啟用|信任裝置|設定裝置名稱|裝置名稱|裝置暱稱|確定加入/;
+const TRUST_DEVICE_CONFIRM_PATTERN =
+  /確定加入|確認加入|完成設定|^確定$|^確認$|^完成$/;
+
+export class CathayVerificationRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CathayVerificationRequiredError";
+  }
+}
+
+export class CathayOtpChannelRequiredError extends CathayVerificationRequiredError {
+  constructor(
+    message: string,
+    readonly browserSessionId: string,
+    readonly browserSessionExpiresAt: string,
+  ) {
+    super(message);
+    this.name = "CathayOtpChannelRequiredError";
+  }
+}
+
+export class CathayOtpRequiredError extends CathayVerificationRequiredError {
+  constructor(
+    message: string,
+    readonly channel: "email" | "sms",
+  ) {
+    super(message);
+    this.name = "CathayOtpRequiredError";
+  }
+}
+
+export class CathayOtpInvalidError extends CathayVerificationRequiredError {
+  constructor(
+    message = "國泰世華驗證碼錯誤或已逾時，請重新輸入或取得驗證碼。",
+  ) {
+    super(message);
+    this.name = "CathayOtpInvalidError";
+  }
+}
+
+export class CathayOtpSessionExpiredError extends CathayVerificationRequiredError {
+  constructor() {
+    super("國泰世華驗證工作階段已逾時，請重新同步後再取得驗證碼。");
+    this.name = "CathayOtpSessionExpiredError";
+  }
+}
+
+function maskAccountNumber(value: string) {
+  const suffix = value.slice(-4);
+  return suffix ? `***${suffix}` : "***";
+}
+
+type Scraped = {
+  bankAccounts: Array<Omit<BankAccount, "id" | "connectorId">>;
+  bankBalanceSnapshots: Array<Omit<BankBalanceSnapshot, "id" | "connectorId">>;
+  bankTransactions: Array<Omit<BankTransaction, "id" | "connectorId">>;
+  creditCardBills: Array<Omit<CreditCardBill, "id" | "connectorId">>;
+  warnings?: string[];
+};
+
+export function createCathaybkConnector(browser?: Fetcher) {
+  return {
+    id: "cathaybk" as const,
+    name: "國泰世華銀行 Cathay United Bank",
+
+    async sync(
+      config: CathaybkConfig,
+      _cursor?: string,
+    ): Promise<SyncResult<never>> {
+      if (!config.userId || !config.account || !config.password) {
+        throw new Error(
+          "Cathay United Bank requires userId (身分證字號), account (用戶代號), and password.",
+        );
+      }
+
+      if (!browser) {
+        throw new Error("Cathay United Bank requires the BROWSER binding.");
+      }
+
+      const {
+        bankAccounts,
+        bankBalanceSnapshots,
+        bankTransactions,
+        creditCardBills,
+        freshCookies,
+        sessionExpiresAt,
+        warnings,
+      } = await scrapeWithBrowser(browser, config);
+
+      return {
+        records: [],
+        bankAccounts,
+        bankBalanceSnapshots,
+        bankTransactions,
+        creditCardBills,
+        cursor: JSON.stringify({
+          sessionCookies: freshCookies,
+          sessionExpiresAt,
+          syncedAt: new Date().toISOString(),
+        }),
+        ...(warnings?.length ? { warnings } : {}),
+      };
+    },
+  };
+}
+
+async function scrapeWithBrowser(
+  browserBinding: Fetcher,
+  config: CathaybkConfig,
+) {
+  const reconnecting = Boolean(config.browserSessionId);
+  if (
+    reconnecting &&
+    (!config.browserSessionExpiresAt ||
+      new Date(config.browserSessionExpiresAt) <= new Date())
+  ) {
+    throw new CathayOtpSessionExpiredError();
+  }
+
+  const syncWindowDays = BANK_SYNC_MONTHS * 30;
+  let b: Browser | undefined;
+  let page: Page | undefined;
+  let preserveSession = false;
+  let loggedOut = false;
+
+  try {
+    console.log(
+      reconnecting
+        ? "[cathaybk] reconnecting to verification session"
+        : "[cathaybk] launching browser",
+    );
+    b = reconnecting
+      ? await connectCathayBrowser(browserBinding, config.browserSessionId!)
+      : await launchBrowserWithRetry(browserBinding, {
+          keep_alive: OTP_SESSION_TTL_MS,
+        });
+    const pages = await b.pages();
+    page = pages[0] ?? (await b.newPage());
+
+    await page.setViewport({ width: 1280, height: 800 });
+
+    if (config.browserSessionId) {
+      if (!config.otpChannel) {
+        await b.disconnect();
+        preserveSession = true;
+        throw new CathayOtpChannelRequiredError(
+          "請選擇以 Email 或簡訊接收國泰世華驗證碼。",
+          config.browserSessionId,
+          config.browserSessionExpiresAt!,
+        );
+      }
+      if (!config.otp) {
+        await sendCathayOtp(page, config.otpChannel);
+        await b.disconnect();
+        preserveSession = true;
+        throw new CathayOtpRequiredError(
+          config.otpChannel === "email"
+            ? "國泰世華 Email 驗證碼已寄出，請輸入驗證碼。"
+            : "國泰世華簡訊驗證碼已寄出，請輸入驗證碼。",
+          config.otpChannel,
+        );
+      }
+      try {
+        await submitCathayOtp(page, config.otp);
+      } catch (error) {
+        if (!(error instanceof CathayOtpInvalidError)) throw error;
+        await b.disconnect();
+        preserveSession = true;
+        throw error;
+      }
+    } else {
+      const restoredState = await restoreCathayTrustedState(page, config);
+      if (restoredState) {
+        console.log("[cathaybk] restored trusted browser state");
+      }
+      try {
+        await loginCathay(page, config);
+      } catch (error) {
+        if (!(error instanceof CathayVerificationRequiredError)) throw error;
+        const sessionId = b.sessionId();
+        const expiresAt = new Date(
+          Date.now() + OTP_SESSION_TTL_MS,
+        ).toISOString();
+        await b.disconnect();
+        preserveSession = true;
+        throw new CathayOtpChannelRequiredError(
+          "國泰世華要求額外驗證，請選擇 Email 或簡訊接收驗證碼。",
+          sessionId,
+          expiresAt,
+        );
+      }
+    }
+
+    console.log("[cathaybk] collecting deposit accounts");
+    const deposits = await scrapeDeposits(page, syncWindowDays);
+
+    console.log("[cathaybk] collecting credit cards");
+    const cards = await scrapeCreditCards(page);
+
+    const trustedState = await captureCathayTrustedState(page);
+    await logoutCathay(page);
+    loggedOut = true;
+
+    return {
+      bankAccounts: [...deposits.bankAccounts, ...cards.bankAccounts],
+      bankBalanceSnapshots: [
+        ...deposits.bankBalanceSnapshots,
+        ...cards.bankBalanceSnapshots,
+      ],
+      bankTransactions: [
+        ...deposits.bankTransactions,
+        ...cards.bankTransactions,
+      ],
+      creditCardBills: cards.creditCardBills,
+      freshCookies: trustedState.sessionCookies,
+      sessionExpiresAt: trustedState.sessionExpiresAt,
+      ...(deposits.warnings?.length ? { warnings: deposits.warnings } : {}),
+    };
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "cathaybk_scrape_failed",
+        errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR",
+      }),
+    );
+    throw error;
+  } finally {
+    if (!preserveSession && b) {
+      try {
+        if (!loggedOut && page) {
+          // Always logout so next run doesn't hit the "未完成正常的登出" interstitial
+          await logoutCathay(page);
+        }
+      } finally {
+        await b.close();
+      }
+    }
+  }
+}
+
+async function logoutCathay(page: Pick<Page, "goto">) {
+  console.log("[cathaybk] logging out");
+  await page
+    .goto("https://www.cathaybk.com.tw/OnlineBanking/Logout/Index", {
+      waitUntil: "networkidle2",
+      timeout: 30_000,
+    })
+    .catch(() => null);
+}
+
+type CathayTrustedStatePage = Pick<Page, "setCookie">;
+
+export async function restoreCathayTrustedState(
+  page: CathayTrustedStatePage,
+  config: Pick<CathaybkConfig, "sessionCookies">,
+) {
+  const cookies = parseCathayCookies(config.sessionCookies);
+  if (cookies.length === 0) return false;
+
+  await page.setCookie(...cookies);
+
+  return true;
+}
+
+export async function captureCathayTrustedState(page: Pick<Page, "cookies">) {
+  const cookies = (
+    await page.cookies(
+      LOGIN_URL,
+      DEPOSIT_OVERVIEW_URL,
+      CREDIT_CARD_OVERVIEW_URL,
+    )
+  ).filter(isCathayCookie);
+  const expires = cookies
+    .map((cookie) => cookie.expires)
+    .filter((value): value is number => typeof value === "number" && value > 0);
+
+  return {
+    sessionCookies: JSON.stringify(cookies),
+    sessionExpiresAt:
+      expires.length > 0
+        ? new Date(Math.max(...expires) * 1000).toISOString()
+        : undefined,
+  };
+}
+
+function parseCathayCookies(value: string | undefined): CookieParam[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isCathayCookie).map((cookie) => ({ ...cookie }));
+  } catch {
+    return [];
+  }
+}
+
+function isCathayCookie(value: unknown): value is CookieParam {
+  if (!value || typeof value !== "object") return false;
+  const cookie = value as Partial<CookieParam>;
+  if (typeof cookie.name !== "string" || typeof cookie.value !== "string") {
+    return false;
+  }
+  const domain = String(cookie.domain ?? "")
+    .replace(/^\./, "")
+    .toLowerCase();
+  return (
+    cookie.name === "CUB.eBank.DeviceId" &&
+    (domain === "cathaybk.com.tw" || domain.endsWith(".cathaybk.com.tw"))
+  );
+}
+
+async function connectCathayBrowser(
+  browserBinding: Fetcher,
+  sessionId: string,
+): Promise<Browser> {
+  const sessions = await puppeteer.sessions(browserBinding).catch(() => []);
+  const session = sessions.find(
+    (candidate) => candidate.sessionId === sessionId,
+  );
+  if (!session) throw new CathayOtpSessionExpiredError();
+  try {
+    return await puppeteer.connect(browserBinding, sessionId);
+  } catch {
+    throw new CathayOtpSessionExpiredError();
+  }
+}
+
+export async function sendCathayOtp(
+  page: Pick<Page, "click" | "evaluate" | "waitForSelector">,
+  channel: "email" | "sms",
+) {
+  const selector = channel === "email" ? "#js-otp-email-send" : "#js-otp-send";
+  await page.evaluate((selectedChannel) => {
+    const selector =
+      selectedChannel === "email" ? "#js-otp-email-send" : "#js-otp-send";
+    const target = document.querySelector<HTMLElement>(selector);
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) return;
+    const expectedText =
+      selectedChannel === "email" ? /Email|電子信箱/i : /簡訊|手機/;
+    const toggles = Array.from(
+      document.querySelectorAll<HTMLElement>(".js-otp-change-view"),
+    );
+    (
+      toggles.find((toggle) => expectedText.test(toggle.innerText)) ??
+      toggles[0]
+    )?.click();
+  }, channel);
+  await page.waitForSelector(selector, { visible: true, timeout: 15_000 });
+  await page.click(selector);
+  await page.waitForSelector(
+    '.js-otp-view input:not([type="hidden"]), .login-otp input:not([type="hidden"]), input[autocomplete="one-time-code"], input[inputmode="numeric"], input[name*="otp" i], input[id*="otp" i], input[placeholder*="後6位數字"]',
+    { timeout: 15_000 },
+  );
+}
+
+export async function submitCathayOtp(
+  page: Pick<
+    Page,
+    | "click"
+    | "evaluate"
+    | "type"
+    | "url"
+    | "waitForFunction"
+    | "waitForNavigation"
+  >,
+  otp: string,
+) {
+  const otpMatch = otp
+    .trim()
+    .toUpperCase()
+    .match(/^(?:[A-Z]{2,8}-)?(\d{4,8})$/);
+  if (!otpMatch) {
+    throw new CathayOtpInvalidError(
+      "請輸入驗證碼後 4 至 8 位數字；英文前綴可省略。",
+    );
+  }
+  const normalizedOtp = otpMatch[1];
+
+  const selectors = await page.evaluate((submitLabelPatternSource) => {
+    const submitLabelPattern = new RegExp(submitLabelPatternSource);
+    const visible = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      return !element.hidden && rect.width > 0 && rect.height > 0;
+    };
+    const inputs = Array.from(
+      document.querySelectorAll<HTMLInputElement>(
+        '.js-otp-view input:not([type="hidden"]), .login-otp input:not([type="hidden"]), input[autocomplete="one-time-code"], input[inputmode="numeric"], input[name*="otp" i], input[id*="otp" i], input[name*="code" i], input[placeholder*="後6位數字"]',
+      ),
+    );
+    const input =
+      inputs.find(
+        (candidate) =>
+          visible(candidate) && /後\s*6\s*位數字/.test(candidate.placeholder),
+      ) ??
+      inputs.find(
+        (candidate) =>
+          visible(candidate) &&
+          candidate.maxLength >= 4 &&
+          candidate.maxLength <= 8,
+      ) ??
+      inputs.find(visible);
+    if (input) input.dataset.cathayOtpInput = "true";
+
+    const verificationRoot =
+      input?.closest<HTMLElement>("form, [role='dialog'], main, section") ??
+      document;
+    const controls = Array.from(
+      verificationRoot.querySelectorAll<HTMLElement>(
+        'button, input[type="submit"], input[type="button"], [role="button"]',
+      ),
+    );
+    const submit = controls.find((candidate) => {
+      const text = `${candidate.textContent ?? ""} ${candidate.getAttribute("value") ?? ""}`;
+      return visible(candidate) && submitLabelPattern.test(text);
+    });
+    if (submit) submit.dataset.cathayOtpSubmit = "true";
+
+    const trustCheckbox = Array.from(
+      document.querySelectorAll<HTMLInputElement>(
+        'input[type="checkbox"], input[type="radio"]',
+      ),
+    ).find((candidate) => {
+      const explicitLabel = candidate.id
+        ? document.querySelector<HTMLLabelElement>(
+            `label[for="${CSS.escape(candidate.id)}"]`,
+          )?.innerText
+        : "";
+      const context = `${explicitLabel ?? ""} ${candidate.parentElement?.innerText ?? ""}`;
+      return (
+        /加入.*信任|信任.*裝置|常用.*裝置|記住.*裝置/.test(context) &&
+        !/不要|取消|移除/.test(context)
+      );
+    });
+    if (trustCheckbox && !trustCheckbox.checked) trustCheckbox.click();
+    return { hasInput: Boolean(input), hasSubmit: Boolean(submit) };
+  }, OTP_SUBMIT_LABEL_PATTERN.source);
+
+  if (!selectors.hasInput) {
+    throw new CathayVerificationRequiredError(
+      "國泰世華驗證頁面格式已變更，找不到驗證碼輸入欄。",
+    );
+  }
+  if (!selectors.hasSubmit) {
+    throw new CathayVerificationRequiredError(
+      "國泰世華驗證頁面格式已變更，找不到「確定」按鈕。",
+    );
+  }
+
+  await page.click('[data-cathay-otp-input="true"]', { clickCount: 3 });
+  await page.type('[data-cathay-otp-input="true"]', normalizedOtp);
+  const verificationResult = Promise.race([
+    page
+      .waitForNavigation({
+        waitUntil: "domcontentloaded",
+        timeout: 45_000,
+      })
+      .catch(() => null),
+    page
+      .waitForFunction(
+        () =>
+          (window.location.href.includes("/OnlineBanking/") &&
+            document.querySelector('[data-cathay-otp-input="true"]') ===
+              null) ||
+          /登入安全再升級|立即啟用|信任裝置|設定裝置名稱|確定加入|啟用成功/.test(
+            (document.body?.innerText ?? "").replace(/\s+/g, ""),
+          ) ||
+          /驗證碼.*(錯誤|失敗|逾時)/.test(document.body?.innerText ?? ""),
+        { timeout: 45_000 },
+      )
+      .catch(() => null),
+  ]);
+  await page.click('[data-cathay-otp-submit="true"]');
+  await verificationResult;
+  const verified = await page.evaluate(() => {
+    const normalizedText = (document.body?.innerText ?? "").replace(/\s+/g, "");
+    return (
+      (window.location.href.includes("/OnlineBanking/") &&
+        document.querySelector('[data-cathay-otp-input="true"]') === null) ||
+      /登入安全再升級|立即啟用|信任裝置|設定裝置名稱|確定加入|啟用成功/.test(
+        normalizedText,
+      )
+    );
+  });
+  if (!verified) {
+    throw new CathayOtpInvalidError();
+  }
+  const trustedDeviceReady = await completeCathayTrustedDeviceSetup(page);
+  if (!trustedDeviceReady) {
+    throw new CathayVerificationRequiredError(
+      "國泰世華已通過 OTP，但未完成加入信任裝置。",
+    );
+  }
+}
+
+export async function completeCathayTrustedDeviceSetup(
+  page: Pick<Page, "click" | "evaluate" | "type" | "waitForFunction">,
+) {
+  await page
+    .waitForFunction(
+      () =>
+        document.cookie.includes("CUB.eBank.DeviceId=") ||
+        /登入安全再升級|立即啟用|信任裝置|設定裝置名稱|裝置名稱|確定加入|啟用成功/.test(
+          (document.body?.innerText ?? "").replace(/\s+/g, ""),
+        ),
+      { timeout: 15_000 },
+    )
+    .catch(() => null);
+
+  const findStep = () =>
+    page.evaluate(
+      (patterns) => {
+        const trustContextPattern = new RegExp(patterns.context);
+        const trustConfirmPattern = new RegExp(patterns.confirm);
+        const visible = (element: HTMLElement) => {
+          const rect = element.getBoundingClientRect();
+          return !element.hidden && rect.width > 0 && rect.height > 0;
+        };
+        const trustDialog = Array.from(
+          document.querySelectorAll<HTMLElement>(
+            '[role="dialog"], [aria-modal="true"]',
+          ),
+        ).find(
+          (dialog) =>
+            visible(dialog) &&
+            trustContextPattern.test(
+              (dialog.innerText ?? "").replace(/\s+/g, ""),
+            ),
+        );
+        const trustRoot =
+          trustDialog ??
+          (trustContextPattern.test(
+            (document.body?.innerText ?? "").replace(/\s+/g, ""),
+          )
+            ? document.body
+            : null);
+        const controls = Array.from(
+          trustRoot?.querySelectorAll<HTMLElement>(
+            'button, a, input[type="button"], input[type="submit"], [role="button"]',
+          ) ?? [],
+        );
+        const textOf = (element: HTMLElement) =>
+          `${element.textContent ?? ""} ${element.getAttribute("value") ?? ""}`
+            .replace(/\s+/g, "")
+            .trim();
+        const next = controls.find(
+          (control) =>
+            visible(control) &&
+            /立即啟用|啟用信任裝置|加入信任裝置|設定信任裝置/.test(
+              textOf(control),
+            ),
+        );
+        if (next) next.dataset.cathayTrustNext = "true";
+
+        const inputs = Array.from(
+          trustRoot?.querySelectorAll<HTMLInputElement>(
+            'input:not([type="hidden"]):not([type="password"])',
+          ) ?? [],
+        );
+        const nameInput = inputs.find((input) => {
+          const explicitLabel = input.id
+            ? document.querySelector<HTMLLabelElement>(
+                `label[for="${CSS.escape(input.id)}"]`,
+              )?.innerText
+            : "";
+          const context = [
+            input.name,
+            input.placeholder,
+            input.getAttribute("aria-label"),
+            explicitLabel,
+            input.parentElement?.innerText,
+          ]
+            .filter(Boolean)
+            .join(" ");
+          return (
+            visible(input) &&
+            /裝置名稱|裝置暱稱|方便記憶的裝置名稱/.test(context)
+          );
+        });
+        if (nameInput) nameInput.dataset.cathayTrustName = "true";
+
+        const confirm = controls.find(
+          (control) =>
+            visible(control) && trustConfirmPattern.test(textOf(control)),
+        );
+        if (confirm) confirm.dataset.cathayTrustConfirm = "true";
+
+        return {
+          hasNext: Boolean(next),
+          hasNameInput: Boolean(nameInput),
+          hasConfirm: Boolean(confirm),
+          success:
+            document.cookie.includes("CUB.eBank.DeviceId=") ||
+            /啟用成功|已加入信任裝置/.test(
+              (document.body?.innerText ?? "").replace(/\s+/g, ""),
+            ),
+        };
+      },
+      {
+        context: TRUST_DEVICE_CONTEXT_PATTERN.source,
+        confirm: TRUST_DEVICE_CONFIRM_PATTERN.source,
+      },
+    );
+
+  let step = await findStep();
+  if (step.hasNext) {
+    await page.click('[data-cathay-trust-next="true"]');
+    await page
+      .waitForFunction(
+        () =>
+          /設定裝置名稱|裝置名稱|確定加入/.test(
+            (document.body?.innerText ?? "").replace(/\s+/g, ""),
+          ),
+        { timeout: 15_000 },
+      )
+      .catch(() => null);
+    step = await findStep();
+  }
+
+  if (!step.hasNameInput && !step.hasConfirm) return step.success;
+  if (!step.hasNameInput || !step.hasConfirm) {
+    console.warn(
+      JSON.stringify({
+        event: "cathaybk_trusted_device_controls_missing",
+        hasNext: step.hasNext,
+        hasNameInput: step.hasNameInput,
+        hasConfirm: step.hasConfirm,
+      }),
+    );
+    throw new CathayVerificationRequiredError(
+      "國泰世華已通過 OTP，但無法完成信任裝置設定。",
+    );
+  }
+
+  await page.click('[data-cathay-trust-name="true"]', { clickCount: 3 });
+  await page.type('[data-cathay-trust-name="true"]', TRUSTED_DEVICE_NAME);
+  await page.click('[data-cathay-trust-confirm="true"]');
+  await page
+    .waitForFunction(
+      () =>
+        document.cookie.includes("CUB.eBank.DeviceId=") ||
+        /啟用成功|已加入信任裝置/.test(
+          (document.body?.innerText ?? "").replace(/\s+/g, ""),
+        ),
+      { timeout: 15_000 },
+    )
+    .catch(() => null);
+  return page.evaluate(() => {
+    const normalizedText = (document.body?.innerText ?? "").replace(/\s+/g, "");
+    return (
+      document.cookie.includes("CUB.eBank.DeviceId=") ||
+      /啟用成功|已加入信任裝置/.test(normalizedText)
+    );
+  });
+}
+
+export type CathayLoginPage = Pick<
+  Page,
+  | "$"
+  | "click"
+  | "evaluate"
+  | "goto"
+  | "on"
+  | "type"
+  | "url"
+  | "waitForFunction"
+  | "waitForSelector"
+>;
+
+function safeCathayDiagnosticUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return "invalid-url";
+  }
+}
+
+function safeCathayDiagnosticOrigin(value: string) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return "invalid-origin";
+  }
+}
+
+function safeCathayDiagnosticMessage(value: string, secrets: string[] = []) {
+  let sanitized = value
+    .replace(/https?:\/\/[^\s"'<>]+/gi, (url) => safeCathayDiagnosticUrl(url))
+    .replace(/[A-Za-z0-9_-]{16,}/g, "[redacted]");
+  for (const secret of secrets) {
+    if (secret) sanitized = sanitized.split(secret).join("[redacted]");
+  }
+  return sanitized.slice(0, 240);
+}
+
+function attachCathaySafeDiagnostics(
+  page: CathayLoginPage,
+  config: CathaybkConfig,
+) {
+  const ignoredAbortedOrigins = new Set([
+    "https://ad.doubleclick.net",
+    "https://analytics.google.com",
+    "https://cathayunitedbank.tt.omtrdc.net",
+    "https://faro-collector-prod-ap-southeast-1.grafana.net",
+    "https://www.google.com",
+  ]);
+  const recordedResponses = new Set<string>();
+  const recordedFailures = new Set<string>();
+  const secrets = [
+    config.userId,
+    config.account,
+    config.password,
+    config.otp,
+  ].filter((value): value is string => Boolean(value));
+
+  page.on("pageerror", (error) => {
+    const diagnostic = JSON.stringify({
+      event: "cathaybk_page_error",
+      errorType: error.name,
+      message: safeCathayDiagnosticMessage(error.message, secrets),
+    });
+    if (error.name === "ReferenceError" && error.message.includes("getMbox")) {
+      console.warn(diagnostic);
+      return;
+    }
+    console.error(diagnostic);
+  });
+  page.on("requestfailed", (request) => {
+    const origin = safeCathayDiagnosticOrigin(request.url());
+    const errorText = safeCathayDiagnosticMessage(
+      request.failure()?.errorText ?? "unknown",
+      secrets,
+    );
+    if (errorText === "net::ERR_ABORTED" && ignoredAbortedOrigins.has(origin)) {
+      return;
+    }
+    const key = `${origin}:${errorText}`;
+    if (recordedFailures.size >= 20 || recordedFailures.has(key)) return;
+    recordedFailures.add(key);
+    console.warn(
+      JSON.stringify({
+        event: "cathaybk_request_failed",
+        origin,
+        errorText,
+      }),
+    );
+  });
+  page.on("response", (response) => {
+    const status = response.status();
+    if (status < 400) return;
+    const origin = safeCathayDiagnosticOrigin(response.url());
+    const key = `${origin}:${status}`;
+    if (recordedResponses.size >= 20 || recordedResponses.has(key)) return;
+    recordedResponses.add(key);
+    console.warn(
+      JSON.stringify({
+        event: "cathaybk_http_error",
+        origin,
+        status,
+      }),
+    );
+  });
+}
+
+async function logCathayLoginTimeout(page: CathayLoginPage, error: unknown) {
+  const state = await page
+    .evaluate(() => ({
+      customerIdCleared:
+        (document.querySelector<HTMLInputElement>("#CustID")?.value ?? "") ===
+        "",
+      userIdCleared:
+        (document.querySelector<HTMLInputElement>("#UserIdKeyin")?.value ??
+          "") === "",
+      passwordCleared:
+        (document.querySelector<HTMLInputElement>("#PasswordKeyin")?.value ??
+          "") === "",
+      encryptedUserIdReady: Boolean(
+        document.querySelector<HTMLInputElement>("#UserId")?.value,
+      ),
+      encryptedPasswordReady: Boolean(
+        document.querySelector<HTMLInputElement>("#Password")?.value,
+      ),
+      formMarkedSubmitting:
+        (window as typeof window & { blnSubmit?: boolean }).blnSubmit === true,
+      hasVisibleValidation: Array.from(
+        document.querySelectorAll<HTMLElement>(
+          ".control-group.was-validated .error-msg",
+        ),
+      ).some((element) => element.innerText.trim() !== ""),
+    }))
+    .catch(() => null);
+
+  console.error(
+    JSON.stringify({
+      event: "cathaybk_login_wait_failed",
+      errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR",
+      currentUrl: safeCathayDiagnosticUrl(page.url()),
+      state,
+    }),
+  );
+}
+
+async function dismissInterstitialIfPresent(
+  page: CathayLoginPage,
+): Promise<boolean> {
+  const hasWarning = await page
+    .evaluate(() => document.body.innerText.includes("未完成正常的登出程序"))
+    .catch(() => false);
+  if (hasWarning) {
+    console.log("[cathaybk] dismissing logout warning interstitial");
+    await page.evaluate(() => {
+      const btn = Array.from(
+        document.querySelectorAll<HTMLElement>("a, button"),
+      ).find((el) => el.textContent?.includes("回登入頁"));
+      btn?.click();
+    });
+    await page.waitForSelector("#CustID", { timeout: 15000 });
+  }
+  return hasWarning as boolean;
+}
+
+const CATHAY_LOGIN_MESSAGE = "#divSystemLoginMsgList.show";
+const MAX_CATHAY_LOGIN_MESSAGES = 20;
+/** 公告視窗 `btn-fill` 只會是這兩種動作；其他按鈕（例如啟用服務）一律不點。 */
+const CATHAY_LOGIN_MESSAGE_ACTIONS = new Set(["下一則", "我知道了"]);
+
+/**
+ * 登入頁的系統公告可能有多則（標題顯示 1/3 等）：`btn-fill` 在前幾則是「下一則」、
+ * 最後一則才是「我知道了」並關閉視窗，因此逐則點擊直到視窗關閉。只點已知動作，
+ * 遇到其他按鈕或超過上限時同步失敗，避免誤觸其他功能或公告循環。
+ */
+export async function dismissCathaySystemMessageIfPresent(
+  page: Pick<CathayLoginPage, "$" | "waitForSelector">,
+): Promise<boolean> {
+  let clicks = 0;
+  for (;;) {
+    const button = await page.$(`${CATHAY_LOGIN_MESSAGE} button.btn-fill`);
+    if (!button) break;
+    const action = await button.evaluate((element) =>
+      element.textContent?.replace(/\s+/g, "").trim(),
+    );
+    if (!action || !CATHAY_LOGIN_MESSAGE_ACTIONS.has(action)) {
+      throw new Error("Cathay system message action changed.");
+    }
+    if (clicks >= MAX_CATHAY_LOGIN_MESSAGES) {
+      throw new Error(
+        `Cathay system message list exceeded ${MAX_CATHAY_LOGIN_MESSAGES} notices.`,
+      );
+    }
+    if (clicks === 0) console.log("[cathaybk] dismissing system message modal");
+    await button.click();
+    clicks += 1;
+    try {
+      await page.waitForSelector(CATHAY_LOGIN_MESSAGE, {
+        hidden: true,
+        timeout: 1000,
+      });
+      break;
+    } catch {
+      // 換到下一則公告，繼續點。
+    }
+  }
+  if (clicks === 0) return false;
+  // `.show` 在淡出開始時就移除；等視窗與遮罩真正隱藏，避免接著點登入欄位時被遮罩攔截。
+  await page.waitForSelector("#divSystemLoginMsgList", {
+    hidden: true,
+    timeout: 5000,
+  });
+  await page.waitForSelector(".modal-backdrop", {
+    hidden: true,
+    timeout: 5000,
+  });
+  return true;
+}
+
+export async function submitCathayLoginForm(
+  page: Pick<CathayLoginPage, "click" | "evaluate">,
+) {
+  const invokedBankHandler = await page.evaluate(() => {
+    const normalDataCheck = (
+      window as typeof window & { NormalDataCheck?: () => boolean }
+    ).NormalDataCheck;
+    if (typeof normalDataCheck !== "function") return false;
+    normalDataCheck();
+    return true;
+  });
+  if (!invokedBankHandler) await page.click(".js-login");
+}
+
+export function isCathayAuthenticatedUrl(value: string) {
+  try {
+    const path = new URL(value).pathname.replace(/\/+$/, "").toLowerCase();
+    return (
+      path === "/onlinebanking" ||
+      path.startsWith("/onlinebanking/") ||
+      path === "/mybank/quicklinks/home"
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function loginCathay(
+  page: CathayLoginPage,
+  config: CathaybkConfig,
+) {
+  attachCathaySafeDiagnostics(page, config);
+  console.log("[cathaybk] navigating to login page");
+  await page.goto(LOGIN_URL, { waitUntil: "networkidle2", timeout: 60000 });
+
+  // ponytail: bank shows "未完成正常的登出程序" both on page load AND after clicking login
+  // if a prior session didn't log out — retry up to 3 times
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await dismissInterstitialIfPresent(page);
+    await dismissCathaySystemMessageIfPresent(page);
+    await page.waitForSelector("#CustID", { timeout: 15000 });
+
+    await page.click("#CustID", { clickCount: 3 });
+    await page.type("#CustID", config.userId!.toUpperCase());
+    await page.click("#UserIdKeyin", { clickCount: 3 });
+    await page.type("#UserIdKeyin", config.account!);
+    await page.click("#PasswordKeyin", { clickCount: 3 });
+    await page.type("#PasswordKeyin", config.password!);
+
+    console.log(`[cathaybk] submitting login form (attempt ${attempt}/3)`);
+    const loginResult = page.waitForFunction(
+      () => {
+        const controlsText = Array.from(
+          document.querySelectorAll<HTMLElement>(
+            'a, button, input[type="button"], input[type="submit"], [role="button"]',
+          ),
+        )
+          .map((element) =>
+            [
+              element.textContent,
+              element.getAttribute("aria-label"),
+              element.getAttribute("value"),
+            ]
+              .filter(Boolean)
+              .join(" "),
+          )
+          .join(" ");
+        const pageText = `${document.body?.innerText ?? ""} ${controlsText}`;
+        const normalizedText = pageText.replace(/\s+/g, "");
+        const currentPath = window.location.pathname
+          .replace(/\/+$/, "")
+          .toLowerCase();
+
+        return (
+          currentPath === "/onlinebanking" ||
+          currentPath.startsWith("/onlinebanking/") ||
+          currentPath === "/mybank/quicklinks/home" ||
+          document.querySelector(
+            ".js-otp-view, #js-otp-send, #js-otp-email-send",
+          ) !== null ||
+          normalizedText.includes("未完成正常的登出程序") ||
+          normalizedText.includes("登入失敗") ||
+          normalizedText.includes("錯誤") ||
+          (normalizedText.includes("Email驗證") &&
+            normalizedText.includes("簡訊驗證"))
+        );
+      },
+      { timeout: 45000 },
+    );
+    await submitCathayLoginForm(page);
+    try {
+      await loginResult;
+    } catch (error) {
+      await logCathayLoginTimeout(page, error);
+      throw error;
+    }
+
+    if (isCathayAuthenticatedUrl(page.url())) {
+      console.log("[cathaybk] login succeeded");
+      return;
+    }
+
+    const requiresAdditionalVerification = await page.evaluate(() => {
+      const controlsText = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          'a, button, input[type="button"], input[type="submit"], [role="button"]',
+        ),
+      )
+        .map((element) =>
+          [
+            element.textContent,
+            element.getAttribute("aria-label"),
+            element.getAttribute("value"),
+          ]
+            .filter(Boolean)
+            .join(" "),
+        )
+        .join(" ");
+      const normalizedText =
+        `${document.body?.innerText ?? ""} ${controlsText}`.replace(/\s+/g, "");
+      return (
+        document.querySelector(
+          ".js-otp-view, #js-otp-send, #js-otp-email-send",
+        ) !== null ||
+        (normalizedText.includes("Email驗證") &&
+          normalizedText.includes("簡訊驗證"))
+      );
+    });
+    if (requiresAdditionalVerification) {
+      throw new CathayVerificationRequiredError(
+        "國泰世華要求 Email 或簡訊額外驗證，請先完成人工驗證。",
+      );
+    }
+
+    const bodyText = await page
+      .evaluate(() =>
+        document.body.innerText.replace(/\s+/g, " ").trim().slice(0, 300),
+      )
+      .catch(() => "");
+
+    if (bodyText.includes("未完成正常的登出程序")) {
+      console.log(
+        `[cathaybk] interstitial after login (attempt ${attempt}/3), retrying`,
+      );
+      continue;
+    }
+
+    throw new Error("Cathay United Bank login failed.");
+  }
+
+  throw new Error(
+    "Cathay United Bank login failed after 3 attempts — persistent dirty session interstitial",
+  );
+}
+
+// ---- Deposit accounts ----
+
+interface DomAccount {
+  acctNo: string;
+  accountTypeName: string;
+  balance: number;
+  availableBalance: number;
+  currency: string;
+}
+
+// Actual API response structure from B_ACCT_Q_TransferDetail
+interface TransferDetail {
+  txnDateTime?: string | null;
+  accountDate?: string | null;
+  description?: string | null;
+  expendAmt?: number | null;
+  incomeAmt?: number | null;
+  balance?: number | null;
+  specialMemo?: string | null;
+  memo?: string | null;
+  expendBankId?: string | null;
+  expendAcctNo?: string | null;
+  [key: string]: unknown;
+}
+
+async function scrapeDomAccounts(page: Page): Promise<DomAccount[]> {
+  return page.evaluate(() => {
+    const results: Array<{
+      acctNo: string;
+      accountTypeName: string;
+      balance: number;
+      availableBalance: number;
+      currency: string;
+    }> = [];
+    const buttons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button"),
+    );
+    for (const btn of buttons) {
+      const text = btn.textContent?.trim() ?? "";
+      if (!/^\d{10,}$/.test(text)) continue;
+      let el: Element | null = btn;
+      for (let i = 0; i < 10; i++) {
+        el = el?.parentElement ?? null;
+        if (!el) break;
+        const rowText = (el as HTMLElement).innerText?.trim() ?? "";
+        if (rowText.includes("$") && rowText.length < 200) {
+          const amounts = rowText.match(/\$([\d,]+)/g) ?? [];
+          const parseAmt = (s: string) =>
+            parseInt(s.replace(/[$,]/g, ""), 10) || 0;
+          results.push({
+            acctNo: text,
+            accountTypeName:
+              rowText
+                .split(text)[0]
+                ?.replace(/[●\s]+/g, " ")
+                .trim() || "臺幣存款",
+            balance: amounts[0] ? parseAmt(amounts[0]) : 0,
+            availableBalance: amounts[1] ? parseAmt(amounts[1]) : 0,
+            currency: "TWD",
+          });
+          break;
+        }
+      }
+    }
+    return results;
+  });
+}
+
+/**
+ * 等頁面自己送出的明細查詢回應，保留狀態碼、最終網址、是否轉址與內容，供判讀是否被登出。
+ * 被轉址時最終回應的網址不含 API 名稱，因此也比對轉址鏈。
+ */
+async function waitForInitialDepositQuery(
+  page: Page,
+): Promise<CathayReplayResponse | null> {
+  const response = await page
+    .waitForResponse(
+      (r) =>
+        // 轉址時 puppeteer 會先為每個 3xx 送出回應事件；略過它們，等轉址鏈最後的回應。
+        (r.status() < 300 || r.status() >= 400) &&
+        (r.url().includes(API_DEPOSIT_TX) ||
+          r
+            .request()
+            .redirectChain()
+            .some((request) => request.url().includes(API_DEPOSIT_TX))),
+      { timeout: 30000 },
+    )
+    .catch(() => null);
+  if (!response) return null;
+  return {
+    status: response.status(),
+    url: response.url(),
+    redirected: response.request().redirectChain().length > 0,
+    contentType: response.headers()["content-type"] ?? "",
+    text: await response.text().catch(() => ""),
+  };
+}
+
+function assertCathayNotLoggedOut(page: Pick<Page, "url">) {
+  if (page.url().toLowerCase().includes("/logout/")) {
+    throw new Error("Cathay Bank forced logout on transaction page.");
+  }
+}
+
+async function scrapeDeposits(
+  page: Page,
+  lookbackDays: number,
+): Promise<Scraped> {
+  const bankAccounts: Scraped["bankAccounts"] = [];
+  const bankBalanceSnapshots: Scraped["bankBalanceSnapshots"] = [];
+  const bankTransactions: Scraped["bankTransactions"] = [];
+  const warnings: string[] = [];
+  const asOfAt = new Date().toISOString();
+
+  await page.goto(DEPOSIT_OVERVIEW_URL, {
+    waitUntil: "networkidle2",
+    timeout: 60000,
+  });
+  console.log("[cathaybk] deposit page opened");
+  if (page.url().toLowerCase().includes("/logout/")) {
+    throw new Error("Cathay Bank forced logout on deposit page.");
+  }
+
+  // Wait for account number buttons to render
+  await page
+    .waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll("button")).some((b) =>
+          /^\d{10,}$/.test(b.textContent?.trim() ?? ""),
+        ),
+      { timeout: 15000 },
+    )
+    .catch(() => null);
+
+  const accounts = await scrapeDomAccounts(page);
+  console.log(`[cathaybk] found ${accounts.length} deposit accounts`);
+
+  for (const acct of accounts) {
+    const sourceId = `bank:cathaybk:${acct.acctNo}`;
+
+    bankAccounts.push({
+      sourceId,
+      institutionName: "國泰世華銀行",
+      accountName: acct.accountTypeName || "國泰臺幣帳戶",
+      accountType: "savings",
+      currency: acct.currency,
+      raw: acct,
+    });
+
+    bankBalanceSnapshots.push({
+      accountId: sourceId,
+      sourceId: `${sourceId}:${asOfAt}`,
+      balance: acct.balance,
+      availableBalance: acct.availableBalance || undefined,
+      currency: acct.currency,
+      asOfAt,
+      raw: acct,
+    });
+  }
+
+  // 改版後明細頁會跳出彈出視窗蓋住帳號與期間選單。改為：從第一個帳戶進入明細頁，
+  // 記下頁面自動送出的查詢請求作範本，再改寫帳號與日期在同一頁面內重送。不回到總覽頁：
+  // 在帳戶之間重開總覽，國泰會結束工作階段（/OnlineBanking/Logout/SystemError）。
+  const first = accounts[0];
+  // closure 內寫入，用物件屬性存放以免型別被收窄成 null。
+  const capture: {
+    template: {
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      postData: string;
+    } | null;
+  } = { template: null };
+  let initialResponse: CathayReplayResponse | null = null;
+  if (first) {
+    const onRequest = (request: HTTPRequest) => {
+      if (capture.template || !request.url().includes(API_DEPOSIT_TX)) return;
+      const postData = request.postData();
+      if (typeof postData !== "string") return;
+      capture.template = {
+        url: request.url(),
+        method: request.method(),
+        headers: request.headers(),
+        postData,
+      };
+    };
+    page.on("request", onRequest);
+    try {
+      const initialQuery = waitForInitialDepositQuery(page);
+      const clicked = await page.evaluate((acctNo: string) => {
+        const btn = Array.from(
+          document.querySelectorAll<HTMLButtonElement>("button"),
+        ).find((b) => b.textContent?.trim() === acctNo);
+        btn?.click();
+        return Boolean(btn);
+      }, first.acctNo);
+      if (clicked) {
+        await page
+          .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
+          .catch(() => null);
+        initialResponse = await initialQuery;
+      } else {
+        console.log(
+          `[cathaybk] no button found for account ${maskAccountNumber(first.acctNo)}`,
+        );
+      }
+    } finally {
+      page.off("request", onRequest);
+    }
+    assertCathayNotLoggedOut(page);
+  }
+  const captured = capture.template;
+  console.log(
+    JSON.stringify({
+      event: "cathaybk_transfer_query_template",
+      captured: Boolean(captured),
+      ...(captured
+        ? {
+            request: describeCathayTransferQuery(captured.postData),
+            // 只記標頭名稱，用來判斷有沒有一次性 token 或簽章類標頭。
+            headerNames: Object.keys(captured.headers).slice(0, 40),
+          }
+        : {}),
+      initialResponse: Boolean(initialResponse),
+    }),
+  );
+
+  const initialDatas = first
+    ? classifyCathayReplay(initialResponse, first.acctNo)
+    : null;
+  if (initialDatas?.kind === "logged-out") {
+    throw new Error("Cathay Bank ended the session during transaction query.");
+  }
+  let replayEnabled = Boolean(captured && first);
+  let defaultPeriodOnly = false;
+  const unavailable: string[] = [];
+  for (const [index, acct] of accounts.entries()) {
+    const sourceId = `bank:cathaybk:${acct.acctNo}`;
+    let datas: Array<{ details?: unknown[] }> | undefined;
+    let period = "default";
+    let reason = captured ? "replay-disabled" : "no-template";
+
+    if (replayEnabled && captured && first) {
+      const rewrite = rewriteCathayTransferQuery(captured.postData, {
+        fromAccount: first.acctNo,
+        toAccount: acct.acctNo,
+        fromCurrency: first.currency,
+        toCurrency: acct.currency,
+        lookbackDays,
+      });
+      // 第一個帳戶若無法延長日期，重送會和頁面剛送的完全相同，直接用頁面結果。
+      const worthReplay =
+        index === 0 ? rewrite.datesExtended : rewrite.accountReplaced;
+      reason = index === 0 ? "dates-not-extended" : "account-not-replaced";
+      if (worthReplay) {
+        if (index > 0) {
+          // 依序重送並間隔 1–2 秒，避免短時間連續請求。
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 + Math.floor(Math.random() * 1000)),
+          );
+        }
+        const replay = await page
+          .evaluate(
+            cathayReplayInPage,
+            captured.url,
+            captured.method,
+            replayableHeaders(captured.headers),
+            rewrite.body,
+          )
+          .catch(() => null);
+        const result = classifyCathayReplay(replay, acct.acctNo);
+        if (result.kind === "logged-out") {
+          throw new Error(
+            "Cathay Bank ended the session during transaction query.",
+          );
+        }
+        assertCathayNotLoggedOut(page);
+        if (result.kind === "ok") {
+          datas = result.datas;
+          period = rewrite.datesExtended ? `${lookbackDays}d` : "default";
+          if (!rewrite.datesExtended) defaultPeriodOnly = true;
+        } else {
+          reason = result.reason;
+          console.warn(
+            JSON.stringify({
+              event: "cathaybk_transfer_query_replay_failed",
+              accountIndex: index,
+              kind: result.kind,
+              reason: result.reason,
+              status: replay?.status ?? null,
+              redirected: replay?.redirected ?? null,
+              contentType: (replay?.contentType ?? "").slice(0, 60),
+              accountKeys: rewrite.accountKeys,
+              datesExtended: rewrite.datesExtended,
+            }),
+          );
+          // 熔斷：重送失敗或帳號對不上（改寫規則可能錯了）就不再送後續帳戶。
+          if (result.kind !== "unverified") replayEnabled = false;
+        }
+      }
+    }
+    // 第一個帳戶沒有可用的重送結果時，退回頁面自己查到的預設期間。
+    if (!datas && index === 0 && initialDatas?.kind === "ok") {
+      datas = initialDatas.datas;
+      defaultPeriodOnly = true;
+    }
+    if (!datas) {
+      unavailable.push(reason);
+      console.log(
+        `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: transactions unavailable (${reason})`,
+      );
+      continue;
+    }
+
+    const details = datas.flatMap((d) => d.details ?? []) as TransferDetail[];
+    console.log(
+      `[cathaybk] account ${maskAccountNumber(acct.acctNo)}: ${details.length} tx (period=${period})`,
+    );
+    appendCathayDepositTransactions(
+      bankTransactions,
+      details,
+      sourceId,
+      acct.currency,
+    );
+  }
+  if (defaultPeriodOnly) {
+    warnings.push(
+      "國泰存款明細無法指定期間，本次部分帳戶只取得頁面預設期間的交易。",
+    );
+  }
+  if (unavailable.length > 0) {
+    warnings.push(
+      `國泰 ${unavailable.length}／${accounts.length} 個存款帳戶的交易明細未取得（${[...new Set(unavailable)].join("、")}），本次只更新這些帳戶的餘額。`,
+    );
+  }
+
+  return {
+    bankAccounts,
+    bankBalanceSnapshots,
+    bankTransactions,
+    creditCardBills: [],
+    ...(warnings.length ? { warnings } : {}),
+  };
+}
+
+export function appendCathayDepositTransactions(
+  target: Scraped["bankTransactions"],
+  details: TransferDetail[],
+  accountId: string,
+  currency: string,
+) {
+  const seen = new Map<string, number>();
+  for (const d of details) {
+    const sourceDate = d.txnDateTime ?? d.accountDate;
+    const date = normalizeDateStr(sourceDate);
+    const authorizedAt = normalizeCathayAuthorizedAt(sourceDate);
+    // incomeAmt = money in (positive), expendAmt = money out (positive value = debit)
+    const income = typeof d.incomeAmt === "number" ? d.incomeAmt : 0;
+    const expend = typeof d.expendAmt === "number" ? d.expendAmt : 0;
+    const amount = income > 0 ? income : expend > 0 ? -expend : 0;
+    const desc =
+      [d.description, d.memo].filter(Boolean).join(" ").trim() ||
+      "國泰世華交易";
+    const key = [date, accountId, amount, desc].join(":");
+    const occ = (seen.get(key) ?? 0) + 1;
+    seen.set(key, occ);
+    const counterparty = deriveCathayDepositCounterparty(d, amount);
+    target.push({
+      accountId,
+      sourceId: `${key}:${occ}`,
+      postedDate: date,
+      authorizedAt,
+      amount,
+      currency,
+      description: desc,
+      ...counterparty,
+      raw: { ...maskCathayDepositRaw(d), duplicateOccurrence: occ },
+    });
+  }
+}
+
+// ---- Credit cards ----
+
+export interface HistoryBillItem {
+  billDate: string;
+  twdAmount: number | null;
+  usdAmount: number | null;
+  billStatus: string;
+}
+
+export interface TradeItem {
+  consumeDate: string | null;
+  transDesc: string;
+  amount: number;
+  currency: string;
+  cardNo?: string | null;
+  [key: string]: unknown;
+}
+
+export interface BillDetailSection {
+  detailType: string;
+  tradeData: TradeItem[] | null;
+}
+
+export interface MonthDetail {
+  billDate: string;
+  twdAmount: number | null;
+  sections: BillDetailSection[];
+}
+
+export type CathayCardOverview = ReturnType<typeof parseCathayCardOverview>;
+
+export interface CathayCardBillData {
+  allBills: HistoryBillItem[];
+  monthDetails: MonthDetail[];
+}
+
+// 國泰的信用額度、應繳金額與帳單為所有卡片共用；早期同步把全部卡片資料
+// 寫在這個帳戶，交易 sourceId 也以它組成，因此保留作為多卡摘要帳戶。
+const CATHAY_CARD_SUMMARY_ACCOUNT_ID = "credit:cathaybk:main";
+
+const CATHAY_CARD_PAYMENT_COUNTERPARTY = "國泰世華信用卡繳款";
+
+function isCathayCardPayment(section: BillDetailSection, trade: TradeItem) {
+  return (
+    section.detailType === "PaymentAmount" ||
+    trade.detailType === "PaymentAmount"
+  );
+}
+
+function cathayCardLast4(cardNo: unknown): string | undefined {
+  if (typeof cardNo !== "string") return undefined;
+  return cardNo.replace(/[\s-]/g, "").match(/(\d{4})$/)?.[1];
+}
+
+function cathayCardSourceId(last4: string) {
+  return `credit:cathaybk:${last4}`;
+}
+
+/**
+ * 共用額度的餘額快照與帳單放在哪個帳戶：只有一張實體卡時放在該卡，
+ * 多張卡（或讀不到卡號）時放在摘要帳戶，與玉山規則一致。
+ */
+export function cathayCreditBalanceAccountId(
+  physicalCardSourceIds: Iterable<string>,
+) {
+  const accountIds = [
+    ...new Set(
+      [...physicalCardSourceIds].filter(
+        (accountId) => accountId !== CATHAY_CARD_SUMMARY_ACCOUNT_ID,
+      ),
+    ),
+  ];
+  return accountIds.length === 1
+    ? accountIds[0]!
+    : CATHAY_CARD_SUMMARY_ACCOUNT_ID;
+}
+
+/** 信用卡明細只有消費日期；不得把銀行補上的 `T00:00:00` 當成交易時間。 */
+function cathayCardDate(value: unknown): string | undefined {
+  return normalizeCathayAuthorizedAt(value)?.slice(0, 10);
+}
+
+export function normalizeCathayCreditCards(
+  overview: CathayCardOverview,
+  billData: CathayCardBillData | null,
+  asOfAt: string,
+): Scraped {
+  const trades = (billData?.monthDetails ?? []).flatMap((month) =>
+    (month.sections ?? [])
+      .filter((section) => section.detailType !== "LastBillAmount")
+      .flatMap((section) =>
+        (section.tradeData ?? [])
+          .filter((trade) => trade.amount)
+          .map((trade) => ({ month, section, trade })),
+      ),
+  );
+  const physicalLast4s = [
+    ...new Set([
+      ...overview.cardLast4s,
+      ...trades
+        .filter(({ section, trade }) => !isCathayCardPayment(section, trade))
+        .map(({ trade }) => cathayCardLast4(trade.cardNo))
+        .filter((last4): last4 is string => Boolean(last4)),
+    ]),
+  ];
+  const balanceAccountId = cathayCreditBalanceAccountId(
+    physicalLast4s.map(cathayCardSourceId),
+  );
+
+  const accountIds = [
+    ...physicalLast4s.map(cathayCardSourceId),
+    ...(balanceAccountId === CATHAY_CARD_SUMMARY_ACCOUNT_ID
+      ? [CATHAY_CARD_SUMMARY_ACCOUNT_ID]
+      : []),
+  ];
+  const bankAccounts: Scraped["bankAccounts"] = accountIds.map((sourceId) => ({
+    sourceId,
+    institutionName: "國泰世華銀行",
+    accountName:
+      sourceId === CATHAY_CARD_SUMMARY_ACCOUNT_ID
+        ? "國泰信用卡"
+        : `國泰信用卡 ${sourceId.slice(-4)}`,
+    accountType: "credit",
+    currency: "TWD",
+    ...(sourceId === balanceAccountId
+      ? { creditLimit: overview.creditLimit || undefined, raw: overview }
+      : {}),
+  }));
+
+  const bankBalanceSnapshots: Scraped["bankBalanceSnapshots"] = [
+    {
+      accountId: balanceAccountId,
+      sourceId: `${balanceAccountId}:${asOfAt}`,
+      balance: -overview.unpaidAmount,
+      availableBalance: overview.availableCredit || undefined,
+      paymentDueDate: overview.paymentDueDate ?? undefined,
+      noPaymentNeeded: overview.noPaymentNeeded,
+      currency: "TWD",
+      asOfAt,
+      raw: overview,
+    },
+  ];
+
+  const creditCardBills: Scraped["creditCardBills"] = [];
+  const allBills = billData?.allBills ?? [];
+  const latestBillDate = allBills[0]?.billDate;
+  for (const bill of allBills) {
+    const period = bill.billDate.slice(0, 7); // "YYYY-MM"
+    const isLatest = bill.billDate === latestBillDate;
+    creditCardBills.push({
+      accountId: balanceAccountId,
+      sourceId: `${balanceAccountId}:bill:${period}`,
+      billingPeriod: period,
+      statementAmount: bill.twdAmount ?? undefined,
+      statementClosingDate: bill.billDate.slice(0, 10),
+      paymentDueDate: isLatest
+        ? (overview.paymentDueDate ?? undefined)
+        : undefined,
+      isPaid: isLatest ? overview.noPaymentNeeded : true,
+      currency: "TWD",
+      raw: bill,
+    });
+  }
+
+  // Build bankTransactions from bill details (skip carry-forward summary rows)
+  const bankTransactions: Scraped["bankTransactions"] = [];
+  const seen = new Map<string, number>();
+  for (const { month, section, trade } of trades) {
+    const sourceDate = trade.consumeDate ?? month.billDate;
+    // 交易 identity 沿用拆卡前的算法（含摘要帳戶 ID 與原始日期字串），
+    // 改掛到實體卡帳戶時才能由 reconcile 以相同 sourceId 併回既有資料。
+    const identityDate = normalizeDateStr(sourceDate);
+    const date = cathayCardDate(sourceDate);
+    const desc = trade.transDesc || "國泰信用卡消費";
+    const key = [
+      identityDate,
+      CATHAY_CARD_SUMMARY_ACCOUNT_ID,
+      trade.amount,
+      desc,
+    ].join(":");
+    const occ = (seen.get(key) ?? 0) + 1;
+    seen.set(key, occ);
+    const payment = isCathayCardPayment(section, trade);
+    const last4 = payment ? undefined : cathayCardLast4(trade.cardNo);
+    const { cardNo: _cardNo, ...tradeRaw } = trade;
+    bankTransactions.push({
+      // 繳款沖銷的是共用帳單，掛在與帳單相同的餘額帳戶。
+      accountId: last4 ? cathayCardSourceId(last4) : balanceAccountId,
+      sourceId: `${key}:${occ}`,
+      postedDate: date ?? identityDate,
+      authorizedAt: date,
+      // 帳單明細的消費為正數，繳款、退款與回饋等貸項為負數；
+      // 卡片帳戶以支出為負、入帳為正。
+      amount: payment ? Math.abs(trade.amount) : -trade.amount,
+      currency: "TWD",
+      description: desc,
+      // 繳款描述只有「本行自動扣繳」等字樣，補上對象讓既有信用卡繳費規則
+      // 將其歸為轉帳並排除計算，避免與存款端扣款重複計入支出。
+      ...(payment ? { counterparty: CATHAY_CARD_PAYMENT_COUNTERPARTY } : {}),
+      raw: {
+        ...tradeRaw,
+        ...(last4 ? { cardLast4: last4 } : {}),
+        billDate: month.billDate,
+        detailType: section.detailType,
+        duplicateOccurrence: occ,
+      },
+    });
+  }
+
+  return {
+    bankAccounts,
+    bankBalanceSnapshots,
+    bankTransactions,
+    creditCardBills,
+  };
+}
+
+/** Parses the Cathay credit card overview (C0101) page text. */
+export function parseCathayCardOverview(text: string) {
+  const parseAmt = (s: string | undefined) =>
+    parseInt((s ?? "").replace(/[^\d]/g, ""), 10) || 0;
+  // 總覽頁逐卡列出「卡片末四碼」；額度與帳單金額為所有卡片共用。
+  const cardLast4s = [
+    ...new Set(
+      Array.from(text.matchAll(/卡片末四碼[：:]\s*(\d{4})/g), (m) => m[1]!),
+    ),
+  ];
+  const limitMatch = text.match(/永久信用額度\s*(?:TWD\s*)?([\d,]+)/);
+  const availMatch = text.match(/剩餘可用額度[\s\S]{0,20}?(?:TWD\s*)?([\d,]+)/);
+  const dueDateMatch = text.match(
+    /繳款截止日[\s\S]{0,10}?(\d{4}[\/\-]\d{2}[\/\-]\d{2})/,
+  );
+  const noPaymentNeeded = text.includes("無需繳費");
+  // The current overview shows the latest statement as "臺幣帳單 TWD 12,345"
+  // without an 應繳金額 label; keep the older wording as the first choice.
+  const unpaidMatch = !noPaymentNeeded
+    ? (text.match(
+        /(?:應繳|未繳)(?:金額|餘額)?[\s\S]{0,20}?(?:TWD\s*)?([\d,]+)/,
+      ) ?? text.match(/臺幣帳單\s*(?:TWD\s*)?([\d,]+)/))
+    : null;
+  return {
+    cardDetected: cardLast4s.length > 0,
+    last4: cardLast4s[0] ?? "",
+    cardLast4s,
+    creditLimit: parseAmt(limitMatch?.[1]),
+    availableCredit: parseAmt(availMatch?.[1]),
+    unpaidAmount: noPaymentNeeded ? 0 : parseAmt(unpaidMatch?.[1]),
+    paymentDueDate: dueDateMatch?.[1]?.replace(/\//g, "-") ?? null,
+    noPaymentNeeded,
+  };
+}
+
+export async function scrapeCreditCards(page: Page): Promise<Scraped> {
+  const asOfAt = new Date().toISOString();
+
+  // ── C0101: card overview (DOM) ─────────────────────────────────────────
+  await page.goto(CREDIT_CARD_OVERVIEW_URL, {
+    waitUntil: "networkidle2",
+    timeout: 60000,
+  });
+  console.log("[cathaybk] credit card overview opened");
+  // The overview renders after load; a fixed delay sometimes read the page
+  // before the card block appeared and reported no card. Customers without a
+  // card wait for the timeout.
+  await page
+    .waitForFunction(() => /卡片末四碼/.test(document.body?.innerText ?? ""), {
+      timeout: 15000,
+    })
+    .catch(() => null);
+
+  const overviewText = await page.evaluate(() => document.body.innerText);
+  const cardOverview = parseCathayCardOverview(overviewText);
+
+  console.log(
+    JSON.stringify({
+      event: "cathaybk_card_overview_parsed",
+      cardDetected: cardOverview.cardDetected,
+      cardCount: cardOverview.cardLast4s.length,
+      paymentDueDateAvailable: Boolean(cardOverview.paymentDueDate),
+      noPaymentNeeded: cardOverview.noPaymentNeeded,
+    }),
+  );
+
+  if (!cardOverview.cardDetected) {
+    if (
+      !isNoCreditCardMessage(overviewText) &&
+      !(
+        /信用卡(?:帳戶)?總覽/.test(overviewText) &&
+        /立即(?:線上)?辦卡/.test(overviewText)
+      )
+    )
+      throw new Error("國泰世華信用卡總覽無法辨識，未更新資料。");
+    console.log(
+      "[cathaybk] no credit card detected; skipping card account and bills",
+    );
+    return {
+      bankAccounts: [],
+      bankBalanceSnapshots: [],
+      bankTransactions: [],
+      creditCardBills: [],
+    };
+  }
+
+  // ── C0102: bill history + transactions via OnlineBankingApi ───────────
+  await page.goto(CREDIT_CARD_BILL_URL, {
+    waitUntil: "networkidle2",
+    timeout: 60000,
+  });
+  await new Promise((r) => setTimeout(r, 2000));
+
+  const apiResult = (await page.evaluate(async (maxMonths: number) => {
+    // Get JWT + customerId
+    const jwtData = await new Promise<{ token: string; customerId: string }>(
+      (resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/MyBank/Customized/GetJWT");
+        xhr.withCredentials = true;
+        xhr.onload = () => {
+          try {
+            const d = JSON.parse(xhr.responseText).Data;
+            resolve({ token: d.JwtToken, customerId: d.CustomerId });
+          } catch {
+            resolve({ token: "", customerId: "" });
+          }
+        };
+        xhr.onerror = () => resolve({ token: "", customerId: "" });
+        xhr.send();
+      },
+    );
+
+    if (!jwtData.token) return null;
+
+    const { token: jwt, customerId } = jwtData;
+
+    // ponytail: functionSeqNo format observed from browser: YYYYMMDDHHmmss + UUID
+    const now = new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    const functionSeqNo = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}${crypto.randomUUID()}`;
+
+    function xhrPost(
+      endpoint: string,
+      extra: Record<string, unknown> = {},
+    ): Promise<unknown> {
+      return new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open(
+          "POST",
+          `/OnlineBankingApi/ClientCard/Api/ClientCard/${endpoint}`,
+        );
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.setRequestHeader("Authorization", `Bearer ${jwt}`);
+        xhr.onload = () => {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch {
+            resolve(null);
+          }
+        };
+        xhr.onerror = () => resolve(null);
+        xhr.send(
+          JSON.stringify({ functionSeqNo, content: { customerId, ...extra } }),
+        );
+      });
+    }
+
+    // 1. Get list of available historical months (bank provides up to 12)
+    const historyResp = (await xhrPost("C_BILL_Q_HistoryBillList")) as {
+      content?: { historyBillInfoList?: unknown[] };
+    } | null;
+    const allBills = (historyResp?.content?.historyBillInfoList ??
+      []) as Array<{
+      billDate: string;
+      twdAmount: number | null;
+      usdAmount: number | null;
+      billStatus: string;
+    }>;
+
+    const targetBills = allBills.slice(0, maxMonths);
+
+    // 2. Get transaction details for each month
+    const monthDetails: Array<{
+      billDate: string;
+      twdAmount: number | null;
+      sections: unknown[];
+    }> = [];
+    for (const bill of targetBills) {
+      const detail = (await xhrPost("C_BILL_Q_RecentBillDetail", {
+        billDate: bill.billDate,
+      })) as {
+        content?: { twdBillDetailInfo?: unknown[] };
+      } | null;
+      monthDetails.push({
+        billDate: bill.billDate,
+        twdAmount: bill.twdAmount,
+        sections: detail?.content?.twdBillDetailInfo ?? [],
+      });
+    }
+
+    return { allBills: targetBills, monthDetails };
+  }, BANK_SYNC_MONTHS)) as CathayCardBillData | null;
+
+  if (!apiResult) {
+    console.log("[cathaybk] credit card API failed — no bill data");
+  } else {
+    console.log(
+      `[cathaybk] fetched ${apiResult.allBills.length} historical bills`,
+    );
+  }
+
+  const result = normalizeCathayCreditCards(cardOverview, apiResult, asOfAt);
+  console.log(
+    `[cathaybk] credit card accounts: ${result.bankAccounts.length}, bills: ${result.creditCardBills.length}, transactions: ${result.bankTransactions.length}`,
+  );
+  return result;
+}
+
+// ---- Utilities ----
+
+function normalizeDateStr(value: unknown): string {
+  if (typeof value !== "string") return new Date().toISOString();
+  const s = value.trim().replace(/\//g, "-");
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return s;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T00:00:00.000Z`;
+  return s || new Date().toISOString();
+}
+
+/**
+ * Normalizes a Cathay transaction timestamp for authorizedAt without
+ * inventing midnight for date-only rows.  Timestamps without an explicit
+ * offset are bank-local Taiwan time; timestamps with an offset keep that
+ * offset in canonical ISO form.  Invalid source values return undefined.
+ */
+export function normalizeCathayAuthorizedAt(
+  value: unknown,
+): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const source = value.trim().replace(/\//g, "-");
+  if (!source) return undefined;
+
+  const match = source.match(
+    /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:?\d{2})?)?$/,
+  );
+  if (!match) return undefined;
+
+  const [, date, hour, minute, second, fraction, zone] = match;
+  if (!isValidCathayDate(date)) return undefined;
+  if (!hour) return date;
+
+  const hours = Number(hour);
+  const minutes = Number(minute);
+  const seconds = Number(second ?? "0");
+  if (hours > 23 || minutes > 59 || seconds > 59) return undefined;
+
+  const normalizedZone = normalizeCathayOffset(zone);
+  if (!normalizedZone) return undefined;
+  const normalizedFraction = fraction
+    ? `.${fraction.slice(0, 3).padEnd(3, "0")}`
+    : "";
+  return `${date}T${hour}:${minute}:${String(seconds).padStart(2, "0")}${normalizedFraction}${normalizedZone}`;
+}
+
+function normalizeCathayOffset(value: string | undefined): string | undefined {
+  if (!value) return "+08:00";
+  if (value === "Z") return value;
+  const match = value.match(/^([+-])(\d{2}):?(\d{2})$/);
+  if (!match) return undefined;
+  const hours = Number(match[2]);
+  const minutes = Number(match[3]);
+  if (hours > 23 || minutes > 59) return undefined;
+  return `${match[1]}${match[2]}:${match[3]}`;
+}
+
+function isValidCathayDate(value: string): boolean {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}

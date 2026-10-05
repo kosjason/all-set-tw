@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { taipeiDay, weekStartOf } from "@taiwan-fin-hub/core";
+import { taipeiDay, weekStartOf } from "@taiwan-fin-hub/shared";
 import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
 import { jsonError } from "../../platform/http";

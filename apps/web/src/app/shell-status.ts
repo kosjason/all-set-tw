@@ -1,5 +1,5 @@
-import type { CardsSummaryResponse } from "@taiwan-fin-hub/core";
-import { connectorCatalog } from "@taiwan-fin-hub/core";
+import type { CardsSummaryResponse } from "@taiwan-fin-hub/shared";
+import { connectorCatalog } from "@taiwan-fin-hub/shared";
 import type { SyncJobRow } from "@/data/connectors/types";
 
 export type SourceHealth =

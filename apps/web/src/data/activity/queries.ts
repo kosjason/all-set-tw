@@ -7,7 +7,7 @@ import type {
   ActivitySummaryIncompleteReason,
   EconomicRoleOverride,
   InvoiceDedupeCounts,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { infiniteQueryOptions, queryOptions } from "@tanstack/svelte-query";
 import type { ApiClient } from "@/shared/api/client";
 import type { BankData } from "@/data/bank/types";
@@ -122,7 +122,7 @@ export type {
   ActivityNoteRow,
   ActivityNoteWriteResult,
   CategorySource,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 /**
  * 活動備註（`GET /api/activity/notes?month=`）；未指定月份時列出全部。

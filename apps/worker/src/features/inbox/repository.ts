@@ -3,7 +3,7 @@ import {
   connectorSettings,
   createDrizzle,
   syncJobs,
-} from "@taiwan-fin-hub/db";
+} from "../../db";
 import { and, eq, isNull } from "drizzle-orm";
 
 export type InboxSyncJobRow = {

@@ -6,7 +6,7 @@ import {
   type ActivityExportItem,
   type ActivityExportResponse,
   type ActivityItem,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { loadRoleActivities, monthsBetween } from "./summary-service";
 
 /**

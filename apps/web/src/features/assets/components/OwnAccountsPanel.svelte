@@ -10,7 +10,7 @@
     taiwanBankName,
     type OwnAccount,
     type OwnAccountInput,
-  } from "@taiwan-fin-hub/core";
+  } from "@taiwan-fin-hub/shared";
   import Card from "@/shared/ui/Card.svelte";
   import CardHeader from "@/shared/ui/CardHeader.svelte";
   import CardContent from "@/shared/ui/CardContent.svelte";

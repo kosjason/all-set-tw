@@ -10,7 +10,7 @@ import {
   summarizeActivityMonths,
   summarizeAdvances,
   type SummaryActivity,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 type Item = Parameters<typeof summarizeAdvances>[0][number];
 

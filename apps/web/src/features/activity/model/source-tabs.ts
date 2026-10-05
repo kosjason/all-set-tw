@@ -3,7 +3,7 @@ import { findDuplicateTarget } from "./roles";
 import type { ActivityItem } from "./types";
 
 /**
- * 發票對應狀態。伺服器推導的發票帶 `matchStatus`（`packages/core` 的
+ * 發票對應狀態。伺服器推導的發票帶 `matchStatus`（`shared/` 的
  * `InvoiceMatchStatus`）時直接採用；舊資料或前端自建項目沒有時，由 `duplicateOf`
  * （已併入哪一筆）與 `roleReason` 推導。
  */

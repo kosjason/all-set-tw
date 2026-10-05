@@ -1,9 +1,9 @@
-import { activityNotes, createDrizzle } from "@taiwan-fin-hub/db";
+import { activityNotes, createDrizzle } from "../../db";
 import type {
   ActivityNote,
   ActivityNoteRow,
   EconomicRoleTargetKind,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { and, eq, sql } from "drizzle-orm";
 
 const noteColumns = {

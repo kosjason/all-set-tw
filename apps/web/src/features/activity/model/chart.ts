@@ -1,10 +1,10 @@
 import type { ActivityItem } from "./types";
-import { activityDisplayAmount } from "@taiwan-fin-hub/core";
+import { activityDisplayAmount } from "@taiwan-fin-hub/shared";
 export {
   activityDisplayAmount,
   activityCashFlow,
   type ActivityFlow,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 // 分類顏色與切片由本月頁共用，實作在 data 層。
 export {
   ACTIVITY_CATEGORY_COLOR_BY_ID,

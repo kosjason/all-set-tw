@@ -2,7 +2,7 @@ import type {
   CategoryColor,
   CategoryKind,
   EconomicRole,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 export interface ClassificationRuleRow {
   id: string;

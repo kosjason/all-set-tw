@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ScheduledSyncReport } from "@taiwan-fin-hub/core";
+import type { ScheduledSyncReport } from "@taiwan-fin-hub/shared";
 import {
   financialChangeUnavailableMessage,
   financialChangeScopeMessage,

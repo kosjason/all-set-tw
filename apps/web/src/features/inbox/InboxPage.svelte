@@ -4,7 +4,7 @@
   項目可直接在列上選角色（角色 override API）。活動類項目只計本月與上月。
 -->
 <script lang="ts">
-  import type { EconomicRole, InboxItem } from "@taiwan-fin-hub/core";
+  import type { EconomicRole, InboxItem } from "@taiwan-fin-hub/shared";
   import { ChevronRight, CircleCheckBig } from "@lucide/svelte";
   import {
     createMutation,

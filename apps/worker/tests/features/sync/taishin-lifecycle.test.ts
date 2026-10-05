@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { parseTaishinCreditCardData } from "@taiwan-fin-hub/connectors";
+import { parseTaishinCreditCardData } from "../../../src/sources/taishin/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   persistStagedSyncWrite,
@@ -14,7 +14,7 @@ import {
 import { prepareTaishinLifecycleWrite } from "../../../src/features/sync/taishin-lifecycle";
 
 const migrationsDirectory = fileURLToPath(
-  new URL("../../../../../packages/db/migrations/", import.meta.url),
+  new URL("../../../migrations/", import.meta.url),
 );
 const databases: DatabaseSync[] = [];
 

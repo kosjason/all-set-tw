@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ActivityMonthSummary, InboxItem } from "@taiwan-fin-hub/core";
+import type { ActivityMonthSummary, InboxItem } from "@taiwan-fin-hub/shared";
 import { activityRoutes } from "../../../src/features/activity/route";
 import { invoiceRoutes } from "../../../src/features/invoices/route";
 import { getInbox } from "../../../src/features/inbox/service";
 import { honoFactory } from "../../../src/platform/hono";
 import { apiErrorResponse } from "../../../src/platform/http";
 import type { Env } from "../../../src/platform/env";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 // 合成資料：賣方統編、卡號末碼、網域都是假的。
 const now = "2026-07-30T00:00:00.000Z";

@@ -2,7 +2,7 @@ import {
   TRANSFER_HINT_RULE_ID,
   type EconomicRole,
   type EconomicRoleReason,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import {
   ECONOMIC_ROLE_LABELS,
   activityRoleTarget,

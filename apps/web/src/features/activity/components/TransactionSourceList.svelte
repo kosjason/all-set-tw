@@ -24,7 +24,7 @@
 </script>
 
 <script lang="ts">
-  import { activityDisplayAmount } from "@taiwan-fin-hub/core";
+  import { activityDisplayAmount } from "@taiwan-fin-hub/shared";
   import { formatCurrencyPrecise } from "@/shared/format/financial";
   import InvoiceItemsPreview from "./InvoiceItemsPreview.svelte";
   import { formatActivityDate } from "../model/list";

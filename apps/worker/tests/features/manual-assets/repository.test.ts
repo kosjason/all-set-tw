@@ -7,7 +7,7 @@ import {
   listManualAssets,
   updateManualAsset,
 } from "../../../src/features/manual-assets/repository";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 describe("manual asset repository", () => {
   let harness: Awaited<ReturnType<typeof createTestD1>>;

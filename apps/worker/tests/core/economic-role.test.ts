@@ -10,7 +10,7 @@ import {
   type RoleTransaction,
   type SummaryActivity,
   type TransactionRoleSignals,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 function role(signals: Partial<TransactionRoleSignals>) {
   return deriveTransactionEconomicRole({

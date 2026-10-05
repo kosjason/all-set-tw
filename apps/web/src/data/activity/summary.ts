@@ -1,7 +1,7 @@
 import type {
   ActivityMonthSummary,
   ActivitySummaryIncompleteReason,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import type {
   CashFlowEquation,
   CashFlowExcludedPart,

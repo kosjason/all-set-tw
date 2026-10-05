@@ -44,17 +44,41 @@ apps/
     │   │   ├── ocr/
     │   │   ├── own-accounts/
     │   │   └── sync/
-    │   ├── connectors/
+    │   │       ├── manual-sync.ts
+    │   │       ├── scheduling/
+    │   │       └── reports/
+    │   ├── sources/
+    │   │   ├── types.ts
+    │   │   ├── config-registry.ts
+    │   │   ├── browser.ts
+    │   │   └── <connectorId>/
+    │   ├── db/
+    │   │   └── schema/
     │   ├── middleware/
     │   └── platform/
+    ├── migrations/
+    ├── schema-metadata.json
+    ├── seeds/
     └── tests/
+        ├── sources/
+        ├── db/
+        ├── features/
+        ├── helpers/
+        ├── middleware/
+        └── platform/
 
-packages/
-├── core/
-├── connectors/
-└── db/
-    └── migrations/
+shared/
+├── package.json
+├── tsconfig.json
+├── index.ts
+├── financial-types.ts
+├── api-types.ts
+├── bank-api.ts
+├── connector-catalog.ts
+└── activity-*.ts
 ```
+
+npm workspaces 僅保留 Web、Worker 與根目錄的 `shared/`。`shared/` 以 `@taiwan-fin-hub/shared` 提供跨前後端共用的型別、契約與純邏輯。資料庫與連接器是 Worker 內部模組，共用相依宣告與型別檢查；透過目錄維持資料存取、外部協定與平台 adapter 的責任分工。
 
 ## 相依方向
 
@@ -65,11 +89,13 @@ flowchart TD
     FeatureRoute["feature/route.ts"]
     FeatureService["feature/service.ts"]
     FeatureRepository["feature/repository.ts"]
-    WorkerConnector["apps/worker/src/connectors"]
+    SourceSync["sources/<connectorId>/sync.ts"]
+    WorkerConnector["sources/<connectorId>/connector.ts"]
+    SyncPersistence["features/sync/persistence.ts"]
     Platform["platform"]
-    Core["@taiwan-fin-hub/core"]
-    Connectors["@taiwan-fin-hub/connectors"]
-    DB["@taiwan-fin-hub/db"]
+    Shared["@taiwan-fin-hub/shared"]
+    Connectors["sources/<connectorId>/protocol.ts / client"]
+    DB["apps/worker/src/db"]
     D1["Cloudflare D1"]
     Browser["Browser Rendering / Workers AI"]
 
@@ -80,19 +106,24 @@ flowchart TD
     FeatureRoute --> Platform
     FeatureRoute --> FeatureService
     FeatureService --> FeatureRepository
-    FeatureService --> WorkerConnector
-    FeatureService --> Connectors
+    FeatureService --> SourceSync
     FeatureService --> DB
 
     FeatureRepository --> DB
     FeatureRepository --> D1
     DB --> D1
+    SourceSync --> WorkerConnector
+    SourceSync --> Connectors
+    SourceSync --> SyncPersistence
+    SourceSync --> FeatureRepository
+    SyncPersistence --> D1
     WorkerConnector --> Browser
+    WorkerConnector --> Connectors
 
-    FeatureRoute --> Core
-    FeatureService --> Core
-    WorkerConnector --> Core
-    Connectors --> Core
+    FeatureRoute --> Shared
+    FeatureService --> Shared
+    WorkerConnector --> Shared
+    Connectors --> Shared
 ```
 
 基本原則：
@@ -159,7 +190,7 @@ Service 可以直接接受 `D1Database` 或 `Env`，不需要額外建立 Depend
 Feature 專用的 D1 存取層，負責：
 
 - 集中該 feature 使用的資料存取。
-- 一般 CRUD 與查詢組合預設使用 `@taiwan-fin-hub/db` 的 Drizzle schema／client。
+- 一般 CRUD 與查詢組合預設使用 `apps/worker/src/db` 的 Drizzle schema／client。
 - 執行 query、insert、update、delete 與 upsert。
 - 回傳 database row、affected row count 或存在性結果。
 - 在仍需原生 statement 時，建立供 service 組合的 `D1PreparedStatement`。
@@ -176,7 +207,7 @@ Repository 不應：
 - 呼叫外部銀行或政府 API。
 - 包含與資料存取無關的商業流程。
 
-SQL 應放在使用它的 feature 附近。只有確實被多個 feature 共用的資料存取能力，才放入 `@taiwan-fin-hub/db`。
+SQL 應放在使用它的 feature 附近。只有確實被多個 feature 共用的資料存取能力，才放入 `apps/worker/src/db`。
 
 ## 共用目錄責任
 
@@ -205,67 +236,60 @@ Cloudflare Worker 與 HTTP 平台層，目前包含：
 
 Middleware 應只處理跨功能的 request concern，不應承擔 feature 商業邏輯。
 
-### `apps/worker/src/connectors/`
+### `apps/worker/src/sources/`
 
-需要 Cloudflare Worker bindings 的 connector adapter，例如：
+各銀行、集保與電子發票以資料來源為目錄歸屬。維護一家銀行時，在 `sources/<connectorId>/` 查找它的同步、登入、API client、解析與資料修復；依實際需要保留檔案，不要求每個來源有同一套檔案。
 
-- Browser Rendering。
-- Puppeteer browser lifecycle。
-- Workers AI。
-- Worker-specific session management。
+- `sync.ts`：讀取及解密設定、處理 challenge、呼叫 connector，組合共用 persistence 與來源 repository。
+- `connector.ts`：需要 Browser Rendering、Puppeteer 或 Worker binding 的外部取資料 adapter；可以使用 `BROWSER` 或 `AI`，不直接讀寫 D1。
+- `protocol.ts` 與 API client：設定 schema、外部協定、signing／encryption、parser、response normalization，以及不需要 Worker binding 的 connector。
+- `repository.ts`、`authorizations.ts` 等：來源專用的資料修復、交易配對與存款生命週期。
+- `run-repository.ts`：電子發票與集保的 durable run／item、進度、session 與處理 lease。
 
-這些 connector 可以使用 `BROWSER` 或 `AI` binding，並將外部資料轉成 `@taiwan-fin-hub/core` 定義的標準資料格式。
+實體目錄集中不改變相依邊界：`sync.ts` 可依賴 connector、protocol、client、repository 與明確的共用 service；protocol／client 不得依賴 Hono、D1、Worker `Env`、adapter 或同步流程，也不得直接寫入資料庫。來源之間不引用彼此的內部實作。
 
-### `packages/connectors/`
+`sources` 根目錄只保留跨來源使用的能力：`browser.ts` 管 browser acquisition 與 capacity 錯誤，`types.ts` 定義後端 `Connector`／`SyncResult`，`sync-window.ts` 與 `credit-card-status.ts` 提供共同 policy／判斷。`config-registry.ts` 直接引用各來源的純 schema，供設定 feature 使用；同步 handler 仍由 `features/sync/registry.ts` 組裝。Worker 與測試直接引用來源檔案，不建立跨來源的實作匯出入口。
 
-不直接依賴 Hono、D1 或 Worker `Env` 的外部資料來源程式，包括：
+### `shared/`
 
-- Connector config schema。
-- 外部 API client。
-- Protocol signing、encryption 與 parsing。
-- Response normalization。
-- 不需要 Worker binding 的 connector。
-- 可獨立執行的 synthetic self-check。
-
-若 connector 必須使用 Browser Rendering，通用的 config、parser 與型別仍放在此 package，Worker-specific browser adapter 則放在 `apps/worker/src/connectors/`。
-
-### `packages/core/`
-
-前端、Worker、database 與 connector 共用的穩定契約，包括：
+前端、Worker 與 connector 共用的穩定契約及純邏輯，包括：
 
 - 金融資料型別。
-- Connector interface。
 - `ConnectorId` 與支援清單。
-- Sync result。
 - API success/error contract。
+- 銀行與信用卡帳單 API response contract。
+- 活動配對、去重、排序與資料組裝。
 
-不得將 Hono `Context`、D1 row 或 Puppeteer object 放入 core contract。
+不得將 Hono `Context`、D1 row 或 Puppeteer object 放入共用契約。
 
-### `packages/db/`
+`index.ts` 只提供匯出；金融正規化資料、API 型別與 connector catalog 分別維護於 `financial-types.ts`、`api-types.ts`／`bank-api.ts` 與 `connector-catalog.ts`。銀行 route 的帳單回傳以 `satisfies` 檢查共用 response 契約；此契約描述現有 JSON 的 nullable 欄位與帳單數值 flag，與 connector 的正規化資料及 repository row 各自獨立。fork 的 `/api/bank` 交易另帶經濟角色、商家、對方帳戶與卡片末四碼等欄位，前端型別仍定義於 `apps/web/src/data/bank/types.ts`，`/api/bank` 尚未以 `BankDataResponse` 檢查；收斂前兩處欄位要同步維護。
+
+### `apps/worker/src/db/`
 
 真正跨 feature 使用的 D1 基礎能力，目前主要包括：
 
 - `createDrizzle(binding)`：以當次 request／Queue 的 D1 binding 包成 Drizzle client，關閉 query／parameter logging。不是連線池或 DbContext。
-- `src/schema/`：依業務領域描述現有業務表；SQL migrations 仍是 schema 權威。
+- `schema/`：依業務領域描述現有業務表；SQL migrations 仍是 schema 權威。
 - Connector settings（Drizzle CRUD，保留既有 ID、建立時間與 sync cursor）。
 - `sanitizeDatabaseError(error)`：在設定存取、API 與通知 log 邊界移除 Drizzle query error 的 SQL、綁定參數及 cause。
 - 加密設定與 sync cursor 狀態。
 - Sync job、schedule 與 lock。
-- D1 migrations。
 
-Drizzle 型別只留在 DB 與 Worker repository 層。`packages/core`、前端與 `packages/connectors` 不依賴 ORM。日期維持既有 TEXT string，金額與 JSON／flag 語意不因導入而改寫。
+Drizzle 型別只留在 DB 與 Worker repository 層。`shared`、前端及來源的 protocol／client／connector 不依賴 ORM。日期維持既有 TEXT string，金額與 JSON／flag 語意不因導入而改寫。
 
-Feature-specific 查詢應放在 feature 的 `repository.ts`，而不是持續擴大 `packages/db/src/index.ts`。一般 repository 以 Drizzle 為預設寫法；sync job、run／item、排程、通知批次及報告的一般讀取，以及同步 lease 與獨立 run 狀態更新已使用 Drizzle。selection 維持既有 row shape、排序與 LEFT JOIN null；staging promotion 與 durable item 寫入的 statement composition 保留整組原生 D1 batch。
+Feature-specific 查詢應放在 feature 的 `repository.ts`，而不是持續擴大 `apps/worker/src/db/index.ts`。一般 repository 以 Drizzle 為預設寫法；sync job、run／item、排程、通知批次及報告的一般讀取，以及同步 lease 與獨立 run 狀態更新已使用 Drizzle。selection 維持既有 row shape、排序與 LEFT JOIN null；staging promotion 與 durable item 寫入的 statement composition 保留整組原生 D1 batch。
 
 分類 repository 已轉換為 Drizzle；規則重排維持單一 batch，保留 NOCASE 分類唯一性、系統規則保護與 override conflict target。invoices、investments 與 bank 的一般列表／明細查詢已轉換為 Drizzle，保留游標分頁、LEFT JOIN null、pending／posted 可見性與 TEXT 日期邊界；銀行交易日條件維持可使用 `idx_bank_transactions_transaction_day`。dashboard、net-worth、activity 與 bank calculation／search 聚合已轉換為 Drizzle，保留計算值、跨來源去重、TEXT 日期與 activity search CTE；同步 lease／run 狀態更新以 Drizzle 保留單次條件 UPDATE 與 affected rows 判斷；staging promotion 保留原生 batch 的順序、計數 offset、finalize／cursor／cleanup 原子邊界。保留 SQL 的範圍與測試見下方維護約定。
 
 資料庫 schema 與預設資料必須透過：
 
 ```text
-packages/db/migrations/
+apps/worker/migrations/
 ```
 
-管理，不得由 `GET` API 在執行期間自動建立，也不得對正式環境使用 `drizzle-kit push`。Schema 比對測試以 migration 重播結果為準；隔離 D1 整合測試使用 Miniflare／workerd binding，不連線正式資料庫。
+管理，不得由 `GET` API 在執行期間自動建立，也不得對正式環境使用 `drizzle-kit push`。隔離 D1 整合測試以 Miniflare／workerd binding 按順序重播 migrations，不連線正式資料庫。
+
+Schema 文件語意維護於 `apps/worker/schema-metadata.json`，以 `npm run db:schema:docs` 重新產生 `docs/database-schema.md`；Demo 種子資料位於 `apps/worker/seeds/demo.sql`。資料庫測試位於 `apps/worker/tests/db/`，由 `npm run test:backend` 一併執行。
 
 ### Drizzle 與原生 SQL 維護約定
 
@@ -273,23 +297,22 @@ packages/db/migrations/
 複雜 CTE、window function、set-based upsert 或跨檔案組合的 D1 batch，
 以可讀性與保留原子性為準，保留原生 SQL 並註明理由。
 
-| 保留範圍                                            | 原因與主要驗證                                                                                                                                                                                                                |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| staging JSON upsert、promotion 與 lifecycle 合併    | 保留批次參數數量、ENTITY_ORDER、count offset、cursor／finalize／cleanup 的同一 batch。`persistence.test.ts`、identity migration tests、`preference-fk-reconciliation.test.ts`、`drizzle-runtime.test.ts` 驗證資料保留及回滾。 |
-| einvoice／TDCC durable item 寫入與 create-or-get    | 保留 item claim、JSON merge、計數、設定版本 CAS 及 partial unique conflict 處理。run repository 與 sync service tests 驗證重送與結案。                                                                                        |
-| schedule／notification batch／report 寫入及財務 CTE | 保留固定成員快照、notification claim、報告修復及跨資產最新值／缺幣計算。notification batch、report repository 與 scheduler tests 驗證。                                                                                       |
+| 保留範圍                                            | 原因與驗證重點                                                                                                                                                              |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| staging JSON upsert、promotion 與 lifecycle 合併    | cursor／finalize／cleanup 必須在同一 batch。`persistence.test.ts`、`preference-fk-reconciliation.test.ts`、`drizzle-runtime.test.ts` 以隔離 D1 驗證去重、使用者決定與回滾。 |
+| einvoice／TDCC durable item 寫入與 create-or-get    | 保留 item claim、JSON merge、計數、設定版本 CAS 及 partial unique conflict 處理。以共用 lease 與發票 promotion 核心案例驗證並行與重送。                                     |
+| schedule／notification batch／report 寫入及財務 CTE | 保留固定成員快照、notification claim、報告修復及跨資產最新值／缺幣計算；不因統一語法改變這些行為。                                                                          |
 
 Lease acquisition／renewal 維持單次條件 UPDATE 與 affected rows 判斷，
 不得拆成 SELECT 後 UPDATE；不得用循序 await 或 Promise.all 取代原子 batch。
-查詢調整須保留 expression index 的可用性，以既有 EXPLAIN QUERY PLAN 測試確認。
+查詢調整須保留 expression index 的可用性；涉及查詢效能時以 EXPLAIN QUERY PLAN 確認。
 
 SQL migrations 是 schema 權威，由 Wrangler 管理套用與 migration ledger；
-不導入 Drizzle Kit 生成／套用 migration 流程。現有 Kit devDependency 僅供
-`packages/db/tests/schema.test.ts` 的隔離 schema 比對，不使用 push 同步資料庫。
-比對須涵蓋 FK、CHECK、generated column、nullable、default、unique 與索引語意。
+不導入 Drizzle Kit 生成／套用 migration 流程；fork 保留 `apps/worker/tests/db/schema.test.ts` 的 Drizzle schema parity 測試（以 `drizzle-kit/api` 比對 migration 後的結構與 Drizzle schema），新增或修改 schema 時兩邊要一致。
+Schema 修改時依實際影響驗證 migration 與 FK、CHECK、generated column、unique 等約束。
 
-Drizzle repository 整合測試使用 `packages/db/testing/d1.ts` 的 Miniflare／workerd D1，
-驗證回傳 shape、NULL、排序及 batch 回滾；既有 SQLite adapter 僅用於其能正確模擬的測試。
+Drizzle repository 整合測試使用 `apps/worker/tests/helpers/d1.ts` 的 Miniflare／workerd D1，
+聚焦資料完整性、安全與 batch 回滾，不為一般 CRUD、row shape 或排序逐項建檔。
 直接 import Drizzle 的 workspace 應自行宣告相依，不依賴 npm hoisting。
 
 ### 交易與發票偏好的參照完整性
@@ -359,7 +382,7 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
 `bank_transactions.counterparty_bank_code`／`counterparty_account_suffix` 保存來源可辨識的
 轉帳對方（三碼代碼與帳號末五碼，CHECK 限制不得存完整帳號），由 connector 的
 `counterpartyAccount` 經 record mapper 與 staged persistence 寫入；0049 以相同規則回填
-國泰世華既有交易。代碼表與推導、遮罩、比對工具集中在 `packages/core` 的 `taiwan-banks.ts`。
+國泰世華既有交易。代碼表與推導、遮罩、比對工具集中在 `shared/` 的 `taiwan-banks.ts`。
 
 `features/own-accounts/` 提供 `GET/POST /api/own-accounts` 與
 `PUT/DELETE /api/own-accounts/:id`，只接受三碼代碼、末 4–5 碼、種類與選填名稱；
@@ -379,7 +402,7 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
 ### 活動經濟角色與月收支 summary
 
 每筆銀行／信用卡交易與電子發票都有讀取時推導的經濟角色，推導函式集中在
-`packages/core` 的 `economic-role.ts`（純函式）。與自有帳戶比對相同，角色不改寫交易或發票，
+`shared/` 的 `economic-role.ts`（純函式）。與自有帳戶比對相同，角色不改寫交易或發票，
 規則、分類或自有帳戶變動後過去月份自動重算；只有使用者 override 存在
 `activity_role_overrides`（0054）。
 
@@ -472,7 +495,7 @@ override 沒有指定 `duplicateOf` 時保留推導出的重複關係（重複�
 ### 發票與刷卡／銀行交易去重
 
 同一筆消費可能同時出現在信用卡（或存款帳戶）與電子發票；summary 只能算一次。配對在讀取時
-推導（`packages/core` 的 `activity-matching.ts` `matchInvoicesToTransactions` 與
+推導（`shared/` 的 `activity-matching.ts` `matchInvoicesToTransactions` 與
 `invoice-dedupe.ts` `resolveInvoiceDedupe`），不寫入資料庫，刷卡交易晚到時下次讀取自然合併。
 
 候選：手動連結與「分開記錄」優先；其餘只考慮仍計為消費（`economicRole` 為 `spending` 或未推導）、
@@ -618,7 +641,7 @@ id → 消費淨額，未分類為 `other`、使用者自訂分類歸入 `misc`�
 ### 商家模型與消費分類
 
 分類只描述「錢花在哪」：收入、轉到自己帳戶、投資與繳卡費由經濟角色表達，不是分類。
-分類 id、名稱、emoji 與顏色的正本在 `packages/core` 的 `categories.ts`，資料庫
+分類 id、名稱、emoji 與顏色的正本在 `shared/` 的 `categories.ts`，資料庫
 `classification_categories` 以相同 id 供 FK 參照（0055）。
 
 - 消費分類只有 9 個頂層、沒有子類（0067 併成 9 類，2026-09 使用者回饋「分類太多太細，不知道選哪個」，並依使用者要求加入「捐款」）：
@@ -661,7 +684,7 @@ id → 消費淨額，未分類為 `other`、使用者自訂分類歸入 `misc`�
   作為「轉帳提示」。`target_type` 為 NULL 的規則也套用於發票賣方名稱；覆寫的 `target_type` 可為
   `bank_transaction` 或 `invoice`。
 
-商家 key 由 `packages/core` 的 `merchant.ts` 在讀取時推導：
+商家 key 由 `shared/` 的 `merchant.ts` 在讀取時推導：
 
 - 發票有賣方統編時為 `ban:<8 碼統編>`（`invoices.seller_ban` 為 0056 由 raw payload 推導的
   virtual generated column，同步流程不變），否則為 `name:<正規化名稱>`。
@@ -717,12 +740,12 @@ TradingView、Trend Micro／趨勢科技 → `tech`；LINE禮物 → `misc`（�
 
 活動搜尋（`GET /api/activity/search?q=`）比對原始文字、商家別名（別名對應的統編與名稱）、發票品項
 名稱，並支援金額語法：`125`（金額等於或文字包含）、`>1000`、`>=`、`<`、`<=`、`=`、`100-200`，
-可與文字並用（如 `咖啡 >100`），金額以絕對值比較。解析在 `packages/core` 的 `activity-search.ts`，
+可與文字並用（如 `咖啡 >100`），金額以絕對值比較。解析在 `shared/` 的 `activity-search.ts`，
 候選日期的 SQL 與前端篩選共用同一語法。
 
 ### 信用卡帳單與繳款狀態
 
-`features/cards/` 提供信用卡頁 API，契約型別在 `packages/core` 的 `cards.ts`。帳單與繳款狀態都在
+`features/cards/` 提供信用卡頁 API，契約型別在 `shared/` 的 `cards.ts`。帳單與繳款狀態都在
 讀取時由 `credit_card_bills`、最新餘額快照與交易角色推導，不寫入任何資料。
 
 - `GET /api/cards/summary`：依發卡行（信用卡帳戶的 `connector_id`，例如 `cathaybk`）分組。
@@ -826,7 +849,7 @@ spending 角色的退款為負數沖減；逐筆四捨五入到分，加總與 s
 
 ### 待處理收件匣
 
-`features/inbox/` 提供 `GET /api/inbox`，契約型別在 `packages/core` 的 `inbox.ts`。回傳
+`features/inbox/` 提供 `GET /api/inbox`，契約型別在 `shared/` 的 `inbox.ts`。回傳
 `{ counts: { blocking, tidy }, months, items, unavailable }`；每項為
 `{ id, kind, severity, title, detail, target: { view, query? }, createdAt, action?, amount?, currency?, count? }`，
 blocking 在前，同級依 kind 與時間排序。`id` 在資料未變動前保持穩定，供前端記住已讀或略過。
@@ -998,21 +1021,107 @@ X-Next-Cursor: <opaque-cursor>
 
 ## Connector 同步架構
 
-同步 feature 位於：
+共用同步管理位於 `features/sync`，各來源實作位於 Worker 根層的 `sources`：
 
 ```text
 apps/worker/src/features/sync/
+apps/worker/src/sources/
 ```
 
-主要責任如下：
+目錄依同步管理與資料來源分組：
 
-- `route.ts`：手動同步 API 與 connector-specific 錯誤 mapping。
-- `service.ts`：同步 use case、設定解密、connector 呼叫、lock 與流程協調。
-- `record-mapper.ts`：將 connector result 轉換成 database write record。
-- `persistence.ts`：透過 staging table 與 D1 batch 將同步資料寫入正式資料表。
-- `repository.ts`：同步流程使用的 query 與 prepared statement。
+```text
+sync/
+├── route.ts                   # 手動同步與 challenge API
+├── manual-sync.ts             # 手動同步的鎖、結果狀態與報告修復
+├── registry.ts                # 來源 dispatch 與 scope 驗證
+├── types.ts
+├── config.ts
+├── connector-state.ts
+├── connector-repository.ts
+├── lock.ts
+├── errors.ts
+├── record-mapper.ts
+├── persistence.ts
+├── transaction-merge.ts
+├── card-reconciliation.ts
+├── scheduling/
+│   ├── route.ts               # 排程設定與工作狀態 API
+│   ├── service.ts             # 排程設定 use case
+│   ├── repository.ts          # 排程設定與 sync jobs 存取
+│   ├── scheduler.ts           # 到期工作選取與執行
+│   ├── queue.ts               # Queue producer／consumer 與重試
+│   └── batch-repository.ts    # 預設排程一輪的固定成員與結案
+└── reports/
+    ├── route.ts               # 最近報告與活動明細 API
+    ├── repository.ts          # 金融快照、報告查詢與修復
+    ├── activity-capture.ts    # 寫入前後的活動變化 journal
+    ├── activity-detail-service.ts
+    └── activity-detail-repository.ts
+
+sources/
+├── browser.ts
+├── types.ts
+├── config-registry.ts
+├── sync-window.ts
+├── credit-card-status.ts
+├── esun/
+│   ├── sync.ts                # 玉山同步 use case
+│   ├── connector.ts           # 銀行登入、session 與資料擷取
+│   ├── protocol.ts            # 純設定 schema
+│   ├── portal.ts              # 銀行頁面擷取與解析
+│   ├── authorizations.ts      # 待入帳／已入帳銜接
+│   └── repository.ts          # 玉山專用舊資料修復
+├── sinopac/
+│   ├── sync.ts
+│   ├── connector.ts
+│   ├── protocol.ts
+│   ├── deposit-protocol.ts
+│   ├── authorizations.ts
+│   ├── matching.ts
+│   └── repository.ts
+├── einvoice/
+│   ├── sync.ts                # 電子發票 Queue 分段同步
+│   ├── protocol.ts
+│   ├── api.ts
+│   ├── v2-client.ts
+│   ├── invoice-data.ts
+│   └── run-repository.ts      # durable run／item 與處理 lease
+├── tdcc/
+│   ├── sync.ts                # 集保 Queue 分段同步
+│   ├── protocol.ts
+│   ├── epassbook-client.ts
+│   └── run-repository.ts
+└── <其他銀行>/
+    ├── sync.ts
+    ├── protocol.ts
+    └── 來源專用 connector／client／輔助檔案
+```
+
+根目錄共用檔案的責任如下：
+
+| 檔案                                             | 責任                                                                                                                                       |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `route.ts`                                       | 手動同步 API、request validation 與 connector-specific 錯誤 mapping。                                                                      |
+| `manual-sync.ts`                                 | 一般銀行手動同步的 lock、狀態更新與已結案排程報告修復協調。                                                                                |
+| `registry.ts`                                    | 從共用 catalog 驗證 scope，dispatch 單次同步與 challenge handler；電子發票與集保的 `run` 明確拒絕單次同步，入口必須使用各自的 Queue 流程。 |
+| `types.ts`                                       | 同步 scope、scope 常數與 outcome 型別。                                                                                                    |
+| `config.ts`、`connector-state.ts`                | 取得設定、加密敏感欄位，區分公開偏好、敏感 session 與安全 cursor。                                                                         |
+| `connector-repository.ts`                        | 共用設定／cursor 寫入、設定版本 guard 與跨來源帳戶關聯；銀行專用修復放在來源目錄。                                                         |
+| `lock.ts`、`errors.ts`                           | 共用 lease／heartbeat、使用者操作判定與錯誤訊息／log 脫敏。                                                                                |
+| `record-mapper.ts`、`persistence.ts`             | 將 connector result 轉成 write record，透過 staging table 與 D1 batch 寫入正式資料表。                                                     |
+| `transaction-merge.ts`、`card-reconciliation.ts` | 共用舊交易合併與單卡摘要帳戶修復；保留使用者偏好、分類與發票關聯。                                                                         |
+
+Worker 的 `sources/<connectorId>/sync.ts` 負責設定解密、connector 呼叫與同步資料寫入；單次銀行流程也處理互動式 challenge，override 型別與來源 colocate。`ctbc/authorizations.ts` 管信用卡授權合併，`hncb/repository.ts` 管華南舊交易／帳戶修復，`nextbank/deposits.ts` 與 `obank/time-deposits.ts` 管存款生命週期。共用同步管理留在 `features/sync`，來源之間共用的外部取資料工具留在 `sources` 根目錄。
+
+各來源直接引用同一來源目錄的 protocol／adapter，以及 `features/sync` 的共用 record mapper、persistence，不經由 `manual-sync.ts` 匯出，也不互相依賴其他來源。電子發票與集保的 `sync.ts`／`run-repository.ts` 管理 durable Queue 流程，集保不再保留另一套單次同步實作。目錄調整不改變驗證、session、cursor 與 D1 promotion／finalize 的原子邊界。
+
+閱讀一般銀行手動流程時，依序看 `features/sync/route.ts` → `manual-sync.ts` → `registry.ts` → `sources/<connectorId>/sync.ts`，再查看同一來源的 connector／protocol 與共用 `features/sync/persistence.ts`。排程流程從 `features/sync/scheduling/queue.ts` → `scheduler.ts` 開始；電子發票與集保則直接看來源的 `sync.ts` 和 `run-repository.ts`。來源專用測試與 fixtures 位於 `apps/worker/tests/sources/<connectorId>`；跨來源的同步資料完整性測試留在 `tests/features/sync`。
+
+fork 另有以下同步檔案，放在 `features/sync/`：
+
 - `ctbc-write.ts`：中信自動同步與網銀半自動匯入共用的寫入路徑（授權配對、promote、
-  canonical 帳戶連結與存款歷史重建）。
+  canonical 帳戶連結與存款歷史重建）；`sources/ctbc/sync.ts` 也走這條路徑。
 - `ctbc-import.ts`：`POST /api/connectors/ctbc/import` 的 use case，以 `parseCtbcData`
   解析使用者自行登入網銀後取得的回應，在手動同步 lock 下寫入；不讀寫帳密與 cursor。
   `registry.ts` 的中信同步（手動與排程）一律丟 `CtbcAutoSyncPausedError`（回
@@ -1020,12 +1129,13 @@ apps/worker/src/features/sync/
   寫入路徑測試比對。`PATCH /api/sync-jobs/ctbc/all` 拒絕 `enabled: true`（`409
 SYNC_SCHEDULE_UNSUPPORTED`）；migration `0072` 關閉既有的中信排程，並把先前自動同步
   留下的失敗或需要處理狀態清回上次成功（保留 `last_success_at`）。
-- `schedule-route.ts`：排程設定 API。
-- `schedule-service.ts`：排程設定 use case。
-- `scheduler.ts`：到期工作選取、預設排程批次與同步 dispatch。
-- `scheduler-queue.ts`：Cron 啟動訊息、Queue consumer 與分段同步 continuation。
-- `einvoice-sync-service.ts` / `einvoice-run-repository.ts`：電子發票 durable run 與明細工作。
-- `tdcc-sync-service.ts` / `tdcc-run-repository.ts`：集保 durable run、分頁工作與結果彙整。
+- `taishin-lifecycle.ts`：台新即時消費與入帳明細的寫入前配對（見 connector 文件）。
+- `sync-warning.ts`：把 `SyncOutcome.warnings` 合併成寫入 `sync_jobs.last_error` 的單一訊息；
+  手動與排程同步成功時都會寫入，沒有警告時清除。
+- 銀行同步寫入快照後以 `net-worth/service.ts` 的 `refreshBankDepositHistory` 先由交易回補
+  存款快照再重建存款歷史。
+- 同步 lease：單次同步 10 分鐘並每 2 分鐘 heartbeat 續約；電子發票與集保的 durable run 跨
+  Queue invocation 持有 lock、不續約，使用 30 分鐘的 `DURABLE_SYNC_LOCK_LEASE_MS`。
 
 同步資料流：
 
@@ -1150,9 +1260,11 @@ promotion 與 finalize 的進度。暫時錯誤使用 Queue retry，需要互動
 
 Connector 不得直接寫入金融資料表。
 
+銀行確認沒有信用卡時，connector 仍以正常 `SyncResult` 完成同步：支援存款者回傳存款，信用卡專用來源可回傳空結果。空結果仍執行設定／cursor 的 finalize statements，排程記為成功；不刪除既有信用卡歷史，也不建立新的零餘額快照。無卡判斷留在 connector，不能在共用 service 將未知信用卡錯誤改成成功。各行判斷依據見 [Connector 開發規範](004-connector-development.md#無信用卡情境)。
+
 同步 service 應先：
 
-1. 將 connector response 正規化成 core contract。
+1. 將 connector response 正規化成共用契約。
 2. 使用 `record-mapper.ts` 產生 `SyncWriteRecord`。
 3. 將 records 分批寫入 `sync_write_staging`。
 4. 使用單一 D1 batch 將 staging records promote 至正式資料表。
@@ -1184,7 +1296,7 @@ Connector 不得直接寫入金融資料表。
 - Table、columns 與 conflict columns。
 - Record mapper。
 - D1 migration。
-- 對應測試。
+- 涉及四類核心風險時擴充既有測試。
 
 ## 排程同步活動明細
 
@@ -1198,7 +1310,7 @@ Connector 不得直接寫入金融資料表。
   不以 `updated_at` 判斷內容變化；沒有變化的授權候選在同一 transaction 移除。
 - 電子發票 durable promotion 使用相同 settings-version guard 保存新發票快照；
   集保使用既有 promotion 與鎖的 run ID。結果發佈與來源結果更新共用 CAS transaction。
-- `activity-detail-service.ts` 在報告結案及手動補救後，以完整同日候選與既有活動配對
+- `reports/activity-detail-service.ts` 在報告結案及手動補救後，以完整同日候選與既有活動配對
   規則建立展示快照；載入範圍另含前後 `INVOICE_MATCH_CONTEXT_DAYS`（10 天，信用卡載具配對窗 5 天的兩倍），讓唯一性判斷
   看得到所有競爭候選。活動搜尋依命中日期分批載入，缺少鄰近日期，因此只做同日配對
   （`dayWindow: 0`），不做跨日容差配對。交易與發票在來源明細中合併，同批新增資料與活動筆數可不同；
@@ -1223,7 +1335,7 @@ Connector 不得直接寫入金融資料表。
 4. 有 SQL 時建立 `repository.ts`。
 5. 在 `apps/worker/src/index.ts` 註冊 feature routes。
 6. Schema 有變更時新增 D1 migration。
-7. 為 service、repository 或 route 的主要行為新增測試。
+7. 判斷是否引入下方四類核心風險，必要時擴充既有測試；不要求每個 feature 各自建立測試。
 
 不要先建立抽象 interface，再尋找使用情境。只有出現實際重複或替換需求時才抽象。
 
@@ -1232,13 +1344,13 @@ Connector 不得直接寫入金融資料表。
 新增 connector 必須遵循 [`docs/004-connector-development.md`](004-connector-development.md)。核心步驟包括：
 
 1. 在 `connectorCatalog` 宣告 ID、連接模式、scope、資料能力與設定欄位分類。
-2. 在 `connectorConfigSchemas` 註冊 config schema、parser 與通用 protocol/client。
-3. 需要 Worker binding 時，在 `apps/worker/src/connectors` 建立 adapter。
-4. 在 sync service 將資料正規化並透過 staged persistence 寫入。
+2. 在 `apps/worker/src/sources/<connectorId>` 建立 `protocol.ts`、必要的 client 與 parser，並在 `sources/config-registry.ts` 的 `connectorConfigSchemas` 註冊 config schema。
+3. 需要 Worker binding 時，在同一來源目錄建立 `connector.ts` adapter。
+4. 在同一來源目錄的 `sync.ts` 組合共用 record mapping 與 staged persistence 寫入；來源專用的配對與修復放在相鄰檔案。
 5. 在 `connectorRuntimeRegistry` 註冊手動／排程同步與 challenge handler。
 6. 前端使用受 `ConnectorFormFieldKey` 約束的欄位，不得重複維護 connector 顯示 metadata。
 7. 透過 migration 建立預設停用的 `all` sync job。
-8. 完成 registry completeness、state boundary、parser、session lifecycle、route、scheduler 與 synthetic self-check。
+8. 依四類核心風險完成必要驗證，不逐層建立相同行為的模擬測試。
 
 Route 與 scheduler 應透過 runtime registry dispatch，不再新增 connector-specific switch。
 
@@ -1246,25 +1358,30 @@ Connector 回傳的 `raw` 資料只供診斷與未來 migration 使用，不得�
 
 ## 測試與驗證
 
-提交後端架構或 connector 變更前，至少執行：
+提交前從 repo root 依 `AGENTS.md` 執行格式、型別與此次變更適用的核心測試：
 
 ```bash
+npm run format:check
 npm run typecheck
 npm run test:backend
 npm run test:unit
-npm run test:e2e
-npm run build
 ```
 
-測試責任：
+影響前端主要流程時執行 `npm run test:e2e`；建置設定或相依變更時執行 `npm run build`。
 
-- Worker feature、service 與 HTTP 行為：`@taiwan-fin-hub/worker` tests。
-- 共用 D1 helpers 與 sync job：`@taiwan-fin-hub/db` tests。
-- Connector protocol、parser 與 synthetic check：`@taiwan-fin-hub/connectors` self-check。
-- Web component 與 client logic：Web unit tests。
-- 使用者主要操作流程：Web E2E tests。
+新增測試以四類核心保障為優先（本 fork 另保留既有的 connector parser、session、元件與 schema parity 回歸測試，不跟隨上游精簡）：
 
-新增 connector 行為時，不得只新增無人執行的測試腳本；必須接入 `packages/connectors` 的 `test:selfcheck` 或正式 test command。
+| 保障         | 主要驗證                                                                                                                                               |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 金融數字     | 已確認來源語意的 parser fixture，以及前端金額計算；欠款／溢繳符號、幣別、未知值、配對去重。                                                            |
+| 資料完整性   | 隔離 D1 的同步重送、pending → posted、使用者決定保留、失敗回滾與 cursor 原子更新。                                                                     |
+| 憑證與授權   | 真實加密與 JWT 驗章、公開資料與錯誤不含秘密、設定變更清除 session、舊同步不能覆蓋新憑證或資料；保留部署 secrets 與上游同步不覆蓋使用者變更的少量案例。 |
+| 主要操作流程 | Web E2E 的資產、銀行驗證、活動排除、發票配對與失敗重試；每個流程選一個 viewport。                                                                      |
+
+`test:backend` 執行 Worker 測試（含 connector parser 與 DB 測試）、部署／Git 安全案例與中信網銀匯入工具測試；parser 測試由 Worker 的 Vitest 執行，不另維護獨立 self-check 腳本。Web unit 含金融計算與元件測試，主要 UI 流程以 E2E 驗證。
+
+新增測試前先說明錯誤的使用者結果與獨立預期來源；優先擴充現有核心案例。同一行為選一個主要驗證層，不追求 coverage、測試數量、每個函式或每個分支都有測試。
+一般 CRUD、轉送、固定文字／樣式、銀行 DOM 與事件順序、已完成歷史 migration 不另建立回歸套件。型別檢查、建置與適用的實際操作仍須完成；核心測試通過不等同所有銀行登入與帳務都已驗證。
 
 ## 維護原則
 
@@ -1272,7 +1389,7 @@ npm run build
 - Composition Root 保持精簡。
 - Route 保持薄，Service 表達 use case，Repository 集中 SQL。
 - 避免為小型專案引入不必要的 DDD 或 Clean Architecture ceremony。
-- 只有真正跨 feature 的程式才移入 package 或 platform。
+- 前後端共用契約與純邏輯放在根目錄的 `shared/`；後端跨 feature 的資料存取基礎能力、Worker／HTTP 平台工具與 middleware，分別放在 `apps/worker/src/db`、`apps/worker/src/platform` 與 `apps/worker/src/middleware`。不因跨 feature 使用就新增獨立套件。
 - 外部系統資料先正規化，再進入主要資料模型。
 - 所有敏感設定必須加密後儲存。
 - 所有未知錯誤必須在 API 邊界被消毒。

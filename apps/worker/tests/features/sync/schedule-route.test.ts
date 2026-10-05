@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
-import { syncScheduleRoutes } from "../../../src/features/sync/schedule-route";
+import { createTestD1 } from "../../helpers/d1";
+import { syncScheduleRoutes } from "../../../src/features/sync/scheduling/route";
 
 describe("sync job schedule route", () => {
   let harness: Awaited<ReturnType<typeof createTestD1>>;

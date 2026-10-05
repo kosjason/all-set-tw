@@ -1,4 +1,4 @@
-import type { ActivityRef } from "@taiwan-fin-hub/core";
+import type { ActivityRef } from "@taiwan-fin-hub/shared";
 import {
   activityRoleTarget,
   type ActivityRoleTarget,

@@ -12,7 +12,7 @@ import {
   parseBankAccountMemo,
   taiwanBankName,
   taiwanBankShortName,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 describe("Taiwan bank codes", () => {
   it("covers common banks with unique three-digit codes", () => {

@@ -19,7 +19,7 @@ class SqliteD1 {
 
   constructor() {
     const migrationsDirectory = fileURLToPath(
-      new URL("../../../../../packages/db/migrations/", import.meta.url),
+      new URL("../../../migrations/", import.meta.url),
     );
     for (const file of readdirSync(migrationsDirectory)
       .filter((name) => name.endsWith(".sql"))

@@ -10,7 +10,7 @@ import {
   type ActivityInvoice,
   type ActivityTrade,
   type ActivityTransaction,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 type InvoiceTransactionPreference = Parameters<
   typeof matchInvoicesToTransactions

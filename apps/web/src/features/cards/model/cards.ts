@@ -4,7 +4,7 @@ import type {
   CardPaymentStatus,
   CardSummaryCard,
   CurrentCardBill,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 /** 截止日在幾天內且尚未繳清時醒目提示。 */
 export const DUE_SOON_DAYS = 7;

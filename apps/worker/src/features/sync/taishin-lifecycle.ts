@@ -2,7 +2,7 @@ import {
   pairTaishinTransactions,
   taishinPreferredAuthorizedAt,
   taishinTransactionMatchKind,
-} from "@taiwan-fin-hub/connectors";
+} from "../../sources/taishin/protocol";
 import type { SyncWriteRecord } from "./persistence";
 import { mergeLegacyTransactionStatements } from "./transaction-merge";
 

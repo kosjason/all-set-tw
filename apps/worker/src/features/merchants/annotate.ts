@@ -22,7 +22,7 @@ import {
   type EconomicRole,
   type EconomicRoleFields,
   type ForeignFeeTransaction,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import {
   resolveClassifications,
   type ClassificationResult,

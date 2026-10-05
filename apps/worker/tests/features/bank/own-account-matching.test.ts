@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getBankRange } from "../../../src/features/bank/service";
 import { resolveCalculationExclusion } from "../../../src/features/bank/calculation-service";
-import { appendCathayDepositTransactions } from "../../../src/connectors/cathaybk";
+import { appendCathayDepositTransactions } from "../../../src/sources/cathaybk/connector";
 import { bankTransactionRecord } from "../../../src/features/sync/record-mapper";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 const range = { from: "2026-09-01", to: "2026-10-01" };
 const now = "2026-09-01T00:00:00.000Z";

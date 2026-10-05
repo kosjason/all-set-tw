@@ -7,7 +7,7 @@ import {
   saveNotificationPreferences,
   upsertPushSubscription,
 } from "../../../src/features/notifications/repository";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 describe("notification repository", () => {
   let harness: Awaited<ReturnType<typeof createTestD1>>;

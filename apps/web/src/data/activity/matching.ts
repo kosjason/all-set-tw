@@ -7,4 +7,4 @@ export {
   INVOICE_MATCH_STATUSES,
   type InvoiceMatchStatus,
   type InvoiceTransactionMatches,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";

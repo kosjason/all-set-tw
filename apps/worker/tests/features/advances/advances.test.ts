@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { ActivityMonthSummary } from "@taiwan-fin-hub/core";
+import type { ActivityMonthSummary } from "@taiwan-fin-hub/shared";
 import { activityRoutes } from "../../../src/features/activity/route";
 import { activityRoleRoutes } from "../../../src/features/activity-roles/route";
 import { advanceRoutes } from "../../../src/features/advances/route";
@@ -8,7 +8,7 @@ import { carryRoleOverrideAndNoteStatements } from "../../../src/features/sync/t
 import { honoFactory } from "../../../src/platform/hono";
 import { apiErrorResponse } from "../../../src/platform/http";
 import type { Env } from "../../../src/platform/env";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 // 合成資料：幫朋友刷卡代墊手機，朋友之後轉帳還款（多給 220）。
 const NOW = new Date("2026-10-04T04:00:00.000Z");

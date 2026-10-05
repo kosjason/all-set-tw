@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 // 支援的升級路徑是從已發布的 0048 起全新套用；0049–0069 未曾發布，只有維護者本機跑過
 // 舊版 0055／0067／0069（另行手動修補），因此不測試「舊版 0067 已套用」的路徑。
 const migrationsDirectory = fileURLToPath(
-  new URL("../../../../../packages/db/migrations/", import.meta.url),
+  new URL("../../../migrations/", import.meta.url),
 );
 const migrationFiles = readdirSync(migrationsDirectory)
   .filter((name) => name.endsWith(".sql"))

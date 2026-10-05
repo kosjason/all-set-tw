@@ -332,3 +332,30 @@ for (const width of [1280, 390, 320]) {
     });
   });
 }
+
+test("labels an overpaid credit card total as overpayment, not debt", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.route("**/api/bank", (route) =>
+    route.fulfill({
+      json: {
+        accounts: [
+          bankData.accounts[0],
+          { ...bankData.accounts[1], balance: 1_200 },
+        ],
+        transactions: [],
+      },
+    }),
+  );
+  await page.goto("/#/assets");
+  await expect(
+    page.getByText("信用卡溢繳", { exact: true }).filter({ visible: true }),
+  ).toHaveCount(2);
+  await expect(
+    page.getByText("信用卡負債", { exact: true }).filter({ visible: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText(/＋ 信用卡溢繳/).filter({ visible: true }),
+  ).toBeVisible();
+});

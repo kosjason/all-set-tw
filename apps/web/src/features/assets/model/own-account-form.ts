@@ -4,7 +4,7 @@ import {
   isValidOwnAccountSuffix,
   type OwnAccountInput,
   type OwnAccountKind,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 export const OTHER_BANK_OPTION = "other";
 export const OWN_ACCOUNT_LABEL_MAX_LENGTH = 40;

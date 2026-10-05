@@ -1,4 +1,4 @@
-import type { ActivityMonthSummary } from "@taiwan-fin-hub/core";
+import type { ActivityMonthSummary } from "@taiwan-fin-hub/shared";
 
 /** 測試用的月收支 summary（`GET /api/activity/summary` 的單月結果）。 */
 export function summaryFixture(

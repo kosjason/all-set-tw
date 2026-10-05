@@ -1,4 +1,7 @@
-import type { EconomicRole, MerchantPaymentMethod } from "@taiwan-fin-hub/core";
+import type {
+  EconomicRole,
+  MerchantPaymentMethod,
+} from "@taiwan-fin-hub/shared";
 
 /** `GET /api/merchants` 的一筆商家。 */
 export interface MerchantSummaryRow {

@@ -13,7 +13,7 @@
   import { advancesQuery } from "@/data/advances/queries";
   import WeeklyReview from "./components/WeeklyReview.svelte";
   import { ChevronLeft, ChevronRight, CreditCard, Inbox } from "@lucide/svelte";
-  import { currentActivityMonthKey } from "@taiwan-fin-hub/core";
+  import { currentActivityMonthKey } from "@taiwan-fin-hub/shared";
   import { createQuery, keepPreviousData } from "@tanstack/svelte-query";
   import { toStore } from "svelte/store";
   import type { Navigate } from "@/app/types";

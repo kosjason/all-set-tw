@@ -1,8 +1,8 @@
 import {
   parseActivitySearch,
   type ParsedActivitySearch,
-} from "@taiwan-fin-hub/core";
-import { createDrizzle } from "@taiwan-fin-hub/db";
+} from "@taiwan-fin-hub/shared";
+import { createDrizzle } from "../../db";
 import { sql, type SQL } from "drizzle-orm";
 
 export interface ActivitySearchInput {

@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { InboxItem, InboxResponse } from "@taiwan-fin-hub/core";
+import type { InboxItem, InboxResponse } from "@taiwan-fin-hub/shared";
 import { inboxRoutes } from "../../../src/features/inbox/route";
 import { getInbox } from "../../../src/features/inbox/service";
 import { honoFactory } from "../../../src/platform/hono";
 import { apiErrorResponse } from "../../../src/platform/http";
 import type { Env } from "../../../src/platform/env";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 import {
   CREATED,
   NOW,

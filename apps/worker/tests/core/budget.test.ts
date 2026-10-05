@@ -10,7 +10,7 @@ import {
   weekStartOf,
   type SpendingEntry,
   type SummaryActivity,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 type Item = Parameters<typeof activitySpendingEntries>[0][number];
 

@@ -5,7 +5,7 @@ import {
   MERCHANT_KEYWORD_RULES,
   matchMerchantKeywords,
   suggestCategory,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 const merchant = (text: string) => matchMerchantKeywords(text)?.categoryId;
 

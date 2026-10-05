@@ -12,7 +12,7 @@ import {
   type CardSummaryCard,
   type CardsSummaryResponse,
   type CurrentCardBill,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { loadBankRange } from "../bank/service";
 import { getExchangeRates } from "../exchange-rates/service";
 import {

@@ -2,10 +2,10 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { matchInvoicesToTransactions } from "../../../../../packages/core/src/activity-matching";
+import { matchInvoicesToTransactions } from "@taiwan-fin-hub/shared";
 
 const directory = fileURLToPath(
-  new URL("../../../../../packages/db/migrations/", import.meta.url),
+  new URL("../../../migrations/", import.meta.url),
 );
 const filename = "0043_merge_legacy_invoice_duplicates.sql";
 const sql = readFileSync(`${directory}/${filename}`, "utf8");

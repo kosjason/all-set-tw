@@ -2,7 +2,10 @@ import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ActivityItem, ActivityMonthSummary } from "@taiwan-fin-hub/core";
+import type {
+  ActivityItem,
+  ActivityMonthSummary,
+} from "@taiwan-fin-hub/shared";
 import { activityRoutes } from "../../../src/features/activity/route";
 import { bankRoutes } from "../../../src/features/bank/route";
 import { classificationRoutes } from "../../../src/features/classification/route";
@@ -11,7 +14,7 @@ import { merchantRoutes } from "../../../src/features/merchants/route";
 import { honoFactory } from "../../../src/platform/hono";
 import { apiErrorResponse } from "../../../src/platform/http";
 import type { Env } from "../../../src/platform/env";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 // 合成的「9 月情境」：LINE Pay 小店、醜商家字串、發票品項；不含真實帳號或姓名。
 const now = "2026-09-30T00:00:00.000Z";
@@ -279,7 +282,7 @@ describe("merchants, categories and suggestions", () => {
     // 舊版：只用 0055 之前的系統規則分類銀行／信用卡交易，發票一律沒有分類。
     const legacy = new DatabaseSync(":memory:");
     const migrations = fileURLToPath(
-      new URL("../../../../../packages/db/migrations/", import.meta.url),
+      new URL("../../../migrations/", import.meta.url),
     );
     for (const file of readdirSync(migrations)
       .filter((name) => name.endsWith(".sql") && name < "0055")

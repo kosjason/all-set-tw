@@ -1,14 +1,10 @@
-import {
-  budgetMerchants,
-  budgetSettings,
-  createDrizzle,
-} from "@taiwan-fin-hub/db";
+import { budgetMerchants, budgetSettings, createDrizzle } from "../../db";
 import {
   DEFAULT_BUDGET_SETTINGS,
   type BudgetMerchantDecision,
   type BudgetMerchantKind,
   type BudgetSettings,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { eq } from "drizzle-orm";
 
 const SETTINGS_ID = "default";

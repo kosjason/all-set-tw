@@ -3,14 +3,16 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CtbcPayloads } from "@taiwan-fin-hub/connectors";
+import type { CtbcPayloads } from "../../../src/sources/ctbc/protocol";
 import { decryptJson, encryptJson } from "../../../src/platform/crypto";
 import type { Env } from "../../../src/platform/env";
 
 const mocks = vi.hoisted(() => ({ ctbcSync: vi.fn() }));
 
-vi.mock("@taiwan-fin-hub/connectors", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@taiwan-fin-hub/connectors")>()),
+vi.mock("../../../src/sources/ctbc/mobile-api", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../../src/sources/ctbc/mobile-api")
+  >()),
   createCtbcConnector: () => ({
     id: "ctbc",
     name: "中國信託商業銀行",
@@ -23,14 +25,12 @@ import {
   CtbcImportPayloadError,
   importCtbcPayloads,
 } from "../../../src/features/sync/ctbc-import";
-import { parseCtbcData } from "@taiwan-fin-hub/connectors";
-import {
-  syncCtbc,
-  withManualSyncLock,
-} from "../../../src/features/sync/service";
+import { parseCtbcData } from "../../../src/sources/ctbc/protocol";
+import { syncCtbc } from "../../../src/sources/ctbc/sync";
+import { withManualSyncLock } from "../../../src/features/sync/manual-sync";
 
 const MIGRATIONS_DIRECTORY = fileURLToPath(
-  new URL("../../../../../packages/db/migrations/", import.meta.url),
+  new URL("../../../migrations/", import.meta.url),
 );
 
 /** This Node sqlite bind API only accepts anonymous `?`; expand D1 `?1` placeholders. */

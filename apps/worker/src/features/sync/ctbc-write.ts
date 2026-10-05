@@ -1,6 +1,7 @@
-import type { SyncNewRecordCounts, SyncResult } from "@taiwan-fin-hub/core";
+import type { SyncNewRecordCounts } from "@taiwan-fin-hub/shared";
+import type { SyncResult } from "../../sources/types";
 import { refreshBankDepositHistory } from "../net-worth/service";
-import { prepareCtbcAuthorizationWrite } from "./ctbc-authorizations";
+import { prepareCtbcAuthorizationWrite } from "../../sources/ctbc/authorizations";
 import { persistStagedSyncWrite, type SyncWriteRecord } from "./persistence";
 import {
   bankAccountRecord,
@@ -8,7 +9,7 @@ import {
   bankTransactionRecord,
   creditCardBillRecord,
 } from "./record-mapper";
-import { linkCanonicalBankAccountsStatement } from "./repository";
+import { linkCanonicalBankAccountsStatement } from "./connector-repository";
 
 const CONNECTOR_ID = "ctbc";
 

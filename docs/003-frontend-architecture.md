@@ -10,28 +10,31 @@ apps/web/src/
 ├── data/      # 依 API resource 分組的 query options 與 response DTO
 ├── features/  # 依使用者功能分組：month、activity（交易）、cards、assets、data-sources、inbox、settings
 ├── shared/    # 無 feature 所屬的 UI、API client、格式化、state 與 actions
-├── testing/   # 跨測試共用的 setup、fixture 與 render helper
 ├── main.ts
 └── styles.css
 ```
 
 ## 相依方向
 
+`apps/web/src/shared/` 提供前端共用 UI 與工具；根目錄的 `shared/` 提供前後端共用契約與純邏輯，透過 `@taiwan-fin-hub/shared` 引用。
+
 - `app` 負責組裝 feature 與 shared infrastructure。
 - `features` 可以依賴 `data`、`shared` 和純應用層型別，但不應直接依賴其他 feature 的內部元件。
-- `data` 可以依賴 `shared/api` 與 `packages/core`，不得依賴 UI feature。
+- `data` 可以依賴前端的 `shared/api` 與 `@taiwan-fin-hub/shared`，不得依賴 UI feature。
 - `shared` 不得依賴 feature；若工具只被一個 feature 使用，應放回該 feature 的 `model` 或 `components`。
   多個頁面共用的呈現元件（例如本月頁與交易頁共用的 `shared/ui/cash-flow-summary`）放在 `shared/ui`，
   由 `data` 提供 view model（`activitySummaryEquation`），元件只接收已算好的值。
 - 多個 feature 共用的 API view model 放在 `data`（例如 `data/activity/categories.ts` 的分類顏色與
   排行、`data/activity/roles.ts` 的角色名稱與 override 路徑、`data/assets/summary.ts` 的淨資產計算），
   不要跨 feature import。
-- 前後端都使用且穩定的 API contract 應逐步移到 `packages/core`；只用於前端組合畫面的 view model 可留在 `apps/web/src/data`。
+- 前後端都使用且穩定的 API contract 應逐步移到根目錄的 `shared/`；只用於前端組合畫面的 view model 可留在 `apps/web/src/data`。
+- 根目錄的 `shared/` 是唯一跨前後端共用的 workspace 套件；資料庫與連接器由 `apps/worker` 管理，前端不得引用 Worker 內部模組。
+- 銀行 API 的前端型別目前仍定義於 `data/bank/types.ts`（含經濟角色、商家與對方帳戶等欄位），尚未改用 `shared/bank-api.ts` 的 response 契約。
 
 ## Svelte 檔案
 
 - 頁面入口命名為 `*Page.svelte`，feature 專用子元件放在相鄰的 `components/`。
-- 純計算、mapping 和 filtering 放在一般 `.ts`，並以單元測試覆蓋。
+- 純計算、mapping 和 filtering 放在一般 `.ts`；金融計算依下方測試政策保留必要驗證。
 - 只有需要在元件外使用 runes 的共享 reactive state 才使用 `.svelte.ts`。
 - 全域 reactive state 應保持少量且明確；server state 由 TanStack Svelte Query 管理。
 
@@ -299,7 +302,7 @@ summary」），前端不自行加總：
 
 ## 發票配對
 
-`packages/core` 的 `matchInvoicesToTransactions` 為後端活動列表與月收支、搜尋、同步明細
+`shared/` 的 `matchInvoicesToTransactions` 為後端活動列表與月收支、搜尋、同步明細
 及前端手動配對候選共用的配對規則；未配對發票列為支出，已配對發票不重複計算（月報列表
 以 `duplicateOf` 淡化列出）。依序套用，前一步配對的資料不再參與：
 
@@ -317,6 +320,12 @@ summary」），前端不自行加總：
 活動搜尋結果只含命中日期，前後端都以同日配對計算。
 
 ## 活動金額顯示
+
+資產頁按信用卡餘額的正負號計算淨負債：負餘額是欠款，正餘額是溢繳，
+不得將兩者取絕對值後都扣除。淨溢繳時以「＋ 信用卡溢繳」計入淨資產，
+單一卡片的溢繳餘額保留正號並標示無需繳款。
+信用卡餘額未知時顯示「剩餘應繳金額未取得」；最近帳單明確未繳清時顯示「帳單待繳」與繳款期限，
+不僅顯示期限，也不將缺少的繳款狀態當成已繳。
 
 交易頁手機列表、桌面列表與詳情統一以台幣顯示；外幣交易沿用分類圖表的目前匯率，
 標示「約」並保留原幣副標示，詳情列出匯率與更新時間。資料庫原始金額與幣別不變，

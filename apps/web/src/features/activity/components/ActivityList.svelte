@@ -12,7 +12,7 @@
   - onOpen：開啟活動明細。
 -->
 <script module lang="ts">
-  import type { EconomicRole } from "@taiwan-fin-hub/core";
+  import type { EconomicRole } from "@taiwan-fin-hub/shared";
   import type { ExchangeRateRow } from "@/data/assets/types";
   import type { ActivityCategoryOption } from "@/data/activity/categories";
   import type { ActivityListSection, ActivitySortMode } from "../model/sort";

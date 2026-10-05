@@ -9,7 +9,7 @@
     activityDisplayAmount,
     formatActivityDateGroup,
     type ActivityItem,
-  } from "@taiwan-fin-hub/core";
+  } from "@taiwan-fin-hub/shared";
   import { formatCurrency } from "@/shared/format/financial";
   import {
     activityDisplayName,

@@ -1,4 +1,4 @@
-import { activityCashFlow } from "@taiwan-fin-hub/core";
+import { activityCashFlow } from "@taiwan-fin-hub/shared";
 import type { ActivityCategoryFilter } from "./filter";
 import {
   ECONOMIC_ROLE_LABELS,

@@ -1,4 +1,4 @@
-import { summarizeAdvances, taipeiDay } from "@taiwan-fin-hub/core";
+import { summarizeAdvances, taipeiDay } from "@taiwan-fin-hub/shared";
 import { loadRoleActivities, monthsBetween } from "../activity/summary-service";
 import { earliestAdvanceDay } from "./repository";
 

@@ -4,7 +4,7 @@
 -->
 <script lang="ts">
   import { ChevronDown } from "@lucide/svelte";
-  import type { AdvanceCounterpartySummary } from "@taiwan-fin-hub/core";
+  import type { AdvanceCounterpartySummary } from "@taiwan-fin-hub/shared";
   import type { AdvancesResponse } from "@/data/advances/queries";
   import { formatCurrency } from "@/shared/format/financial";
 

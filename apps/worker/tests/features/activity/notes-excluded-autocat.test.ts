@@ -6,7 +6,7 @@ import type {
   ActivityNoteRow,
   ActivitySourceRecord,
   InboxItem,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { activityRoutes } from "../../../src/features/activity/route";
 import { activityNoteRoutes } from "../../../src/features/activity-notes/route";
 import { activityRoleRoutes } from "../../../src/features/activity-roles/route";
@@ -17,7 +17,7 @@ import { merchantRoutes } from "../../../src/features/merchants/route";
 import { honoFactory } from "../../../src/platform/hono";
 import { apiErrorResponse } from "../../../src/platform/http";
 import type { Env } from "../../../src/platform/env";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 // 合成資料：假帳號、假卡號、虛構商家；情境取自真實使用方式但不含任何真實資料。
 const now = "2026-09-30T00:00:00.000Z";

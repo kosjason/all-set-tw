@@ -16,9 +16,9 @@ import {
   type WeeklyReview,
   type WeeklySourceFreshness,
   WEEKLY_BASELINE_WEEKS,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { loadRoleActivities, monthsBetween } from "../activity/summary-service";
-import { getSyncJobs } from "../sync/schedule-service";
+import { getSyncJobs } from "../sync/scheduling/service";
 import {
   deleteBudgetMerchantDecision,
   earliestTransactionDay,

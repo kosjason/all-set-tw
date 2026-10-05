@@ -2,7 +2,7 @@ import { queryOptions } from "@tanstack/svelte-query";
 import type {
   ActivitySummaryIncompleteReason,
   AdvanceCounterpartySummary,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import type { ApiClient } from "@/shared/api/client";
 
 /** `GET /api/activity/advances`：依對象彙總的代墊待收回（不分月份）。 */

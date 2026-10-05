@@ -3,7 +3,7 @@ import type {
   InboxItem,
   InboxResponse,
   InboxSeverity,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import type { ConnectorId } from "@/data/connectors/types";
 import { resolveViewHash } from "@/app/navigation";
 import type { NavigateOptions, View } from "@/app/types";

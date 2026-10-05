@@ -11,7 +11,7 @@ import {
   type InboxResponse,
   type InboxSource,
   TRANSFER_HINT_RULE_ID,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { getRoleActivitiesForMonths } from "../activity/summary-service";
 import { getCardsSummary, MANUAL_IMPORT_CONNECTORS } from "../cards/service";
 import {

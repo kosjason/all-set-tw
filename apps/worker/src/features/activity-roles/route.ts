@@ -4,7 +4,7 @@ import { z } from "zod";
 import {
   ECONOMIC_ROLE_TARGET_KINDS,
   ECONOMIC_ROLES,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
 import { jsonError } from "../../platform/http";

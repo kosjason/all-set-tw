@@ -4,7 +4,7 @@ import { z } from "zod";
 import {
   ACTIVITY_NOTE_MAX_LENGTH,
   ECONOMIC_ROLE_TARGET_KINDS,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
 import { jsonError } from "../../platform/http";

@@ -7,12 +7,12 @@ import {
   it,
   vi,
 } from "vitest";
-import type { ActivityMonthSummary } from "@taiwan-fin-hub/core";
+import type { ActivityMonthSummary } from "@taiwan-fin-hub/shared";
 import { activityRoutes } from "../../../src/features/activity/route";
 import { honoFactory } from "../../../src/platform/hono";
 import { apiErrorResponse } from "../../../src/platform/http";
 import type { Env } from "../../../src/platform/env";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 // 合成資料：信用卡末碼與載具末碼都是假的。
 const now = "2026-09-01T00:00:00.000Z";

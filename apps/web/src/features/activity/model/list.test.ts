@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildActivityItems,
   matchInvoicesToTransactions,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import {
   activityDateKey,
   activityStatusLabel,

@@ -1,4 +1,4 @@
-import { BANK_SYNC_MONTHS } from "@taiwan-fin-hub/connectors";
+import { BANK_SYNC_MONTHS } from "../../sources/sync-window";
 import type { Env } from "../../platform/env";
 import { isDemoMode } from "../../platform/http";
 import {

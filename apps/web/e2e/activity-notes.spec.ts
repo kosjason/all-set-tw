@@ -1,5 +1,5 @@
 import { expect, test, type Page, type Request } from "@playwright/test";
-import type { ActivityItem } from "@taiwan-fin-hub/core";
+import type { ActivityItem } from "@taiwan-fin-hub/shared";
 import { summaryFixture } from "../src/testing/activity-summary";
 import { routeNavigationApi } from "./activity-api";
 

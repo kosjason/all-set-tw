@@ -2,7 +2,7 @@
   import {
     CATEGORY_DEFINITIONS,
     type EconomicRole,
-  } from "@taiwan-fin-hub/core";
+  } from "@taiwan-fin-hub/shared";
   import { onMount, tick } from "svelte";
   import { toStore } from "svelte/store";
   import {
@@ -368,7 +368,7 @@
   let mappingNotice = $state("");
   let detailKey = $state<string | null>(null);
   // 分類選單：單層的 8 個消費分類（emoji＋名稱）與自訂分類；分類 API 還沒回來或
-  // 失敗時直接用 packages/core 的分類。
+  // 失敗時直接用 shared/ 的分類。
   const categoryOptions = $derived(
     spendingCategoryOptions($categoryRows.data ?? []),
   );

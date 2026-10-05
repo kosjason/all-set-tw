@@ -9,7 +9,7 @@ import {
   type ActivityInvoice,
   type ActivityTransaction,
   type InvoiceTransactionPreference,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 // 合成資料：卡號、載具只用假末碼。
 type Tx = ActivityTransaction & {
