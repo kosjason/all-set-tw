@@ -1,4 +1,4 @@
-import type { ActivityItem } from "@taiwan-fin-hub/core";
+import type { ActivityItem } from "@taiwan-fin-hub/shared";
 import { describe, expect, it } from "vitest";
 import { summaryFixture } from "@/testing/activity-summary";
 import {

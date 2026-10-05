@@ -1,4 +1,4 @@
-import { connectorCatalog } from "@taiwan-fin-hub/core";
+import { connectorCatalog } from "@taiwan-fin-hub/shared";
 import { describe, expect, it } from "vitest";
 import { connectorDefinitions, connectorFields } from "./definitions";
 

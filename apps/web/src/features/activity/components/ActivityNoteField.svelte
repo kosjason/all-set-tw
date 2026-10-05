@@ -21,7 +21,7 @@
 
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
-  import { ACTIVITY_NOTE_MAX_LENGTH } from "@taiwan-fin-hub/core";
+  import { ACTIVITY_NOTE_MAX_LENGTH } from "@taiwan-fin-hub/shared";
 
   let {
     note,

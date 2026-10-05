@@ -17,7 +17,7 @@
   外幣發票的總額與品項以原幣顯示，總額另附台幣換算（`invoiceAmountText`）。
 -->
 <script module lang="ts">
-  import type { EconomicRole } from "@taiwan-fin-hub/core";
+  import type { EconomicRole } from "@taiwan-fin-hub/shared";
   import type { ExchangeRateRow } from "@/data/assets/types";
   import type { BankTransactionRow } from "@/data/bank/types";
   import type { InvoiceRow, InvoiceSummaryRow } from "@/data/invoices/types";

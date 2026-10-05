@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const renewSyncJobLock = vi.hoisted(() => vi.fn());
-vi.mock("@taiwan-fin-hub/db", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@taiwan-fin-hub/db")>()),
+vi.mock("../../../src/db", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/db")>()),
   renewSyncJobLock,
 }));
 
@@ -10,7 +10,7 @@ import {
   DURABLE_SYNC_LOCK_LEASE_MS,
   startSyncLockHeartbeat,
   SYNC_LOCK_LEASE_MS,
-} from "../../../src/features/sync/service";
+} from "../../../src/features/sync/lock";
 
 const db = {} as D1Database;
 

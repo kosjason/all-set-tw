@@ -1,5 +1,5 @@
-import { createDrizzle, ownAccounts } from "@taiwan-fin-hub/db";
-import type { OwnAccountKind } from "@taiwan-fin-hub/core";
+import { createDrizzle, ownAccounts } from "../../db";
+import type { OwnAccountKind } from "@taiwan-fin-hub/shared";
 import { and, asc, eq, ne, sql } from "drizzle-orm";
 
 export type OwnAccountRow = {

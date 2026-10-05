@@ -5,7 +5,7 @@ import type {
   EconomicRole,
   EconomicRoleFields,
   MerchantPaymentMethod,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 export interface BankAccountRow {
   id: string;

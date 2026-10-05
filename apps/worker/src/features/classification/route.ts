@@ -5,7 +5,7 @@ import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
 import { jsonError } from "../../platform/http";
 import { validationHook } from "../../platform/validation";
-import { RULE_ECONOMIC_ROLES } from "@taiwan-fin-hub/core";
+import { RULE_ECONOMIC_ROLES } from "@taiwan-fin-hub/shared";
 import {
   ClassificationCategoryExistsError,
   ClassificationCategoryNotFoundError,

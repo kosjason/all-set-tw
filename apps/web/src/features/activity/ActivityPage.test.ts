@@ -6,7 +6,10 @@ import {
   within,
 } from "@testing-library/svelte";
 import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
-import type { ActivityItem, ActivityMonthSummary } from "@taiwan-fin-hub/core";
+import type {
+  ActivityItem,
+  ActivityMonthSummary,
+} from "@taiwan-fin-hub/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "@/shared/api/client";
 import { summaryFixture } from "@/testing/activity-summary";

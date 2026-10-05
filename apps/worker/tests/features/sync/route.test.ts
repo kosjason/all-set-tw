@@ -1,31 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  ObankConnectionError,
-  SkbankConnectionError,
-} from "@taiwan-fin-hub/connectors";
-import { BrowserRunCapacityError } from "../../../src/connectors/browser";
+import { ObankConnectionError } from "../../../src/sources/obank/mobile-api";
+import { SkbankConnectionError } from "../../../src/sources/skbank/mobile-api";
+import { BrowserRunCapacityError } from "../../../src/sources/browser";
 import {
   FirstbankBrowserCapacityError,
   FirstbankConnectionError,
-} from "../../../src/connectors/firstbank";
+} from "../../../src/sources/firstbank/connector";
 import {
   HncbBrowserCapacityError,
   HncbConnectionError,
-} from "../../../src/connectors/hncb";
+} from "../../../src/sources/hncb/connector";
 import {
   KgibankBrowserCapacityError,
   KgibankConnectionError,
-} from "../../../src/connectors/kgibank";
+} from "../../../src/sources/kgibank/connector";
 import {
   CathayOtpChannelRequiredError,
   CathayOtpInvalidError,
   CathayOtpRequiredError,
   CathayOtpSessionExpiredError,
-} from "../../../src/connectors/cathaybk";
+} from "../../../src/sources/cathaybk/connector";
 import {
   TaishinBrowserCapacityError,
   TaishinConnectionError,
-} from "../../../src/connectors/taishin";
+} from "../../../src/sources/taishin/connector";
 import type { Env } from "../../../src/platform/env";
 
 const mocks = vi.hoisted(() => ({
@@ -63,22 +61,25 @@ vi.mock("../../../src/features/sync/ctbc-import", () => ({
   importCtbcPayloads: mocks.importCtbcPayloads,
 }));
 
-vi.mock("../../../src/features/sync/einvoice-sync-service", () => ({
+vi.mock("../../../src/sources/einvoice/sync", () => ({
   cancelQueuedEinvoiceSyncRun: mocks.cancelQueuedEinvoiceSyncRun,
   startEinvoiceSyncRun: mocks.startEinvoiceSyncRun,
 }));
 
-vi.mock("../../../src/features/sync/tdcc-sync-service", () => ({
+vi.mock("../../../src/sources/tdcc/sync", () => ({
   cancelQueuedTdccSyncRun: mocks.cancelQueuedTdccSyncRun,
   startTdccSyncRun: mocks.startTdccSyncRun,
 }));
 
-vi.mock("../../../src/features/sync/scheduler-queue", () => ({
+vi.mock("../../../src/features/sync/scheduling/queue", () => ({
   enqueueEinvoiceSyncChunk: mocks.enqueueEinvoiceSyncChunk,
   enqueueTdccSyncChunk: mocks.enqueueTdccSyncChunk,
 }));
 
-vi.mock("../../../src/features/sync/service", () => ({
+vi.mock("../../../src/features/sync/errors", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../../src/features/sync/errors")
+  >()),
   NeedsUserActionError: class NeedsUserActionError extends Error {},
   NextbankCaptchaRequiredError: class NextbankCaptchaRequiredError extends Error {},
   CtbcAutoSyncPausedError: class CtbcAutoSyncPausedError extends Error {
@@ -86,35 +87,12 @@ vi.mock("../../../src/features/sync/service", () => ({
       super("中信不支援自動同步，請改用網銀半自動匯入。");
     }
   },
-  prepareSinopacCaptchaSession: mocks.prepareSinopacCaptchaSession,
-  prepareHncbCaptchaSession: mocks.prepareHncbCaptchaSession,
-  prepareKgibankCaptchaSession: mocks.prepareKgibankCaptchaSession,
-  prepareTaishinCaptchaSession: mocks.prepareTaishinCaptchaSession,
-  prepareObankCaptchaSession: mocks.prepareObankCaptchaSession,
-  prepareMegabankCaptchaSession: mocks.prepareMegabankCaptchaSession,
-  prepareNextbankCaptchaSession: mocks.prepareNextbankCaptchaSession,
-  syncNextbank: mocks.syncNextbank,
-  prepareFirstbankCaptchaSession: mocks.prepareFirstbankCaptchaSession,
   safeErrorMessage: (error: unknown) =>
     error instanceof Error ? error.message : String(error),
-  syncCathaybk: mocks.syncCathaybk,
-  syncCtbc: mocks.syncCtbc,
-  syncEinvoice: vi.fn(),
-  syncEsun: mocks.syncEsun,
-  syncSinopac: mocks.syncSinopac,
-  syncObank: mocks.syncObank,
-  syncMegabank: mocks.syncMegabank,
-  syncFirstbank: mocks.syncFirstbank,
-  syncHncb: mocks.syncHncb,
-  syncKgibank: mocks.syncKgibank,
-  syncTaishin: mocks.syncTaishin,
-  syncSkbank: mocks.syncSkbank,
-  syncTdcc: vi.fn(),
   SyncAlreadyRunningError: class SyncAlreadyRunningError extends Error {},
-  SYNC_SCOPE_ALL: "all",
-  TDCC_SCOPE_BANK: "bank",
-  TDCC_SCOPE_INVESTMENTS: "investments",
-  TDCC_SCOPE_TRADES: "trades",
+}));
+
+vi.mock("../../../src/features/sync/manual-sync", () => ({
   withManualSyncLock: async (
     _env: Env,
     _connectorId: string,
@@ -123,12 +101,57 @@ vi.mock("../../../src/features/sync/service", () => ({
   ) => task(),
 }));
 
+vi.mock("../../../src/sources/sinopac/sync", () => ({
+  prepareSinopacCaptchaSession: mocks.prepareSinopacCaptchaSession,
+  syncSinopac: mocks.syncSinopac,
+}));
+vi.mock("../../../src/sources/hncb/sync", () => ({
+  prepareHncbCaptchaSession: mocks.prepareHncbCaptchaSession,
+  syncHncb: mocks.syncHncb,
+}));
+vi.mock("../../../src/sources/kgibank/sync", () => ({
+  prepareKgibankCaptchaSession: mocks.prepareKgibankCaptchaSession,
+  syncKgibank: mocks.syncKgibank,
+}));
+vi.mock("../../../src/sources/taishin/sync", () => ({
+  prepareTaishinCaptchaSession: mocks.prepareTaishinCaptchaSession,
+  syncTaishin: mocks.syncTaishin,
+}));
+vi.mock("../../../src/sources/obank/sync", () => ({
+  prepareObankCaptchaSession: mocks.prepareObankCaptchaSession,
+  syncObank: mocks.syncObank,
+}));
+vi.mock("../../../src/sources/megabank/sync", () => ({
+  prepareMegabankCaptchaSession: mocks.prepareMegabankCaptchaSession,
+  syncMegabank: mocks.syncMegabank,
+}));
+vi.mock("../../../src/sources/nextbank/sync", () => ({
+  prepareNextbankCaptchaSession: mocks.prepareNextbankCaptchaSession,
+  syncNextbank: mocks.syncNextbank,
+}));
+vi.mock("../../../src/sources/firstbank/sync", () => ({
+  prepareFirstbankCaptchaSession: mocks.prepareFirstbankCaptchaSession,
+  syncFirstbank: mocks.syncFirstbank,
+}));
+vi.mock("../../../src/sources/cathaybk/sync", () => ({
+  syncCathaybk: mocks.syncCathaybk,
+}));
+vi.mock("../../../src/sources/ctbc/sync", () => ({
+  syncCtbc: mocks.syncCtbc,
+}));
+vi.mock("../../../src/sources/esun/sync", () => ({
+  syncEsun: mocks.syncEsun,
+}));
+vi.mock("../../../src/sources/skbank/sync", () => ({
+  syncSkbank: mocks.syncSkbank,
+}));
+
 import { CtbcImportPayloadError } from "../../../src/features/sync/ctbc-import";
 import {
   CTBC_IMPORT_MAX_BYTES,
   syncRoutes,
 } from "../../../src/features/sync/route";
-import { NextbankCaptchaRequiredError } from "../../../src/features/sync/service";
+import { NextbankCaptchaRequiredError } from "../../../src/features/sync/errors";
 
 const env = {} as Env;
 

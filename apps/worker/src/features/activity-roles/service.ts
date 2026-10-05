@@ -6,7 +6,7 @@ import {
   type EconomicRole,
   type EconomicRoleOverride,
   type EconomicRoleTargetKind,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import {
   activityExists,
   deleteActivityRoleOverride,

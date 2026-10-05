@@ -4,7 +4,7 @@
 -->
 <script lang="ts">
   import { ChevronRight, CreditCard, Inbox, PlugZap, X } from "@lucide/svelte";
-  import type { InboxItem } from "@taiwan-fin-hub/core";
+  import type { InboxItem } from "@taiwan-fin-hub/shared";
   import { inboxNavigation } from "@/features/inbox/model/inbox";
   import {
     formatCurrency,

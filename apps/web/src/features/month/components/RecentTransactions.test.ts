@@ -1,5 +1,5 @@
 import { render, screen, within } from "@testing-library/svelte";
-import type { ActivityItem } from "@taiwan-fin-hub/core";
+import type { ActivityItem } from "@taiwan-fin-hub/shared";
 import { describe, expect, it, vi } from "vitest";
 import RecentTransactions from "./RecentTransactions.svelte";
 

@@ -14,7 +14,7 @@ import {
   suggestCategoryFromItems,
   topLevelCategoryId,
   type ActivityItem,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 describe("merchant keys", () => {
   it.each([

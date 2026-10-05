@@ -1,4 +1,4 @@
-import type { ActivityItem } from "@taiwan-fin-hub/core";
+import type { ActivityItem } from "@taiwan-fin-hub/shared";
 
 /**
  * 列表主標：商家顯示名稱（使用者別名或清理後的名稱），沒有時用原始標題。

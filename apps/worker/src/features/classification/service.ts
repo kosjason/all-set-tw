@@ -394,7 +394,7 @@ import {
   UNCATEGORIZED_CATEGORY_ID,
   type ClassificationSource,
   type EconomicRole,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { listMerchantAliases } from "../merchants/repository";
 import {
   classificationCategoryExists,

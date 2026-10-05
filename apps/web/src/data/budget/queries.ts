@@ -1,4 +1,4 @@
-import type { BudgetSummary, WeeklyReview } from "@taiwan-fin-hub/core";
+import type { BudgetSummary, WeeklyReview } from "@taiwan-fin-hub/shared";
 import { queryOptions } from "@tanstack/svelte-query";
 import type { ApiClient } from "@/shared/api/client";
 import { queryKeys } from "@/shared/api/query-keys";
@@ -10,7 +10,7 @@ export type {
   BudgetSettings,
   BudgetSummary,
   WeeklyReview,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 type ApiProvider = () => ApiClient;
 

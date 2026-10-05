@@ -5,7 +5,7 @@ import {
   invoiceTransactionPreferences,
   invoices,
   merchantAliases,
-} from "@taiwan-fin-hub/db";
+} from "../../db";
 import { and, eq, ne, sql } from "drizzle-orm";
 
 export type MerchantAliasRow = {

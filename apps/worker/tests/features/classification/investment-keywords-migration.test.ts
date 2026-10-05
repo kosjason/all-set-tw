@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 const migrationsDirectory = fileURLToPath(
-  new URL("../../../../../packages/db/migrations/", import.meta.url),
+  new URL("../../../migrations/", import.meta.url),
 );
 const migrationFile = "0068_investment_keywords_exclude_foundation.sql";
 const databases: DatabaseSync[] = [];

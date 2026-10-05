@@ -10,7 +10,7 @@ import type { MonthDateRange } from "../../platform/month-range";
 import {
   normalizeInvoiceCurrency,
   preciseInvoiceAmount,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 /** 品項描述的正規化簽章：去除空白差異、不分大小寫，依行號串接。 */
 function invoiceItemsKey(descriptions: string | null) {

@@ -30,7 +30,7 @@
     ACTIVITY_NOTE_MAX_LENGTH,
     ADVANCE_COUNTERPARTY_MAX_LENGTH,
     normalizeAdvanceCounterparty,
-  } from "@taiwan-fin-hub/core";
+  } from "@taiwan-fin-hub/shared";
   import Button from "@/shared/ui/Button.svelte";
 
   let {

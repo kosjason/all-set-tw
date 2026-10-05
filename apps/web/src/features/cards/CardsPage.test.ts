@@ -11,7 +11,7 @@ import type {
   CardBillsResponse,
   CardIssuerSummary,
   CardsSummaryResponse,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import type { ApiClient } from "@/shared/api/client";
 import CardsPage from "./CardsPage.svelte";
 

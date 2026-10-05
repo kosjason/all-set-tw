@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { NotificationPreferences } from "@taiwan-fin-hub/core";
+import type { NotificationPreferences } from "@taiwan-fin-hub/shared";
 import {
   scheduledSyncSummaryPayload,
   summaryStatus,

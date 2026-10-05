@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { BudgetSummary, WeeklyReview } from "@taiwan-fin-hub/core";
+import type { BudgetSummary, WeeklyReview } from "@taiwan-fin-hub/shared";
 import { earliestTransactionDay } from "../../../src/features/budget/repository";
 import { budgetRoutes } from "../../../src/features/budget/route";
 import {
@@ -9,7 +9,7 @@ import {
 import { honoFactory } from "../../../src/platform/hono";
 import { apiErrorResponse } from "../../../src/platform/http";
 import type { Env } from "../../../src/platform/env";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 /** 合成資料：台北 2026-09-21（週一）。薪資每月 5 日入帳，訂閱每月 10 日扣款。 */
 const NOW = new Date("2026-09-21T04:00:00.000Z");

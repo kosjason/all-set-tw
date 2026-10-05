@@ -15,6 +15,7 @@ const CONNECTOR_BANK_CODES: Record<string, string> = {
   ctbc: "822",
   kgibank: "809",
   megabank: "017",
+  rakuten: "826",
 };
 
 export interface InstitutionAssetGroup {
@@ -141,8 +142,7 @@ export function calculateAssetSummary({
     0,
   );
   const cardDebt = cards.reduce(
-    (sum, account) =>
-      sum + Math.abs(toTwd(account.balance ?? 0, account.currency)),
+    (sum, account) => sum - toTwd(account.balance ?? 0, account.currency),
     0,
   );
   const grossAssets = bankTotal + investmentTotal + manualTotal;
@@ -215,8 +215,7 @@ export function calculateAssetSummary({
           (card) => card.balance == null && !combinedSet.has(card.id),
         ),
         debtTotalTwd: cards.reduce(
-          (sum, account) =>
-            sum + Math.abs(toTwd(account.balance ?? 0, account.currency)),
+          (sum, account) => sum - toTwd(account.balance ?? 0, account.currency),
           0,
         ),
         foreignCurrencies: [

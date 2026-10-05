@@ -11,7 +11,7 @@
     getCategoryDefinition,
     taipeiDay,
     weekStartOf,
-  } from "@taiwan-fin-hub/core";
+  } from "@taiwan-fin-hub/shared";
   import type { Navigate } from "@/app/types";
   import { weeklyReviewQuery } from "@/data/budget/queries";
   import type { ApiClient } from "@/shared/api/client";

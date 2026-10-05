@@ -3,7 +3,7 @@ import {
   listExchangeRates,
   replaceExchangeRates,
 } from "../../../src/features/exchange-rates/repository";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 describe("exchange-rates repository", () => {
   let harness: Awaited<ReturnType<typeof createTestD1>>;

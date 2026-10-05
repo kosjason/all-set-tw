@@ -8,7 +8,7 @@ import {
   type ActivityItem,
   type EconomicRole,
   type MerchantPaymentMethod,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import {
   classificationOverrideStatements,
   listExistingCategoryIds,

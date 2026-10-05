@@ -3,7 +3,7 @@ import {
   categoryLabel,
   getCategoryDefinition,
   UNCATEGORIZED_CATEGORY_ID,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 /**
  * 消費分類的顏色與排行（summary `spendingByCategory` → 圖表資料）。
@@ -23,7 +23,7 @@ export interface ActivityCategorySlice {
 
 /**
  * Colors follow the category, never its monthly rank, so a category keeps its
- * color across months. 顏色正本在 `packages/core` 的 `categories.ts`：七個有色消費分類
+ * color across months. 顏色正本在 `shared/` 的 `categories.ts`：七個有色消費分類
  * 使用經 CVD 驗證的類別色板，「其他」「未分類」與收入為中性色。
  * 淺色模式有三色對背景低於 3:1，圖例與排行必須保留文字標籤。
  */
@@ -66,7 +66,7 @@ function positiveEntries(spendingByCategory: Readonly<Record<string, number>>) {
 
 /**
  * 由 summary API 的 `spendingByCategory`（分類 id → 消費淨額）建立圓餅切片。
- * 分類名稱取自分類選項，其次為 `packages/core` 的系統分類；淨額不為正（退款大於
+ * 分類名稱取自分類選項，其次為 `shared/` 的系統分類；淨額不為正（退款大於
  * 消費）的分類不畫。
  */
 export function buildSpendingCategorySlices(

@@ -1,4 +1,4 @@
-import { ECONOMIC_ROLES, type EconomicRole } from "@taiwan-fin-hub/core";
+import { ECONOMIC_ROLES, type EconomicRole } from "@taiwan-fin-hub/shared";
 import type { ActivityCategoryFilter } from "./filter";
 import {
   DEFAULT_ACTIVITY_SORT,

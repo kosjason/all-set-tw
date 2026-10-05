@@ -29,7 +29,7 @@ function fixture() {
   const database = new DatabaseSync(":memory:");
   databases.push(database);
   const directory = fileURLToPath(
-    new URL("../../../../../packages/db/migrations/", import.meta.url),
+    new URL("../../../migrations/", import.meta.url),
   );
   for (const file of readdirSync(directory)
     .filter((f) => f.endsWith(".sql"))

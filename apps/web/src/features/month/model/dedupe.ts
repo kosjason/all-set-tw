@@ -1,4 +1,4 @@
-import type { ActivityMonthSummary } from "@taiwan-fin-hub/core";
+import type { ActivityMonthSummary } from "@taiwan-fin-hub/shared";
 
 /** 本月頁的發票去重摘要（summary `dedupe`）。 */
 export interface MonthDedupeCounts {

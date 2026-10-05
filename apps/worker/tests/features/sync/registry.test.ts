@@ -1,5 +1,5 @@
-import { connectorConfigSchemas } from "@taiwan-fin-hub/connectors";
-import { connectorCatalog } from "@taiwan-fin-hub/core";
+import { connectorConfigSchemas } from "../../../src/sources/config-registry";
+import { connectorCatalog } from "@taiwan-fin-hub/shared";
 import { describe, expect, it } from "vitest";
 import { connectorRuntimeRegistry } from "../../../src/features/sync/registry";
 

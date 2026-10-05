@@ -5,7 +5,7 @@ import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
 import { jsonError, parseKeysetPagination } from "../../platform/http";
 import { validationHook } from "../../platform/validation";
-import { currentActivityMonthKey } from "@taiwan-fin-hub/core";
+import { currentActivityMonthKey } from "@taiwan-fin-hub/shared";
 import { searchActivity } from "./search-service";
 import { exportActivity } from "./export-service";
 import {

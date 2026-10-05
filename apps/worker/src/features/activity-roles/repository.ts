@@ -3,12 +3,12 @@ import {
   bankTransactions,
   createDrizzle,
   invoices,
-} from "@taiwan-fin-hub/db";
+} from "../../db";
 import type {
   EconomicRole,
   EconomicRoleOverride,
   EconomicRoleTargetKind,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { and, asc, eq, sql } from "drizzle-orm";
 
 const overrideColumns = {

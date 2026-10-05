@@ -15,7 +15,7 @@ import {
   type EconomicRoleFields,
   type EconomicRoleOverride,
   carryInvoiceAdvancesToTransactions,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { listBankAccounts } from "../bank/repository";
 import { normalizeBankAccountDisplay } from "../bank/display";
 import { loadBankRange } from "../bank/service";

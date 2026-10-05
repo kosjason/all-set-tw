@@ -1,4 +1,4 @@
-import type { OwnAccount, OwnAccountInput } from "@taiwan-fin-hub/core";
+import type { OwnAccount, OwnAccountInput } from "@taiwan-fin-hub/shared";
 import {
   deleteOwnAccount,
   findOwnAccount,

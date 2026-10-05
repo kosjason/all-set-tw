@@ -4,7 +4,7 @@ import {
   type CardBillPayment,
   type CardPaymentStatus,
   type EconomicRoleFields,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 const TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1000;
 

@@ -5,11 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   isStoredValueTopUp,
   STORED_VALUE_TOP_UP_PATTERN,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { resolveClassifications } from "../../../src/features/classification/service";
 
 const migrationsDirectory = fileURLToPath(
-  new URL("../../../../../packages/db/migrations/", import.meta.url),
+  new URL("../../../migrations/", import.meta.url),
 );
 const migrationFiles = readdirSync(migrationsDirectory)
   .filter((name) => name.endsWith(".sql"))
@@ -233,10 +233,7 @@ describe("default classification rules", () => {
     const expected = database.prepare(sql).all();
     const expectedCategories = database.prepare(categories).all();
     database.exec(
-      readFileSync(
-        new URL("../../../../../packages/db/seeds/demo.sql", import.meta.url),
-        "utf8",
-      ),
+      readFileSync(new URL("../../../seeds/demo.sql", import.meta.url), "utf8"),
     );
     expect(expected.length).toBeGreaterThan(20);
     expect(database.prepare(sql).all()).toEqual(expected);
@@ -249,10 +246,7 @@ describe("default classification rules", () => {
       "SELECT * FROM classification_rules WHERE id = 'system:bank:ewallet-topup'";
     const expected = database.prepare(sql).all();
     database.exec(
-      readFileSync(
-        new URL("../../../../../packages/db/seeds/demo.sql", import.meta.url),
-        "utf8",
-      ),
+      readFileSync(new URL("../../../seeds/demo.sql", import.meta.url), "utf8"),
     );
     expect(expected).toHaveLength(1);
     expect(database.prepare(sql).all()).toEqual(expected);

@@ -2,7 +2,7 @@ import type {
   ActivityItem,
   EconomicRole,
   EconomicRoleTargetKind,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 /** 經濟角色的中文名稱（交易頁、收件匣共用）。 */
 export const ECONOMIC_ROLE_LABELS: Readonly<Record<EconomicRole, string>> = {

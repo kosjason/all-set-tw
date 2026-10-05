@@ -1,7 +1,7 @@
 import type {
   CardBillsResponse,
   CardsSummaryResponse,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { queryOptions } from "@tanstack/svelte-query";
 import type { ApiClient } from "@/shared/api/client";
 import { queryKeys } from "@/shared/api/query-keys";
@@ -15,7 +15,7 @@ export type {
   CardSummaryCard,
   CardsSummaryResponse,
   CurrentCardBill,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 type ApiProvider = () => ApiClient;
 

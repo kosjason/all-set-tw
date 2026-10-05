@@ -4,9 +4,9 @@ import {
   markManualSyncFailure,
   markManualSyncSuccess,
   type SyncJobRow,
-} from "@taiwan-fin-hub/db";
+} from "../../../src/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 const now = "2026-07-15T00:00:00.000Z";
 

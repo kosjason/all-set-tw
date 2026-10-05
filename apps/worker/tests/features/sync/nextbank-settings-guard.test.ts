@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   compareAndSetConnectorSecret,
   connectorSettingsGuardStatement,
-} from "../../../src/features/sync/repository";
+} from "../../../src/features/sync/connector-repository";
 
 function fixture() {
   const sqlite = new DatabaseSync(":memory:");

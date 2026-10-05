@@ -14,7 +14,7 @@ import {
   type ActivityTransaction,
   type EconomicRoleFields,
   type InvoiceTransactionPreference,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 // 合成資料：商家、金額、卡號都是假的。
 type Tx = ActivityTransaction & {

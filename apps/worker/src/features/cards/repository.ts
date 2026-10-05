@@ -5,7 +5,7 @@ import {
   createDrizzle,
   creditCardBills,
   syncJobs,
-} from "@taiwan-fin-hub/db";
+} from "../../db";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 export type CreditAccountRow = {

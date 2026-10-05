@@ -2,10 +2,10 @@ import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { CATEGORY_DEFINITIONS } from "@taiwan-fin-hub/core";
+import { CATEGORY_DEFINITIONS } from "@taiwan-fin-hub/shared";
 
 const migrationsDirectory = fileURLToPath(
-  new URL("../../../../../packages/db/migrations/", import.meta.url),
+  new URL("../../../migrations/", import.meta.url),
 );
 const migrationFiles = readdirSync(migrationsDirectory)
   .filter((name) => name.endsWith(".sql"))

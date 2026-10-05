@@ -1,13 +1,10 @@
-import { parseCtbcData, type CtbcPayloads } from "@taiwan-fin-hub/connectors";
-import {
-  getConnectorSettings,
-  upsertConnectorSettings,
-} from "@taiwan-fin-hub/db";
+import { parseCtbcData, type CtbcPayloads } from "../../sources/ctbc/protocol";
+import { getConnectorSettings, upsertConnectorSettings } from "../../db";
 import { configEncryptionKey } from "../../platform/config";
 import { encryptJson } from "../../platform/crypto";
 import type { Env } from "../../platform/env";
 import { writeCtbcSyncData } from "./ctbc-write";
-import type { SyncOutcome } from "./service";
+import type { SyncOutcome } from "./types";
 
 const CONNECTOR_ID = "ctbc";
 

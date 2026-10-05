@@ -3,7 +3,7 @@ import {
   type ActivityItem,
   type ActivityMonthSummary,
   type CardsSummaryResponse,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import type { SyncJobRow } from "@/data/connectors/types";
 
 /** 卡費提醒只在截止日前 7 天內（含逾期）且尚未繳清時出現。 */

@@ -35,7 +35,7 @@ import {
   UNCATEGORIZED_CATEGORY_ID,
   type ActivitySummaryIncompleteReason,
   type EconomicRoleOverride,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { loadActivityRoleOverrides } from "../activity-roles/service";
 import { getOwnAccounts } from "../own-accounts/service";
 import type { OwnAccountRow } from "../own-accounts/repository";

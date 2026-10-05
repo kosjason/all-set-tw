@@ -4,7 +4,7 @@ import {
   type ActivityNote,
   type ActivityNoteWriteResult,
   type EconomicRoleTargetKind,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { activityExists } from "../activity-roles/repository";
 import {
   deleteActivityNote,

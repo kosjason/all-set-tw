@@ -6,7 +6,7 @@ import { resolveCalculationExclusion } from "../../../src/features/bank/calculat
 import { resolveClassifications } from "../../../src/features/classification/service";
 
 const migrationsDirectory = fileURLToPath(
-  new URL("../../../../../packages/db/migrations/", import.meta.url),
+  new URL("../../../migrations/", import.meta.url),
 );
 const migrationFile = "0049_cathay_credit_card_repairs.sql";
 const databases: DatabaseSync[] = [];

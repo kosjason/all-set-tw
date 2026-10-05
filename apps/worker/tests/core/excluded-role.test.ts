@@ -8,7 +8,7 @@ import {
   RULE_ECONOMIC_ROLES,
   summarizeActivityMonths,
   type SummaryActivity,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 function item(
   source: SummaryActivity["source"],

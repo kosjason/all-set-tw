@@ -1,4 +1,4 @@
-import type { CardsSummaryResponse } from "@taiwan-fin-hub/core";
+import type { CardsSummaryResponse } from "@taiwan-fin-hub/shared";
 import { describe, expect, it } from "vitest";
 import type { SyncJobRow } from "@/data/connectors/types";
 import { summarizeSyncJobs, upcomingCardDues } from "./shell-status";

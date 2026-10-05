@@ -6,7 +6,7 @@ import {
   within,
 } from "@testing-library/svelte";
 import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
-import type { InboxItem, InboxResponse } from "@taiwan-fin-hub/core";
+import type { InboxItem, InboxResponse } from "@taiwan-fin-hub/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "@/shared/api/client";
 import InboxPage from "./InboxPage.svelte";

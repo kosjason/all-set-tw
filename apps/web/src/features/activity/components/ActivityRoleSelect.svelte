@@ -7,7 +7,7 @@
   - class：外層的額外 class。
 -->
 <script module lang="ts">
-  import type { EconomicRole } from "@taiwan-fin-hub/core";
+  import type { EconomicRole } from "@taiwan-fin-hub/shared";
   import type { ActivityItem } from "../model/types";
 
   export interface ActivityRoleSelectProps {

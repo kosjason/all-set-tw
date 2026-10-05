@@ -1,7 +1,7 @@
 import {
   connectorCatalog,
   type ConnectorFormFieldKey,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import type { ConnectorField, ConnectorId } from "./types";
 
 export interface ConnectorDefinition {
@@ -83,6 +83,11 @@ export const connectorFields = {
     { key: "userId", label: "身分證字號／統編", type: "text" },
     { key: "account", label: "登入代號", type: "text" },
     { key: "password", label: "網路銀行密碼", type: "password" },
+  ],
+  rakuten: [
+    { key: "userId", label: "身分證字號", type: "text" },
+    { key: "account", label: "使用者代號", type: "text" },
+    { key: "password", label: "登入密碼", type: "password" },
   ],
   megabank: [
     { key: "userId", label: "身分證字號／居留證號", type: "text" },

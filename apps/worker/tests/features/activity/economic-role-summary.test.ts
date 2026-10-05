@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ActivityMonthSummary } from "@taiwan-fin-hub/core";
+import type { ActivityMonthSummary } from "@taiwan-fin-hub/shared";
 import { activityRoutes } from "../../../src/features/activity/route";
 import { activityRoleRoutes } from "../../../src/features/activity-roles/route";
 import { bankRoutes } from "../../../src/features/bank/route";
 import { honoFactory } from "../../../src/platform/hono";
 import { apiErrorResponse } from "../../../src/platform/http";
 import type { Env } from "../../../src/platform/env";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 // 合成資料重現「9 月以為沒存錢」的情境；帳號只用假末碼。
 const now = "2026-09-30T00:00:00.000Z";

@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 const migrationsDirectory = fileURLToPath(
-  new URL("../../../../../packages/db/migrations/", import.meta.url),
+  new URL("../../../migrations/", import.meta.url),
 );
 const migrationFile = "0032_tdcc_bank_transaction_identity_cleanup.sql";
 const staleIdentityMigrationFile = "0033_tdcc_stale_identity_cleanup.sql";

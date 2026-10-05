@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../../src/platform/env";
 import { ownAccountRoutes } from "../../../src/features/own-accounts/route";
 import { listOwnAccounts } from "../../../src/features/own-accounts/repository";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 
 describe("own account routes", () => {
   let harness: Awaited<ReturnType<typeof createTestD1>>;

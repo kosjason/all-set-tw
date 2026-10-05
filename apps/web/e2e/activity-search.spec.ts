@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import type { ActivityItem } from "@taiwan-fin-hub/core";
+import type { ActivityItem } from "@taiwan-fin-hub/shared";
 import { routeActivityApi } from "./activity-api";
 
 async function mockSearch(

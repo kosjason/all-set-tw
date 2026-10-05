@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { BrowserRunCapacityError } from "../../../src/connectors/browser";
+import { BrowserRunCapacityError } from "../../../src/sources/browser";
 import {
   CathayOtpChannelRequiredError,
   CathayOtpInvalidError,
   CathayOtpRequiredError,
   CathayOtpSessionExpiredError,
-} from "../../../src/connectors/cathaybk";
+} from "../../../src/sources/cathaybk/connector";
 import {
   isUserActionError,
   safeErrorLogDetails,
   safeErrorMessage,
-} from "../../../src/features/sync/service";
+} from "../../../src/features/sync/errors";
 
 describe("sync error details", () => {
   it("keeps Browser Run capacity failures as failed syncs", () => {

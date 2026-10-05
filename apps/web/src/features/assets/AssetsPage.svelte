@@ -307,7 +307,9 @@
         <p class="mt-1 text-caption text-subtle">
           {summary.hasUnknownCardBalance
             ? `總資產 ${formatCurrency(summary.grossAssets)} · 信用卡負債資料不完整`
-            : `總資產 ${formatCurrency(summary.grossAssets)} − 卡債 ${formatCurrency(summary.cardDebt)}`}
+            : summary.cardDebt < 0
+              ? `總資產 ${formatCurrency(summary.grossAssets)} ＋ 信用卡溢繳 ${formatCurrency(-summary.cardDebt)}`
+              : `總資產 ${formatCurrency(summary.grossAssets)} − 卡債 ${formatCurrency(summary.cardDebt)}`}
         </p>
       </Card>
       {@render kpi(
@@ -383,7 +385,7 @@
                 group.cards.length
                   ? group.hasUnknownCardBalance
                     ? "負債資料不完整"
-                    : `負債 ${formatCurrency(-group.debtTotalTwd)}`
+                    : `${group.debtTotalTwd < 0 ? "溢繳" : "負債"} ${formatCurrency(-group.debtTotalTwd)}`
                   : null,
                 ASSET_COLORS.bank,
               )}
@@ -494,7 +496,7 @@
                     {group.cards.length
                       ? group.hasUnknownCardBalance
                         ? "負債資料不完整"
-                        : `負債 ${formatCurrency(-group.debtTotalTwd)}`
+                        : `${group.debtTotalTwd < 0 ? "溢繳" : "負債"} ${formatCurrency(-group.debtTotalTwd)}`
                       : "無信用卡"}
                   </small>
                 </span>
