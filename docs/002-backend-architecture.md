@@ -262,7 +262,7 @@ Middleware 應只處理跨功能的 request concern，不應承擔 feature 商�
 
 不得將 Hono `Context`、D1 row 或 Puppeteer object 放入共用契約。
 
-`index.ts` 只提供匯出；金融正規化資料、API 型別與 connector catalog 分別維護於 `financial-types.ts`、`api-types.ts`／`bank-api.ts` 與 `connector-catalog.ts`。銀行 route 以 `satisfies` 在 JSON 回傳處檢查共用 response 契約；此契約描述現有 JSON 的 nullable 欄位與帳單數值 flag，與 connector 的正規化資料及 repository row 各自獨立。
+`index.ts` 只提供匯出；金融正規化資料、API 型別與 connector catalog 分別維護於 `financial-types.ts`、`api-types.ts`／`bank-api.ts` 與 `connector-catalog.ts`。銀行 route 的帳單回傳以 `satisfies` 檢查共用 response 契約；此契約描述現有 JSON 的 nullable 欄位與帳單數值 flag，與 connector 的正規化資料及 repository row 各自獨立。fork 的 `/api/bank` 交易另帶經濟角色、商家、對方帳戶與卡片末四碼等欄位，前端型別仍定義於 `apps/web/src/data/bank/types.ts`，`/api/bank` 尚未以 `BankDataResponse` 檢查；收斂前兩處欄位要同步維護。
 
 ### `apps/worker/src/db/`
 
@@ -308,7 +308,7 @@ Lease acquisition／renewal 維持單次條件 UPDATE 與 affected rows 判斷�
 查詢調整須保留 expression index 的可用性；涉及查詢效能時以 EXPLAIN QUERY PLAN 確認。
 
 SQL migrations 是 schema 權威，由 Wrangler 管理套用與 migration ledger；
-不導入 Drizzle Kit 生成／套用 migration 流程，也不另維護 schema 比對測試。
+不導入 Drizzle Kit 生成／套用 migration 流程；fork 保留 `apps/worker/tests/db/schema.test.ts` 的 Drizzle schema parity 測試（以 `drizzle-kit/api` 比對 migration 後的結構與 Drizzle schema），新增或修改 schema 時兩邊要一致。
 Schema 修改時依實際影響驗證 migration 與 FK、CHECK、generated column、unique 等約束。
 
 Drizzle repository 整合測試使用 `apps/worker/tests/helpers/d1.ts` 的 Miniflare／workerd D1，
@@ -1369,7 +1369,7 @@ npm run test:unit
 
 影響前端主要流程時執行 `npm run test:e2e`；建置設定或相依變更時執行 `npm run build`。
 
-只保留四類核心保障：
+新增測試以四類核心保障為優先（本 fork 另保留既有的 connector parser、session、元件與 schema parity 回歸測試，不跟隨上游精簡）：
 
 | 保障         | 主要驗證                                                                                                                                               |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -1378,7 +1378,7 @@ npm run test:unit
 | 憑證與授權   | 真實加密與 JWT 驗章、公開資料與錯誤不含秘密、設定變更清除 session、舊同步不能覆蓋新憑證或資料；保留部署 secrets 與上游同步不覆蓋使用者變更的少量案例。 |
 | 主要操作流程 | Web E2E 的資產、銀行驗證、活動排除、發票配對與失敗重試；每個流程選一個 viewport。                                                                      |
 
-`test:backend` 執行 Worker 核心測試、DB 錯誤消毒測試與部署／Git 安全案例；connector parser 一併由 Worker 執行，不再維護 self-check。Web unit 只保留金融計算，UI 互動以少量 E2E 驗證。
+`test:backend` 執行 Worker 測試（含 connector parser 與 DB 測試）、部署／Git 安全案例與中信網銀匯入工具測試；parser 測試由 Worker 的 Vitest 執行，不另維護獨立 self-check 腳本。Web unit 含金融計算與元件測試，主要 UI 流程以 E2E 驗證。
 
 新增測試前先說明錯誤的使用者結果與獨立預期來源；優先擴充現有核心案例。同一行為選一個主要驗證層，不追求 coverage、測試數量、每個函式或每個分支都有測試。
 一般 CRUD、轉送、固定文字／樣式、銀行 DOM 與事件順序、已完成歷史 migration 不另建立回歸套件。型別檢查、建置與適用的實際操作仍須完成；核心測試通過不等同所有銀行登入與帳務都已驗證。

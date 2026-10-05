@@ -56,6 +56,10 @@
       rates: $rates.data,
     }),
   );
+  /** 所有信用卡合計為溢繳（正餘額）時，負債欄改標溢繳並計入資產。 */
+  const cardOverpaid = $derived(
+    !summary.hasUnknownCardBalance && summary.cardDebt < 0,
+  );
   const loading = $derived(
     $bank.isPending ||
       $investments.isPending ||
@@ -331,13 +335,13 @@
         ASSET_COLORS.manual,
       )}
       {@render kpi(
-        "信用卡負債",
+        cardOverpaid ? "信用卡溢繳" : "信用卡負債",
         -summary.cardDebt,
         summary.hasUnknownCardBalance
           ? "部分卡片資料不完整"
           : `${summary.institutionGroups.filter((group) => group.cards.length > 0).length} 家發卡行`,
-        "var(--color-coral)",
-        "text-coral",
+        cardOverpaid ? "var(--color-steel)" : "var(--color-coral)",
+        cardOverpaid ? "text-steel" : "text-coral",
       )}
     </section>
 
@@ -640,8 +644,12 @@
             <li
               class="grid grid-cols-[minmax(0,1fr)_auto_3rem] items-center gap-3 border-t border-ink/8 pt-2.5"
             >
-              <span class="text-subtle">信用卡負債</span>
-              <span class="tabular-nums text-coral">
+              <span class="text-subtle"
+                >{cardOverpaid ? "信用卡溢繳" : "信用卡負債"}</span
+              >
+              <span
+                class={`tabular-nums ${cardOverpaid ? "text-steel" : "text-coral"}`}
+              >
                 {summary.hasUnknownCardBalance
                   ? "資料不完整"
                   : formatCurrency(-summary.cardDebt)}
