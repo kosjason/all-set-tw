@@ -94,10 +94,18 @@ async function callTrigger<T>(
     response = await fetcher(`${config.url}${path}`, {
       method,
       headers: { Authorization: `Bearer ${config.token}` },
-      redirect: "error",
+      // workerd 不支援 redirect: "error"；用 manual，3xx 會走下方非成功分支。
+      redirect: "manual",
       signal: AbortSignal.timeout(TRIGGER_TIMEOUT_MS),
     });
-  } catch {
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        event: "ctbc_web_import_trigger_unreachable",
+        path,
+        error: error instanceof Error ? error.name : "unknown",
+      }),
+    );
     throw new CtbcWebImportTriggerError();
   }
   if (!response.ok) {

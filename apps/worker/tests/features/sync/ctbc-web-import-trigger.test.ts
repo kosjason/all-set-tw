@@ -65,7 +65,7 @@ describe("中信網銀匯入觸發器", () => {
       expect.objectContaining({
         method: "GET",
         headers: { Authorization: "Bearer trigger-token" },
-        redirect: "error",
+        redirect: "manual",
       }),
     );
   });
@@ -90,6 +90,12 @@ describe("中信網銀匯入觸發器", () => {
       vi.fn().mockRejectedValue(new TypeError("fetch failed")),
       respond(401, { error: "unauthorized" }),
       respond(200, { running: "yes" }),
+      vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 302,
+          headers: { Location: "http://example.com/" },
+        }),
+      ),
     ];
     for (const fetcher of failures) {
       const error = await ctbcWebImportStatus(env, fetcher).catch((e) => e);

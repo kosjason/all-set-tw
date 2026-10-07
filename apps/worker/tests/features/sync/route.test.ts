@@ -549,6 +549,29 @@ describe("CTBC web import trigger routes", () => {
     }
   });
 
+  it("沒有 Sec-Fetch-Site 的同源 JSON 請求（非瀏覽器或代理移除標頭）仍可啟動", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(
+        Response.json({ started: true, running: true }, { status: 202 }),
+      );
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const response = await syncRoutes.request(
+        "/connectors/ctbc/web-import",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          body: "{}",
+        },
+        triggerEnv,
+      );
+      expect(response.status).toBe(202);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it.each([
     [
       "跨站 fetch",

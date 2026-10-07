@@ -26,8 +26,10 @@
     mutationFn: () =>
       // 送 JSON body：後端要求 application/json，跨站表單無法觸發。
       api.post<CtbcWebImportStart>("/api/connectors/ctbc/web-import", {}),
-    onMutate: () => {
+    onMutate: async () => {
       error = "";
+      // 先取消進行中的狀態查詢，避免較早發出的「未執行」結果蓋掉下方的樂觀更新。
+      await qc.cancelQueries({ queryKey: queryKeys.ctbcWebImport });
     },
     onSuccess: (result) => {
       // 先標成執行中讓輪詢立即開始，之後以觸發器回報的狀態為準。

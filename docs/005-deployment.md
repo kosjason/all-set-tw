@@ -226,7 +226,7 @@ fork 自架在 Mac 上時，可讓資料來源頁的中信卡片顯示「在 min
   - `GET /ctbc-import/status` 回 `{ running, last }`，`last` 為 `{ finishedAt, exitCode }` 或 `null`。
   - `POST /ctbc-import/start` 在匯入工作未執行時啟動它並回 `202 { started: true, running: true }`，執行中回 `200 { started: false, running: true }`，無法啟動回 `502`。
 - 匯入工作照常執行 `npm run ctbc:web-import -- --worker http://localhost:8797 --profile ...`（建議用 launchd 的使用者 agent，才能在登入中的桌面開 Chrome），結果經 `POST /api/connectors/ctbc/import` 寫入同步紀錄。
-- token 只放在觸發器的密鑰檔（權限 600）與 Worker 的 `.dev.vars`，不寫進 repo 或日誌；觸發器讀不到密鑰或密鑰是空的時應拒絕所有請求。
+- token 只放在觸發器的密鑰檔（權限 600）與 Worker 的 `.dev.vars`，不寫進 repo 或日誌；觸發器讀不到密鑰、密鑰是空的或太短（mini 上的實作以 32 字元為下限）時應拒絕所有請求。
 
 ## Demo 模式
 
