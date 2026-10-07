@@ -36,5 +36,6 @@ export const queryKeys = {
   classificationRules: ["classification-rules"] as const,
   ownAccounts: ["own-accounts"] as const,
   connectorSettings: (id: string) => ["connector-settings", id] as const,
+  ctbcWebImport: ["ctbc-web-import"] as const,
   manualAssetHistory: (id: string) => ["manualAssetHistory", id] as const,
 };

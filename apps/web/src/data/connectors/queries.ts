@@ -3,6 +3,7 @@ import type { ApiClient } from "@/shared/api/client";
 import { queryKeys } from "@/shared/api/query-keys";
 import type {
   ConnectorSettings,
+  CtbcWebImportStatus,
   SyncJobRow,
   SyncScheduleSettings,
 } from "./types";
@@ -31,4 +32,14 @@ export const connectorSettingsQuery = (
       getApi().get<ConnectorSettings>(
         `/api/connectors/${connectorId}/settings`,
       ),
+  });
+
+// 匯入進行中時每 5 秒更新一次，結束後停止輪詢。
+export const ctbcWebImportQuery = (getApi: ApiProvider) =>
+  queryOptions({
+    queryKey: queryKeys.ctbcWebImport,
+    queryFn: () =>
+      getApi().get<CtbcWebImportStatus>("/api/connectors/ctbc/web-import"),
+    refetchInterval: (query) =>
+      query.state.data?.available && query.state.data.running ? 5_000 : false,
   });

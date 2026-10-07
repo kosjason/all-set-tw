@@ -22,6 +22,9 @@ export interface Env {
   LOCAL_DEV_MODE?: string | boolean;
   CTBC_API_RELAY_URL?: string;
   CTBC_API_RELAY_TOKEN?: string;
+  /** fork 自架：mini 本機中信網銀匯入觸發器（只監聽 127.0.0.1）。 */
+  CTBC_IMPORT_TRIGGER_URL?: string;
+  CTBC_IMPORT_TRIGGER_TOKEN?: string;
 }
 
 export type Variables = {

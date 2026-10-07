@@ -484,6 +484,64 @@ describe("CTBC sync route", () => {
   });
 });
 
+describe("CTBC web import trigger routes", () => {
+  const triggerEnv = {
+    CTBC_IMPORT_TRIGGER_URL: "http://127.0.0.1:8799",
+    CTBC_IMPORT_TRIGGER_TOKEN: "trigger-token",
+  } as Env;
+
+  it("未設定觸發器時狀態為不可用、啟動回 404", async () => {
+    const status = await syncRoutes.request(
+      "/connectors/ctbc/web-import",
+      {},
+      env,
+    );
+    await expect(status.json()).resolves.toEqual({ available: false });
+    const start = await syncRoutes.request(
+      "/connectors/ctbc/web-import",
+      { method: "POST" },
+      env,
+    );
+    expect(start.status).toBe(404);
+    await expect(start.json()).resolves.toMatchObject({
+      error: { code: "CTBC_WEB_IMPORT_NOT_CONFIGURED" },
+    });
+  });
+
+  it("轉給 mini 觸發器啟動，觸發器失敗時回 502", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({ started: true, running: true }, { status: 202 }),
+      )
+      .mockRejectedValueOnce(new TypeError("fetch failed"));
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const started = await syncRoutes.request(
+        "/connectors/ctbc/web-import",
+        { method: "POST" },
+        triggerEnv,
+      );
+      expect(started.status).toBe(202);
+      await expect(started.json()).resolves.toEqual({
+        started: true,
+        running: true,
+      });
+      const failed = await syncRoutes.request(
+        "/connectors/ctbc/web-import",
+        { method: "POST" },
+        triggerEnv,
+      );
+      expect(failed.status).toBe(502);
+      await expect(failed.json()).resolves.toMatchObject({
+        error: { code: "CTBC_WEB_IMPORT_UNAVAILABLE" },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("CTBC web import route", () => {
   const secretAccount = "9990001112223334";
   const validBody = {

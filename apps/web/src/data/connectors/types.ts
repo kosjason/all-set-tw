@@ -57,3 +57,17 @@ export interface ConnectorField<TKey extends string = string> {
   type: "text" | "password" | "number";
   placeholder?: string;
 }
+
+/** fork 自架：mini 本機中信網銀匯入觸發器的狀態。 */
+export type CtbcWebImportStatus =
+  | { available: false }
+  | {
+      available: true;
+      running: boolean;
+      last: { finishedAt: string; exitCode: number } | null;
+    };
+
+export interface CtbcWebImportStart {
+  started: boolean;
+  running: boolean;
+}
