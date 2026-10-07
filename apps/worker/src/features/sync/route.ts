@@ -56,7 +56,7 @@ import {
 } from "../../sources/taishin/connector";
 import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
-import { jsonError } from "../../platform/http";
+import { isSameOriginJsonRequest, jsonError } from "../../platform/http";
 import { validationHook } from "../../platform/validation";
 import {
   ManualCaptchaRequiredError,
@@ -352,6 +352,13 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
   });
 
   api.post("/connectors/ctbc/web-import", async (c) => {
+    // 會在 mini 螢幕開視窗並推通知，拒絕跨站觸發。
+    if (!isSameOriginJsonRequest(c.req.raw))
+      return jsonError(
+        "CROSS_SITE_REQUEST",
+        "請從本站的資料來源頁啟動中信網銀匯入。",
+        403,
+      );
     try {
       const result = await startCtbcWebImport(c.env);
       return c.json(result, result.started ? 202 : 200);

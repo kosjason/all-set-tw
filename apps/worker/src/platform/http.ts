@@ -66,6 +66,18 @@ export const demoReadOnlyMiddleware: MiddlewareHandler<AppBindings> = async (
   );
 };
 
+/**
+ * 會造成實體副作用的 POST 用的 CSRF 檢查：要求 `Content-Type: application/json`（跨站表單與
+ * no-cors fetch 都送不出，跨站 fetch 會先 preflight 而被擋），且瀏覽器標示的
+ * `Sec-Fetch-Site` 不能是跨站。Cloudflare Access cookie 預設 `SameSite=None`，不能單靠它。
+ */
+export function isSameOriginJsonRequest(request: Request) {
+  const site = request.headers.get("Sec-Fetch-Site");
+  if (site && site !== "same-origin" && site !== "none") return false;
+  const contentType = request.headers.get("Content-Type") ?? "";
+  return /^application\/json(?:\s*;|$)/i.test(contentType.trim());
+}
+
 const paginationLimitSchema = z.coerce.number().int().min(1).max(100);
 
 export function parseKeysetPagination<T extends z.ZodType>(

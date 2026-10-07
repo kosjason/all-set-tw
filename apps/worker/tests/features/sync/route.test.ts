@@ -489,6 +489,14 @@ describe("CTBC web import trigger routes", () => {
     CTBC_IMPORT_TRIGGER_URL: "http://127.0.0.1:8799",
     CTBC_IMPORT_TRIGGER_TOKEN: "trigger-token",
   } as Env;
+  const sameOrigin = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Sec-Fetch-Site": "same-origin",
+    },
+    body: "{}",
+  };
 
   it("未設定觸發器時狀態為不可用、啟動回 404", async () => {
     const status = await syncRoutes.request(
@@ -499,7 +507,7 @@ describe("CTBC web import trigger routes", () => {
     await expect(status.json()).resolves.toEqual({ available: false });
     const start = await syncRoutes.request(
       "/connectors/ctbc/web-import",
-      { method: "POST" },
+      sameOrigin,
       env,
     );
     expect(start.status).toBe(404);
@@ -519,7 +527,7 @@ describe("CTBC web import trigger routes", () => {
     try {
       const started = await syncRoutes.request(
         "/connectors/ctbc/web-import",
-        { method: "POST" },
+        sameOrigin,
         triggerEnv,
       );
       expect(started.status).toBe(202);
@@ -529,13 +537,43 @@ describe("CTBC web import trigger routes", () => {
       });
       const failed = await syncRoutes.request(
         "/connectors/ctbc/web-import",
-        { method: "POST" },
+        sameOrigin,
         triggerEnv,
       );
       expect(failed.status).toBe(502);
       await expect(failed.json()).resolves.toMatchObject({
         error: { code: "CTBC_WEB_IMPORT_UNAVAILABLE" },
       });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    [
+      "跨站 fetch",
+      { "Content-Type": "application/json", "Sec-Fetch-Site": "cross-site" },
+    ],
+    [
+      "同站其他子網域",
+      { "Content-Type": "application/json", "Sec-Fetch-Site": "same-site" },
+    ],
+    ["表單送出", { "Content-Type": "application/x-www-form-urlencoded" }],
+    ["沒有 body", {}],
+  ])("拒絕%s啟動，不連觸發器", async (_name, headers) => {
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const response = await syncRoutes.request(
+        "/connectors/ctbc/web-import",
+        { method: "POST", headers, body: "x=1" },
+        triggerEnv,
+      );
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "CROSS_SITE_REQUEST" },
+      });
+      expect(fetcher).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }

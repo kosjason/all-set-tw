@@ -50,14 +50,36 @@ export class CtbcWebImportTriggerError extends Error {
   }
 }
 
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
 function triggerConfig(env: TriggerEnv) {
-  const url = env.CTBC_IMPORT_TRIGGER_URL?.trim().replace(/\/+$/, "");
+  const rawUrl = env.CTBC_IMPORT_TRIGGER_URL?.trim();
   const token = env.CTBC_IMPORT_TRIGGER_TOKEN?.trim();
-  if (!url && !token) return null;
-  if (!url || !token) {
+  if (!rawUrl && !token) return null;
+  if (!rawUrl || !token) {
     throw new CtbcWebImportTriggerError("中信網銀匯入觸發器設定不完整。");
   }
-  return { url, token };
+  // 觸發器只在同一台主機上；token 不得送往其他主機。
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new CtbcWebImportTriggerError("中信網銀匯入觸發器網址無效。");
+  }
+  if (
+    url.protocol !== "http:" ||
+    !LOOPBACK_HOSTS.has(url.hostname) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    (url.pathname !== "/" && url.pathname !== "")
+  ) {
+    throw new CtbcWebImportTriggerError(
+      "中信網銀匯入觸發器只能設定為本機 http 位址。",
+    );
+  }
+  return { url: url.origin, token };
 }
 
 async function callTrigger<T>(
@@ -72,6 +94,7 @@ async function callTrigger<T>(
     response = await fetcher(`${config.url}${path}`, {
       method,
       headers: { Authorization: `Bearer ${config.token}` },
+      redirect: "error",
       signal: AbortSignal.timeout(TRIGGER_TIMEOUT_MS),
     });
   } catch {
@@ -86,9 +109,11 @@ async function callTrigger<T>(
       }),
     );
     throw new CtbcWebImportTriggerError(
-      response.status === 502
-        ? "mini 無法啟動中信匯入工作，請到 mini 檢查 launchd 設定。"
-        : undefined,
+      response.status === 401
+        ? "中信匯入觸發器拒絕連線（token 不符），請檢查設定。"
+        : response.status === 502
+          ? "mini 無法啟動中信匯入工作，請到 mini 檢查 launchd 設定。"
+          : undefined,
     );
   }
   const parsed = schema.safeParse(await response.json().catch(() => null));

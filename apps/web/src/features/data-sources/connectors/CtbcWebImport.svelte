@@ -24,7 +24,8 @@
 
   const start = createMutation({
     mutationFn: () =>
-      api.post<CtbcWebImportStart>("/api/connectors/ctbc/web-import"),
+      // 送 JSON body：後端要求 application/json，跨站表單無法觸發。
+      api.post<CtbcWebImportStart>("/api/connectors/ctbc/web-import", {}),
     onMutate: () => {
       error = "";
     },
@@ -46,19 +47,6 @@
 
   const current = $derived($status.data?.available ? $status.data : undefined);
   const running = $derived(current?.running === true);
-
-  // 匯入結束後重新讀取同步狀態與帳務資料。
-  let wasRunning = false;
-  $effect(() => {
-    if (wasRunning && !running) {
-      qc.invalidateQueries({ queryKey: queryKeys.syncJobs });
-      qc.invalidateQueries({ queryKey: queryKeys.latestSyncReport });
-      qc.invalidateQueries({ queryKey: queryKeys.summary });
-      qc.invalidateQueries({ queryKey: queryKeys.bank });
-      qc.invalidateQueries({ queryKey: queryKeys.bills });
-    }
-    wasRunning = running;
-  });
 </script>
 
 {#if current}
@@ -80,7 +68,15 @@
     >
       {RUNNING_HINT}
     </p>
-  {:else if current.last && current.last.exitCode !== 0}
+  {/if}
+  {#if $status.isError}
+    <!-- 輪詢失敗時保留上次狀態（避免重複啟動），但要讓使用者知道狀態未確認。 -->
+    <p class="basis-full text-sm text-muted-foreground">
+      {running
+        ? "目前無法確認 mini 的匯入狀態，正在重試。"
+        : "目前無法確認 mini 的匯入狀態。"}
+    </p>
+  {:else if !running && current.last && current.last.exitCode !== 0}
     <p class="basis-full text-sm text-muted-foreground">
       上次網銀匯入沒有完成（{current.last.finishedAt}），可以再開一次。
     </p>

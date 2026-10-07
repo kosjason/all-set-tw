@@ -58,7 +58,7 @@ it("按下按鈕請 mini 開網銀視窗，並顯示登入步驟", async () => {
   await fireEvent.click(
     await findByRole("button", { name: "在 mini 開啟網銀匯入" }),
   );
-  expect(api.post).toHaveBeenCalledWith("/api/connectors/ctbc/web-import");
+  expect(api.post).toHaveBeenCalledWith("/api/connectors/ctbc/web-import", {});
   expect((await findByTestId("ctbc-web-import-running")).textContent).toContain(
     "30 分鐘內登入",
   );
@@ -119,4 +119,74 @@ it("匯入結束後重新讀取同步狀態與帳務資料", async () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.syncJobs }),
   );
   expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.bank });
+});
+
+it("桌面與手機兩個面板同時掛載時，匯入結束只重新讀取一次", async () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  let request = 0;
+  const statuses: CtbcWebImportStatus[] = [{ ...idle, running: true }, idle];
+  const api = {
+    get: vi.fn(() =>
+      Promise.resolve(statuses[Math.min(request++, statuses.length - 1)]),
+    ),
+    post: vi.fn(),
+  } as unknown as ApiClient;
+  const options = {
+    wrapper: QueryClientProvider,
+    wrapperProps: { client: queryClient },
+  };
+  const view = render(
+    CtbcWebImport,
+    { props: { api, demoMode: false } },
+    options,
+  );
+  render(CtbcWebImport, { props: { api, demoMode: false } }, options);
+  expect(
+    await view.findAllByRole("button", { name: "匯入進行中…" }),
+  ).toHaveLength(2);
+  const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+  await queryClient.refetchQueries({ queryKey: queryKeys.ctbcWebImport });
+  expect(
+    await view.findAllByRole("button", { name: "在 mini 開啟網銀匯入" }),
+  ).toHaveLength(2);
+  expect(
+    invalidate.mock.calls.filter(
+      ([filters]) => filters?.queryKey === queryKeys.syncJobs,
+    ),
+  ).toHaveLength(1);
+});
+
+it("匯入中狀態查詢失敗時保留進行中，並提示正在重試", async () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  const get = vi
+    .fn()
+    .mockResolvedValueOnce({ ...idle, running: true })
+    .mockRejectedValue(new Error("502"));
+  const api = { get, post: vi.fn() } as unknown as ApiClient;
+  const view = render(
+    CtbcWebImport,
+    { props: { api, demoMode: false } },
+    {
+      wrapper: QueryClientProvider,
+      wrapperProps: { client: queryClient },
+    },
+  );
+  await view.findByRole("button", { name: "匯入進行中…" });
+  await queryClient
+    .refetchQueries({ queryKey: queryKeys.ctbcWebImport })
+    .catch(() => {});
+  expect(
+    await view.findByText(/無法確認 mini 的匯入狀態，正在重試/),
+  ).toBeTruthy();
+  expect(
+    (
+      (await view.findByRole("button", {
+        name: "匯入進行中…",
+      })) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
 });

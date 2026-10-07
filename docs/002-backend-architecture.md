@@ -1144,7 +1144,11 @@ SYNC_SCHEDULE_UNSUPPORTED`）；migration `0072` 關閉既有的中信排程，�
   只監聽本機的匯入觸發器（`CTBC_IMPORT_TRIGGER_URL`／`CTBC_IMPORT_TRIGGER_TOKEN`），查詢或
   啟動在螢幕開網銀視窗的匯入工作；未設定時狀態回 `{ available: false }`、啟動回
   `404 CTBC_WEB_IMPORT_NOT_CONFIGURED`，觸發器連不上或失敗回 `502 CTBC_WEB_IMPORT_UNAVAILABLE`。
-  Worker 不碰帳密，匯入結果仍由 `POST /api/connectors/ctbc/import` 寫入。
+  Worker 不碰帳密，匯入結果仍由 `POST /api/connectors/ctbc/import` 寫入。觸發器網址只接受本機
+  http 位址，不跟隨轉址；啟動會在螢幕開視窗並推通知，以 `platform/http.ts` 的
+  `isSameOriginJsonRequest` 拒絕跨站觸發（`403 CROSS_SITE_REQUEST`）：要求
+  `Content-Type: application/json`，且 `Sec-Fetch-Site` 不得為跨站。Access cookie 預設
+  `SameSite=None`，不能單靠它擋 CSRF。
 - `sync-warning.ts`：把 `SyncOutcome.warnings` 合併成寫入 `sync_jobs.last_error` 的單一訊息；
   手動與排程同步成功時都會寫入，沒有警告時清除。
 - 銀行同步寫入快照後以 `net-worth/service.ts` 的 `refreshBankDepositHistory` 先由交易回補

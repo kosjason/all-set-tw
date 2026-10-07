@@ -33,6 +33,23 @@ describe("中信網銀匯入觸發器", () => {
     ).rejects.toThrow("設定不完整");
   });
 
+  it("觸發器網址只接受本機 http 位址，否則不送出 token", async () => {
+    const fetcher = vi.fn();
+    for (const url of [
+      "https://127.0.0.1:8799",
+      "http://192.168.1.2:8799",
+      "http://example.com",
+      "http://user:pw@127.0.0.1:8799",
+      "http://127.0.0.1:8799/other",
+      "not a url",
+    ]) {
+      await expect(
+        ctbcWebImportStatus({ ...env, CTBC_IMPORT_TRIGGER_URL: url }, fetcher),
+      ).rejects.toBeInstanceOf(CtbcWebImportTriggerError);
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("帶 Bearer token 查詢狀態並回傳最近一次結果", async () => {
     const fetcher = respond(200, {
       running: false,
@@ -48,6 +65,7 @@ describe("中信網銀匯入觸發器", () => {
       expect.objectContaining({
         method: "GET",
         headers: { Authorization: "Bearer trigger-token" },
+        redirect: "error",
       }),
     );
   });
@@ -81,5 +99,8 @@ describe("中信網銀匯入觸發器", () => {
     await expect(
       startCtbcWebImport(env, respond(502, { error: "kickstart_failed" })),
     ).rejects.toThrow("launchd");
+    await expect(
+      ctbcWebImportStatus(env, respond(401, { error: "unauthorized" })),
+    ).rejects.toThrow("token 不符");
   });
 });
