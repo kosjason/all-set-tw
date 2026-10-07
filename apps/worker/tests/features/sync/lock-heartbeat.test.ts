@@ -7,9 +7,9 @@ vi.mock("../../../src/db", async (importOriginal) => ({
 }));
 
 import {
-  DURABLE_SYNC_LOCK_LEASE_MS,
   startSyncLockHeartbeat,
   SYNC_LOCK_LEASE_MS,
+  SYNC_MAX_DURATION_MS,
 } from "../../../src/features/sync/lock";
 
 const db = {} as D1Database;
@@ -24,13 +24,14 @@ describe("sync lock heartbeat", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps single-invocation leases short so interrupted runs unblock sooner", () => {
+  it("keeps leases short and no longer than a run may last", () => {
     expect(SYNC_LOCK_LEASE_MS).toBe(10 * 60 * 1000);
-    expect(DURABLE_SYNC_LOCK_LEASE_MS).toBe(30 * 60 * 1000);
+    expect(SYNC_LOCK_LEASE_MS).toBeLessThanOrEqual(SYNC_MAX_DURATION_MS);
   });
 
   it("renews every two minutes with the short lease until stopped", async () => {
-    const stop = startSyncLockHeartbeat(db, "esun:all", "run-1");
+    const onLost = vi.fn();
+    const stop = startSyncLockHeartbeat(db, "esun:all", "run-1", onLost);
 
     await vi.advanceTimersByTimeAsync(2 * 60 * 1000 - 1);
     expect(renewSyncJobLock).not.toHaveBeenCalled();
@@ -47,18 +48,23 @@ describe("sync lock heartbeat", () => {
     stop();
     await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
     expect(renewSyncJobLock).toHaveBeenCalledTimes(2);
+    expect(onLost).not.toHaveBeenCalled();
   });
 
-  it("logs when ownership was lost", async () => {
-    const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    renewSyncJobLock.mockResolvedValueOnce(false);
-    const stop = startSyncLockHeartbeat(db, "esun:all", "run-1");
+  it("reports a lost or failed renewal so the run can stop", async () => {
+    const onLost = vi.fn();
+    renewSyncJobLock
+      .mockResolvedValueOnce(false)
+      .mockRejectedValueOnce(new Error("D1 unavailable"));
+    const stop = startSyncLockHeartbeat(db, "esun:all", "run-1", onLost);
 
+    await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
     await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
     stop();
 
-    expect(error).toHaveBeenCalledWith(
-      "[sync] lock heartbeat lost for esun:all",
-    );
+    expect(onLost).toHaveBeenCalledTimes(2);
+    expect(
+      onLost.mock.calls.map(([error]) => (error as Error).message),
+    ).toEqual(["同步鎖已失效，請重新同步。", "同步鎖續租失敗，請重新同步。"]);
   });
 });

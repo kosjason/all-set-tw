@@ -3,11 +3,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const puppeteerMock = vi.hoisted(() => ({
   connect: vi.fn(),
   launch: vi.fn(),
+  limits: vi.fn(),
   sessions: vi.fn(),
 }));
 
-vi.mock("@cloudflare/puppeteer", () => ({ default: puppeteerMock }));
+// 保留真正的 TimeoutError：信用卡總覽只把 puppeteer 逾時當成「卡片區塊未出現」。
+vi.mock("@cloudflare/puppeteer", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@cloudflare/puppeteer")>()),
+  default: puppeteerMock,
+}));
 
+import { TimeoutError } from "@cloudflare/puppeteer";
 import {
   CathayOtpInvalidError,
   CathayOtpChannelRequiredError,
@@ -66,6 +72,7 @@ function browserForPage(page: ReturnType<typeof verificationPage>) {
     close: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
     newPage: vi.fn().mockResolvedValue(page),
+    once: vi.fn(),
     pages: vi.fn().mockResolvedValue([page]),
     sessionId: vi.fn().mockReturnValue("cathay-session"),
   };
@@ -231,22 +238,39 @@ describe("Cathay browser session lifecycle", () => {
     ],
   ] as const)(
     "closes a launched browser when %s setup fails",
-    async (_stage, fail) => {
+    async (stage, fail) => {
       const page = verificationPage();
       const browser = browserForPage(page);
       fail(browser);
+      puppeteerMock.limits.mockResolvedValueOnce({
+        allowedBrowserAcquisitions: 1,
+        timeUntilNextAllowedBrowserAcquisition: 0,
+        activeSessions: [],
+        maxConcurrentSessions: 2,
+      });
       puppeteerMock.launch.mockResolvedValueOnce(browser);
+      const fetch = vi
+        .fn()
+        .mockResolvedValue(new Response(null, { status: 200 }));
 
       await expect(
-        createCathaybkConnector({} as Fetcher).sync(credentials),
-      ).rejects.toThrow();
+        createCathaybkConnector({ fetch } as unknown as Fetcher).sync(
+          credentials,
+        ),
+      ).rejects.toThrow(stage === "pages" ? "pages failed" : "new page failed");
 
       expect(puppeteerMock.launch).toHaveBeenCalledWith(
         expect.objectContaining({ fetch: expect.any(Function) }),
         { keep_alive: 120_000 },
       );
+      // 07e328c 起由 closeBrowserSession 結束 session：本地 close、遠端 DELETE，
+      // 最後才 disconnect。保留 OTP session 時只會 disconnect、不會送 DELETE。
       expect(browser.close).toHaveBeenCalledOnce();
-      expect(browser.disconnect).not.toHaveBeenCalled();
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(fetch).toHaveBeenCalledWith(
+        "https://fake.host/v1/devtools/browser/cathay-session",
+        expect.objectContaining({ method: "DELETE" }),
+      );
     },
   );
 
@@ -336,6 +360,8 @@ describe("Cathay login result", () => {
         click: vi.fn().mockResolvedValue(undefined),
         evaluate: vi
           .fn()
+          // prepareCathayLoginPage 與登入迴圈各檢查一次登出提醒頁，再呼叫銀行登入 handler。
+          .mockResolvedValueOnce(false)
           .mockResolvedValueOnce(false)
           .mockResolvedValueOnce(true),
         goto: vi.fn().mockResolvedValue(undefined),
@@ -382,6 +408,8 @@ describe("Cathay login result", () => {
       click: vi.fn().mockResolvedValue(undefined),
       evaluate: vi
         .fn()
+        // 兩次登出提醒頁檢查（準備登入頁、登入迴圈）→ 銀行登入 handler → 額外驗證。
+        .mockResolvedValueOnce(false)
         .mockResolvedValueOnce(false)
         .mockResolvedValueOnce(true)
         .mockResolvedValueOnce(true),
@@ -423,6 +451,8 @@ describe("Cathay login result", () => {
       click: vi.fn().mockResolvedValue(undefined),
       evaluate: vi
         .fn()
+        // 兩次登出提醒頁檢查（準備登入頁、登入迴圈）→ 銀行登入 handler → 逾時診斷。
+        .mockResolvedValueOnce(false)
         .mockResolvedValueOnce(false)
         .mockResolvedValueOnce(true)
         .mockResolvedValueOnce({
@@ -509,6 +539,7 @@ describe("Cathay additional verification", () => {
 
   it("types a numeric OTP and submits the visible verification form", async () => {
     const page = {
+      cookies: vi.fn().mockResolvedValue([]),
       click: vi.fn().mockResolvedValue(undefined),
       evaluate: vi
         .fn()
@@ -517,6 +548,8 @@ describe("Cathay additional verification", () => {
           hasSubmit: true,
         })
         .mockResolvedValueOnce(true)
+        // 沒有密碼逾期提醒頁。
+        .mockResolvedValueOnce(false)
         .mockResolvedValueOnce({
           hasNext: false,
           hasNameInput: false,
@@ -555,11 +588,14 @@ describe("Cathay additional verification", () => {
 
   it("strips the bank's English prefix before typing the OTP suffix", async () => {
     const page = {
+      cookies: vi.fn().mockResolvedValue([]),
       click: vi.fn().mockResolvedValue(undefined),
       evaluate: vi
         .fn()
         .mockResolvedValueOnce({ hasInput: true, hasSubmit: true })
         .mockResolvedValueOnce(true)
+        // 沒有密碼逾期提醒頁。
+        .mockResolvedValueOnce(false)
         .mockResolvedValueOnce({
           hasNext: false,
           hasNameInput: false,
@@ -584,6 +620,7 @@ describe("Cathay additional verification", () => {
 
   it("rejects malformed OTP values before operating the bank page", async () => {
     const page = {
+      cookies: vi.fn().mockResolvedValue([]),
       click: vi.fn(),
       evaluate: vi.fn(),
       type: vi.fn(),
@@ -603,6 +640,7 @@ describe("Cathay additional verification", () => {
 
   it("classifies a rejected bank OTP as retryable", async () => {
     const page = {
+      cookies: vi.fn().mockResolvedValue([]),
       click: vi.fn().mockResolvedValue(undefined),
       evaluate: vi
         .fn()
@@ -623,16 +661,73 @@ describe("Cathay additional verification", () => {
 });
 
 describe("Cathay credit cards", () => {
+  // 7b65851 起開啟總覽頁時先讀 C_COM_Q_CardStatus：只採用這次開頁觸發的回應，
+  // Invalid 直接視為無卡（由 credit-cards.test.ts 涵蓋），其他狀態才解析總覽 DOM。
+  function cardOverviewPage(
+    cardStatus: "UnKnow" | "Valid",
+    page: {
+      evaluate: ReturnType<typeof vi.fn>;
+      waitForFunction: ReturnType<typeof vi.fn>;
+    },
+  ) {
+    const requestListeners = new Set<(request: unknown) => void>();
+    const statusRequest = {
+      method: () => "POST",
+      url: () =>
+        "https://www.cathaybk.com.tw/OnlineBankingApi/C_COM_Q_CardStatus",
+    };
+    const statusResponse = {
+      status: () => 200,
+      json: async () => ({ returnCode: "0000", content: { cardStatus } }),
+      request: () => statusRequest,
+    };
+    let markRequested!: () => void;
+    const requested = new Promise<void>((resolve) => {
+      markRequested = resolve;
+    });
+    return {
+      ...page,
+      goto: vi.fn(async (url: string) => {
+        if (url.endsWith("/C0101_BillOverview")) {
+          for (const listener of requestListeners) listener(statusRequest);
+          markRequested();
+        }
+        return null;
+      }),
+      off: vi.fn((event: string, listener: (request: unknown) => void) => {
+        if (event === "request") requestListeners.delete(listener);
+      }),
+      on: vi.fn((event: string, listener: (request: unknown) => void) => {
+        if (event === "request") requestListeners.add(listener);
+      }),
+      url: vi
+        .fn()
+        .mockReturnValue(
+          "https://www.cathaybk.com.tw/OnlineBanking/CQuery/C0101_BillOverview",
+        ),
+      waitForResponse: vi.fn(
+        async (predicate: (response: typeof statusResponse) => boolean) => {
+          await requested;
+          if (!predicate(statusResponse)) {
+            throw new Error("card status response did not match the query");
+          }
+          return statusResponse;
+        },
+      ),
+    };
+  }
+
   it.each(["", "系統維護中，請稍後再試"])(
     "無法辨識的總覽 %s 不會被當成無卡",
     async (text) => {
       vi.useFakeTimers();
-      const page = {
+      const page = cardOverviewPage("UnKnow", {
         evaluate: vi.fn().mockResolvedValue(text),
-        goto: vi.fn().mockResolvedValue(undefined),
         // Fork waits for the card block instead of a fixed delay.
-        waitForFunction: vi.fn().mockRejectedValue(new Error("timeout")),
-      };
+        waitForFunction: vi
+          .fn()
+          .mockRejectedValue(new TimeoutError("Waiting failed: 15000ms")),
+      });
       try {
         const pending = scrapeCreditCards(
           page as unknown as Parameters<typeof scrapeCreditCards>[0],
@@ -648,12 +743,13 @@ describe("Cathay credit cards", () => {
   );
 
   it("returns no card data when the overview has no card number", async () => {
-    const page = {
+    const page = cardOverviewPage("UnKnow", {
       evaluate: vi.fn().mockResolvedValue("信用卡帳戶總覽 立即線上辦卡"),
-      goto: vi.fn().mockResolvedValue(undefined),
       // The card block never appears for a customer without a card.
-      waitForFunction: vi.fn().mockRejectedValue(new Error("timeout")),
-    };
+      waitForFunction: vi
+        .fn()
+        .mockRejectedValue(new TimeoutError("Waiting failed: 15000ms")),
+    });
 
     await expect(
       scrapeCreditCards(
@@ -951,7 +1047,7 @@ describe("Cathay credit cards", () => {
       "本期應繳金額 TWD 20,000",
       "繳款截止日 2026/08/06",
     ].join("\n");
-    const page = {
+    const page = cardOverviewPage("Valid", {
       evaluate: vi
         .fn()
         .mockResolvedValueOnce(overviewText)
@@ -964,9 +1060,8 @@ describe("Cathay credit cards", () => {
             [payment(-10853)],
           ),
         ),
-      goto: vi.fn().mockResolvedValue(undefined),
       waitForFunction: vi.fn().mockResolvedValue(undefined),
-    };
+    });
 
     try {
       const pending = scrapeCreditCards(
@@ -1118,9 +1213,12 @@ describe("Cathay trusted device state", () => {
 
   it("names and confirms a detected trusted-device setup step", async () => {
     const page = {
+      cookies: vi.fn().mockResolvedValue([]),
       click: vi.fn().mockResolvedValue(undefined),
       evaluate: vi
         .fn()
+        // fc461e4 起先檢查密碼逾期提醒頁；這裡沒有提醒頁。
+        .mockResolvedValueOnce(false)
         .mockResolvedValueOnce({
           hasNext: false,
           hasNameInput: true,
@@ -1133,7 +1231,7 @@ describe("Cathay trusted device state", () => {
     };
 
     await expect(completeCathayTrustedDeviceSetup(page)).resolves.toBe(true);
-    expect(page.evaluate).toHaveBeenNthCalledWith(1, expect.any(Function), {
+    expect(page.evaluate).toHaveBeenNthCalledWith(2, expect.any(Function), {
       context:
         "登入安全再升級|立即啟用|信任裝置|設定裝置名稱|裝置名稱|裝置暱稱|確定加入",
       confirm: "確定加入|確認加入|完成設定|^確定$|^確認$|^完成$",
@@ -1149,18 +1247,25 @@ describe("Cathay trusted device state", () => {
 
   it("does not claim success when no trusted-device result is present", async () => {
     const page = {
+      cookies: vi.fn().mockResolvedValue([]),
       click: vi.fn(),
-      evaluate: vi.fn().mockResolvedValue({
-        hasNext: false,
-        hasNameInput: false,
-        hasConfirm: false,
-        success: false,
-      }),
+      evaluate: vi
+        .fn()
+        // fc461e4 起先檢查密碼逾期提醒頁；這裡沒有提醒頁。
+        .mockResolvedValueOnce(false)
+        .mockResolvedValue({
+          hasNext: false,
+          hasNameInput: false,
+          hasConfirm: false,
+          success: false,
+        }),
       type: vi.fn(),
       waitForFunction: vi.fn().mockRejectedValue(new Error("timeout")),
     };
 
     await expect(completeCathayTrustedDeviceSetup(page)).resolves.toBe(false);
+    // fc461e4 也會以 CDP cookies 確認 HttpOnly 裝置 cookie；沒有時仍不得宣稱成功。
+    expect(page.cookies).toHaveBeenCalled();
     expect(page.click).not.toHaveBeenCalled();
   });
 });

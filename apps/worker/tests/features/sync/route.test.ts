@@ -25,6 +25,7 @@ import {
   TaishinConnectionError,
 } from "../../../src/sources/taishin/connector";
 import type { Env } from "../../../src/platform/env";
+import type { SyncEnv } from "../../../src/features/sync/execution";
 
 const mocks = vi.hoisted(() => ({
   cancelQueuedEinvoiceSyncRun: vi.fn(),
@@ -54,6 +55,9 @@ const mocks = vi.hoisted(() => ({
   syncSinopac: vi.fn(),
   syncTaishin: vi.fn(),
   syncSkbank: vi.fn(),
+  // withManualSyncLock 交給 task 的 lock-scoped env（e0295fc 起由
+  // createSyncExecution 建立）；與 request env 不同，確保 route 把它傳給同步。
+  syncEnv: { syncSignal: new AbortController().signal },
 }));
 
 vi.mock("../../../src/features/sync/ctbc-import", () => ({
@@ -97,8 +101,8 @@ vi.mock("../../../src/features/sync/manual-sync", () => ({
     _env: Env,
     _connectorId: string,
     _scope: string,
-    task: () => Promise<unknown>,
-  ) => task(),
+    task: (syncEnv: SyncEnv) => Promise<unknown>,
+  ) => task(mocks.syncEnv as unknown as SyncEnv),
 }));
 
 vi.mock("../../../src/sources/sinopac/sync", () => ({
@@ -154,6 +158,7 @@ import {
 import { NextbankCaptchaRequiredError } from "../../../src/features/sync/errors";
 
 const env = {} as Env;
+const syncEnv = mocks.syncEnv as unknown as SyncEnv;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -326,7 +331,9 @@ describe("e-invoice sync route", () => {
     );
   });
 
-  it("returns a reused run without enqueueing it again", async () => {
+  // 上游 e0295fc 起，重用中的 run 也會重新 enqueue，讓中斷的 Queue 鏈能恢復
+  // （與 TDCC 相同）；只有新建的 run 在 enqueue 失敗時才取消。
+  it("requeues a reused active run so an orphaned Queue chain can resume", async () => {
     mocks.startEinvoiceSyncRun.mockResolvedValueOnce({
       run: { id: "einvoice-running" },
       created: false,
@@ -343,7 +350,29 @@ describe("e-invoice sync route", () => {
       status: "queued",
       runId: "einvoice-running",
     });
-    expect(mocks.enqueueEinvoiceSyncChunk).not.toHaveBeenCalled();
+    expect(mocks.enqueueEinvoiceSyncChunk).toHaveBeenCalledWith(
+      env,
+      "einvoice-running",
+    );
+    expect(mocks.cancelQueuedEinvoiceSyncRun).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel a reused run when its recovery enqueue fails", async () => {
+    mocks.startEinvoiceSyncRun.mockResolvedValueOnce({
+      run: { id: "einvoice-running" },
+      created: false,
+    });
+    mocks.enqueueEinvoiceSyncChunk.mockRejectedValueOnce(
+      new Error("Queue unavailable"),
+    );
+
+    const response = await syncRoutes.request(
+      "/connectors/einvoice/sync",
+      { method: "POST" },
+      env,
+    );
+
+    expect(response.status).toBe(500);
     expect(mocks.cancelQueuedEinvoiceSyncRun).not.toHaveBeenCalled();
   });
 
@@ -503,7 +532,7 @@ describe("CTBC web import route", () => {
       records: 7,
     });
     expect(mocks.importCtbcPayloads).toHaveBeenCalledWith(
-      env,
+      syncEnv,
       validBody.payloads,
       { depositTransactionsUnavailable: true },
     );
@@ -583,7 +612,7 @@ describe("SKBank sync route", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mocks.syncSkbank).toHaveBeenCalledWith(env, "manual");
+    expect(mocks.syncSkbank).toHaveBeenCalledWith(syncEnv, "manual");
   });
 
   it("maps App API connection failures", async () => {
@@ -657,7 +686,7 @@ describe("Cathay sync routes", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mocks.syncCathaybk).toHaveBeenCalledWith(env, "manual", {});
+    expect(mocks.syncCathaybk).toHaveBeenCalledWith(syncEnv, "manual", {});
   });
 
   it("passes the selected OTP channel and code to the sync service", async () => {
@@ -672,7 +701,7 @@ describe("Cathay sync routes", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mocks.syncCathaybk).toHaveBeenCalledWith(env, "manual", {
+    expect(mocks.syncCathaybk).toHaveBeenCalledWith(syncEnv, "manual", {
       otpChannel: "email",
       otp: "123456",
     });
@@ -739,7 +768,7 @@ describe("Taishin sync routes", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mocks.syncTaishin).toHaveBeenCalledWith(env, "manual", {});
+    expect(mocks.syncTaishin).toHaveBeenCalledWith(syncEnv, "manual", {});
   });
 
   it("rejects malformed manual CAPTCHA input", async () => {
@@ -831,7 +860,7 @@ describe("HNCB sync routes", () => {
       env,
     );
     expect(valid.status).toBe(200);
-    expect(mocks.syncHncb).toHaveBeenCalledWith(env, "manual", {
+    expect(mocks.syncHncb).toHaveBeenCalledWith(syncEnv, "manual", {
       captcha: "1234",
     });
 
@@ -903,7 +932,7 @@ describe("KGI Bank sync routes", () => {
       env,
     );
     expect(valid.status).toBe(200);
-    expect(mocks.syncKgibank).toHaveBeenCalledWith(env, "manual", {
+    expect(mocks.syncKgibank).toHaveBeenCalledWith(syncEnv, "manual", {
       captcha: "123456",
     });
 
@@ -977,7 +1006,7 @@ describe("Nextbank sync routes", () => {
       env,
     );
     expect(synced.status).toBe(200);
-    expect(mocks.syncNextbank).toHaveBeenCalledWith(env, "manual", {
+    expect(mocks.syncNextbank).toHaveBeenCalledWith(syncEnv, "manual", {
       captcha: "A1b2C",
     });
   });
@@ -1037,7 +1066,7 @@ describe("O-Bank sync routes", () => {
       env,
     );
     expect(valid.status).toBe(200);
-    expect(mocks.syncObank).toHaveBeenCalledWith(env, "manual", {
+    expect(mocks.syncObank).toHaveBeenCalledWith(syncEnv, "manual", {
       captcha: "A1b2",
     });
 
@@ -1095,7 +1124,7 @@ describe("Mega Bank sync routes", () => {
       env,
     );
     expect(valid.status).toBe(200);
-    expect(mocks.syncMegabank).toHaveBeenCalledWith(env, "manual", {
+    expect(mocks.syncMegabank).toHaveBeenCalledWith(syncEnv, "manual", {
       captcha: "12345",
     });
     const invalid = await syncRoutes.request(
@@ -1155,7 +1184,7 @@ describe("First Bank web sync routes", () => {
       env,
     );
     expect(valid.status).toBe(200);
-    expect(mocks.syncFirstbank).toHaveBeenCalledWith(env, "manual", {
+    expect(mocks.syncFirstbank).toHaveBeenCalledWith(syncEnv, "manual", {
       captcha: "XVSH",
     });
 
