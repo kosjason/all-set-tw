@@ -484,6 +484,125 @@ describe("CTBC sync route", () => {
   });
 });
 
+describe("CTBC web import trigger routes", () => {
+  const triggerEnv = {
+    CTBC_IMPORT_TRIGGER_URL: "http://127.0.0.1:8799",
+    CTBC_IMPORT_TRIGGER_TOKEN: "trigger-token",
+  } as Env;
+  const sameOrigin = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Sec-Fetch-Site": "same-origin",
+    },
+    body: "{}",
+  };
+
+  it("未設定觸發器時狀態為不可用、啟動回 404", async () => {
+    const status = await syncRoutes.request(
+      "/connectors/ctbc/web-import",
+      {},
+      env,
+    );
+    await expect(status.json()).resolves.toEqual({ available: false });
+    const start = await syncRoutes.request(
+      "/connectors/ctbc/web-import",
+      sameOrigin,
+      env,
+    );
+    expect(start.status).toBe(404);
+    await expect(start.json()).resolves.toMatchObject({
+      error: { code: "CTBC_WEB_IMPORT_NOT_CONFIGURED" },
+    });
+  });
+
+  it("轉給 mini 觸發器啟動，觸發器失敗時回 502", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({ started: true, running: true }, { status: 202 }),
+      )
+      .mockRejectedValueOnce(new TypeError("fetch failed"));
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const started = await syncRoutes.request(
+        "/connectors/ctbc/web-import",
+        sameOrigin,
+        triggerEnv,
+      );
+      expect(started.status).toBe(202);
+      await expect(started.json()).resolves.toEqual({
+        started: true,
+        running: true,
+      });
+      const failed = await syncRoutes.request(
+        "/connectors/ctbc/web-import",
+        sameOrigin,
+        triggerEnv,
+      );
+      expect(failed.status).toBe(502);
+      await expect(failed.json()).resolves.toMatchObject({
+        error: { code: "CTBC_WEB_IMPORT_UNAVAILABLE" },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("沒有 Sec-Fetch-Site 的同源 JSON 請求（非瀏覽器或代理移除標頭）仍可啟動", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(
+        Response.json({ started: true, running: true }, { status: 202 }),
+      );
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const response = await syncRoutes.request(
+        "/connectors/ctbc/web-import",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          body: "{}",
+        },
+        triggerEnv,
+      );
+      expect(response.status).toBe(202);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    [
+      "跨站 fetch",
+      { "Content-Type": "application/json", "Sec-Fetch-Site": "cross-site" },
+    ],
+    [
+      "同站其他子網域",
+      { "Content-Type": "application/json", "Sec-Fetch-Site": "same-site" },
+    ],
+    ["表單送出", { "Content-Type": "application/x-www-form-urlencoded" }],
+    ["沒有 body", {}],
+  ])("拒絕%s啟動，不連觸發器", async (_name, headers) => {
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const response = await syncRoutes.request(
+        "/connectors/ctbc/web-import",
+        { method: "POST", headers, body: "x=1" },
+        triggerEnv,
+      );
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "CROSS_SITE_REQUEST" },
+      });
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("CTBC web import route", () => {
   const secretAccount = "9990001112223334";
   const validBody = {

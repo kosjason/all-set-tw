@@ -1,0 +1,237 @@
+import { fireEvent, render, waitFor } from "@testing-library/svelte";
+import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
+import { expect, it, vi } from "vitest";
+import { ApiRequestError, type ApiClient } from "@/shared/api/client";
+import { queryKeys } from "@/shared/api/query-keys";
+import type { CtbcWebImportStatus } from "@/data/connectors/types";
+import CtbcWebImport from "./CtbcWebImport.svelte";
+
+function setup(
+  statuses: CtbcWebImportStatus[],
+  post = vi.fn().mockResolvedValue({ started: true, running: true }),
+  demoMode = false,
+) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  let request = 0;
+  const api = {
+    get: vi.fn((path: string) => {
+      if (path !== "/api/connectors/ctbc/web-import")
+        return Promise.resolve({});
+      return Promise.resolve(
+        statuses[Math.min(request++, statuses.length - 1)],
+      );
+    }),
+    post,
+  } as unknown as ApiClient;
+  const view = render(
+    CtbcWebImport,
+    { props: { api, demoMode } },
+    {
+      wrapper: QueryClientProvider,
+      wrapperProps: { client: queryClient },
+    },
+  );
+  return { ...view, api, queryClient };
+}
+
+const idle: CtbcWebImportStatus = {
+  available: true,
+  running: false,
+  last: { finishedAt: "2026-10-08 21:30:00", exitCode: 0 },
+};
+
+it("沒有設定觸發器時維持半自動匯入說明，不顯示按鈕", async () => {
+  const { findByTestId, queryByRole } = setup([{ available: false }]);
+  expect((await findByTestId("ctbc-import-only")).textContent).toContain(
+    "半自動匯入",
+  );
+  expect(queryByRole("button")).toBeNull();
+});
+
+it("按下按鈕請 mini 開網銀視窗，並顯示登入步驟", async () => {
+  const { findByRole, findByTestId, api } = setup([
+    idle,
+    { ...idle, running: true },
+  ]);
+  await fireEvent.click(
+    await findByRole("button", { name: "在 mini 開啟網銀匯入" }),
+  );
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      "/api/connectors/ctbc/web-import",
+      {},
+    ),
+  );
+  expect((await findByTestId("ctbc-web-import-running")).textContent).toContain(
+    "30 分鐘內登入",
+  );
+  expect(
+    ((await findByRole("button", { name: "匯入進行中…" })) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+});
+
+it("上次匯入沒有完成時提示可以再開一次", async () => {
+  const { findByText } = setup([
+    {
+      available: true,
+      running: false,
+      last: { finishedAt: "2026-10-08 21:30:00", exitCode: 1 },
+    },
+  ]);
+  expect(
+    await findByText(/上次網銀匯入沒有完成（2026-10-08 21:30:00）/),
+  ).toBeTruthy();
+});
+
+it("觸發器失敗時顯示錯誤", async () => {
+  const post = vi
+    .fn()
+    .mockRejectedValue(
+      new ApiRequestError(
+        "CTBC_WEB_IMPORT_UNAVAILABLE",
+        "無法連到 mini 上的中信匯入觸發器，請稍後再試。",
+        502,
+      ),
+    );
+  const { findByRole } = setup([idle], post);
+  await fireEvent.click(
+    await findByRole("button", { name: "在 mini 開啟網銀匯入" }),
+  );
+  expect((await findByRole("alert")).textContent).toContain("mini");
+});
+
+it("Demo 模式不能啟動匯入", async () => {
+  const { findByRole } = setup([idle], undefined, true);
+  expect(
+    (
+      (await findByRole("button", {
+        name: "在 mini 開啟網銀匯入",
+      })) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+});
+
+it("匯入結束後重新讀取同步狀態與帳務資料", async () => {
+  const { findByRole, queryClient } = setup([{ ...idle, running: true }, idle]);
+  await findByRole("button", { name: "匯入進行中…" });
+  const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+  await queryClient.refetchQueries({ queryKey: queryKeys.ctbcWebImport });
+  await findByRole("button", { name: "在 mini 開啟網銀匯入" });
+  await waitFor(() =>
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.syncJobs }),
+  );
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.bank });
+});
+
+it("桌面與手機兩個面板同時掛載時，匯入結束只重新讀取一次", async () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  let request = 0;
+  const statuses: CtbcWebImportStatus[] = [{ ...idle, running: true }, idle];
+  const api = {
+    get: vi.fn(() =>
+      Promise.resolve(statuses[Math.min(request++, statuses.length - 1)]),
+    ),
+    post: vi.fn(),
+  } as unknown as ApiClient;
+  const options = {
+    wrapper: QueryClientProvider,
+    wrapperProps: { client: queryClient },
+  };
+  const view = render(
+    CtbcWebImport,
+    { props: { api, demoMode: false } },
+    options,
+  );
+  render(CtbcWebImport, { props: { api, demoMode: false } }, options);
+  expect(
+    await view.findAllByRole("button", { name: "匯入進行中…" }),
+  ).toHaveLength(2);
+  const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+  await queryClient.refetchQueries({ queryKey: queryKeys.ctbcWebImport });
+  expect(
+    await view.findAllByRole("button", { name: "在 mini 開啟網銀匯入" }),
+  ).toHaveLength(2);
+  expect(
+    invalidate.mock.calls.filter(
+      ([filters]) => filters?.queryKey === queryKeys.syncJobs,
+    ),
+  ).toHaveLength(1);
+});
+
+it("匯入中狀態查詢失敗時保留進行中，並提示正在重試", async () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  const get = vi
+    .fn()
+    .mockResolvedValueOnce({ ...idle, running: true })
+    .mockRejectedValue(new Error("502"));
+  const api = { get, post: vi.fn() } as unknown as ApiClient;
+  const view = render(
+    CtbcWebImport,
+    { props: { api, demoMode: false } },
+    {
+      wrapper: QueryClientProvider,
+      wrapperProps: { client: queryClient },
+    },
+  );
+  await view.findByRole("button", { name: "匯入進行中…" });
+  await queryClient
+    .refetchQueries({ queryKey: queryKeys.ctbcWebImport })
+    .catch(() => {});
+  expect(
+    await view.findByText(/無法確認 mini 的匯入狀態，正在重試/),
+  ).toBeTruthy();
+  expect(
+    (
+      (await view.findByRole("button", {
+        name: "匯入進行中…",
+      })) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+});
+
+it("啟動前取消進行中的狀態查詢，較早的「未執行」結果不會蓋掉進行中", async () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  let releaseStale: (value: CtbcWebImportStatus) => void = () => {};
+  const get = vi
+    .fn()
+    .mockResolvedValueOnce(idle)
+    .mockImplementationOnce(
+      () =>
+        new Promise<CtbcWebImportStatus>((resolve) => {
+          releaseStale = resolve;
+        }),
+    )
+    .mockResolvedValue({ ...idle, running: true });
+  const post = vi.fn().mockResolvedValue({ started: true, running: true });
+  const api = { get, post } as unknown as ApiClient;
+  const view = render(
+    CtbcWebImport,
+    { props: { api, demoMode: false } },
+    {
+      wrapper: QueryClientProvider,
+      wrapperProps: { client: queryClient },
+    },
+  );
+  const button = await view.findByRole("button", {
+    name: "在 mini 開啟網銀匯入",
+  });
+  // 模擬切回分頁時觸發、尚未回來的狀態查詢。
+  void queryClient.refetchQueries({ queryKey: queryKeys.ctbcWebImport });
+  await fireEvent.click(button);
+  await view.findByRole("button", { name: "匯入進行中…" });
+  releaseStale(idle);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(
+    queryClient.getQueryData<CtbcWebImportStatus>(queryKeys.ctbcWebImport),
+  ).toMatchObject({ running: true });
+  expect(view.queryByRole("button", { name: "匯入進行中…" })).not.toBeNull();
+});

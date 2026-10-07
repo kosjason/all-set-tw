@@ -56,7 +56,7 @@ import {
 } from "../../sources/taishin/connector";
 import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
-import { jsonError } from "../../platform/http";
+import { isSameOriginJsonRequest, jsonError } from "../../platform/http";
 import { validationHook } from "../../platform/validation";
 import {
   ManualCaptchaRequiredError,
@@ -76,6 +76,12 @@ import {
 import { withManualSyncLock } from "./manual-sync";
 import { prepareConnectorChallenge, runConnectorSync } from "./registry";
 import { CtbcImportPayloadError, importCtbcPayloads } from "./ctbc-import";
+import {
+  CtbcWebImportNotConfiguredError,
+  CtbcWebImportTriggerError,
+  ctbcWebImportStatus,
+  startCtbcWebImport,
+} from "./ctbc-web-import-trigger";
 import {
   cancelQueuedTdccSyncRun,
   startTdccSyncRun,
@@ -333,6 +339,37 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       );
     },
   );
+
+  // fork 自架：網頁按鈕請 mini 開中信網銀視窗，使用者登入後由既有匯入工具寫入。
+  api.get("/connectors/ctbc/web-import", async (c) => {
+    try {
+      return c.json(await ctbcWebImportStatus(c.env));
+    } catch (error) {
+      if (error instanceof CtbcWebImportTriggerError)
+        return jsonError("CTBC_WEB_IMPORT_UNAVAILABLE", error.message, 502);
+      throw error;
+    }
+  });
+
+  api.post("/connectors/ctbc/web-import", async (c) => {
+    // 會在 mini 螢幕開視窗並推通知，拒絕跨站觸發。
+    if (!isSameOriginJsonRequest(c.req.raw))
+      return jsonError(
+        "CROSS_SITE_REQUEST",
+        "請從本站的資料來源頁啟動中信網銀匯入。",
+        403,
+      );
+    try {
+      const result = await startCtbcWebImport(c.env);
+      return c.json(result, result.started ? 202 : 200);
+    } catch (error) {
+      if (error instanceof CtbcWebImportNotConfiguredError)
+        return jsonError("CTBC_WEB_IMPORT_NOT_CONFIGURED", error.message, 404);
+      if (error instanceof CtbcWebImportTriggerError)
+        return jsonError("CTBC_WEB_IMPORT_UNAVAILABLE", error.message, 502);
+      throw error;
+    }
+  });
 
   api.post("/connectors/skbank/sync", async (c) => {
     return syncRouteResponse(

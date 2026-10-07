@@ -217,6 +217,17 @@ npm run db:migrate:remote
 
 中信行動銀行的 TLS endpoint 無法由 local workerd 直接連線，因此 `npm run dev` 會自動啟動只監聽 `127.0.0.1`、限制目的端點並使用單次隨機 token 的 Node relay；正式 Worker 不使用此 relay。
 
+## 中信網銀匯入觸發器（自架）
+
+fork 自架在 Mac 上時，可讓資料來源頁的中信卡片顯示「在 mini 開啟網銀匯入」按鈕。中信擋自動登入，按鈕只是請那台 Mac 開出[網銀半自動匯入](../README.md#中國信託網銀半自動匯入)的 Chrome 視窗，使用者仍要到那台電腦前自己登入。
+
+- Worker 環境變數 `CTBC_IMPORT_TRIGGER_URL`（例如 `http://127.0.0.1:8799`）與 `CTBC_IMPORT_TRIGGER_TOKEN` 兩者都設定才啟用；只設定一個視為設定錯誤，都不設定時按鈕不出現。網址只接受 `127.0.0.1`、`localhost` 或 `[::1]` 的 http 位址，避免 token 送往其他主機。Cloudflare 上的 Worker 連不到你的電腦，不要設定。
+- 觸發器由部署者自行在同一台 Mac 執行（不在本 repo），只監聽 `127.0.0.1`，每個請求都要帶 `Authorization: Bearer <token>`：
+  - `GET /ctbc-import/status` 回 `{ running, last }`，`last` 為 `{ finishedAt, exitCode }` 或 `null`。
+  - `POST /ctbc-import/start` 在匯入工作未執行時啟動它並回 `202 { started: true, running: true }`，執行中回 `200 { started: false, running: true }`，無法啟動回 `502`。
+- 匯入工作照常執行 `npm run ctbc:web-import -- --worker http://localhost:8797 --profile ...`（建議用 launchd 的使用者 agent，才能在登入中的桌面開 Chrome），結果經 `POST /api/connectors/ctbc/import` 寫入同步紀錄。
+- token 只放在觸發器的密鑰檔（權限 600）與 Worker 的 `.dev.vars`，不寫進 repo 或日誌；觸發器讀不到密鑰、密鑰是空的或太短（mini 上的實作以 32 字元為下限）時應拒絕所有請求。
+
 ## Demo 模式
 
 設定 `DEMO_MODE=true` 會略過 Cloudflare Access 登入、只允許唯讀 API，並停止背景排程同步，適合用來公開展示介面。
