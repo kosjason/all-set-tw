@@ -279,8 +279,9 @@ describe("同步資料完整性（隔離 D1）", () => {
       incoming.bankTransactions[0].raw = { cardLast4: "5678" };
     if (scenario === "店名不明")
       incoming.bankTransactions[0].description = "台新信用卡交易";
+    // fork：店名相符時容許國外商家帳單消費日差一天，因此相差兩天才算不同消費日。
     if (scenario === "不同消費日")
-      incoming.bankTransactions[0].authorizedAt = "2026-10-04";
+      incoming.bankTransactions[0].authorizedAt = "2026-10-03";
     if (scenario === "不同幣別") incoming.bankTransactions[0].currency = "USD";
     if (scenario === "不同方向") incoming.bankTransactions[0].amount = 252;
     await writeTaishin(incoming);

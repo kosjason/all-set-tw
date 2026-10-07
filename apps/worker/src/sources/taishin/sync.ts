@@ -51,6 +51,7 @@ import {
 } from "../../features/sync/record-mapper";
 import { refreshBankDepositHistory } from "../../features/net-worth/service";
 import { prepareTaishinAuthorizationWrite } from "./authorizations";
+import { prepareTaishinMaskedIdentityMerge } from "./repository";
 
 export type TaishinSyncOverrides = {
   captcha?: string;
@@ -238,11 +239,17 @@ export async function syncTaishin(
     records,
     settings.encrypted_config,
   );
+  const maskedIdentityMerge = await prepareTaishinMaskedIdentityMerge(
+    env.DB,
+    authorizationWrite.records,
+  );
   const newRecords = await persistStagedSyncWrite(env.DB, {
     records: authorizationWrite.records,
     settingsGuard,
     afterPromoteStatements: [
       ...authorizationWrite.afterPromoteStatements,
+      // 舊版識別碼的列併入新版列；會刪除舊列，必須在授權寫入之後。
+      ...maskedIdentityMerge,
       ...(bankAccounts.length > 0
         ? [linkCanonicalBankAccountsStatement(env.DB, settingsGuard)]
         : []),

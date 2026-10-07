@@ -94,6 +94,39 @@ function fxData(payload: unknown) {
   ).data;
 }
 
+/**
+ * 台新會在外幣帳戶清單放幣別代碼空白的佔位明細（實測：三個空白、無幣別名稱），
+ * 不是可查詢的幣別；略過這些明細，只剩佔位明細的帳戶也不建立。原本就沒有明細的
+ * 帳戶維持原處理。
+ */
+function withoutPlaceholderFxDetails(data: unknown): unknown {
+  if (typeof data !== "object" || data === null) return data;
+  const accounts = (data as { FCS_ACCOUNT?: unknown }).FCS_ACCOUNT;
+  if (typeof accounts !== "object" || accounts === null) return data;
+  const isPlaceholder = (detail: unknown) =>
+    typeof detail === "object" &&
+    detail !== null &&
+    typeof (detail as { CURRENCY_CODE?: unknown }).CURRENCY_CODE === "string" &&
+    (detail as { CURRENCY_CODE: string }).CURRENCY_CODE.trim() === "";
+  const clean = (account: unknown) => {
+    const details = (account as { FCS_ACCOUNT_DETAIL?: unknown })
+      ?.FCS_ACCOUNT_DETAIL;
+    if (!Array.isArray(details) || !details.some(isPlaceholder)) return account;
+    const kept = details.filter((detail) => !isPlaceholder(detail));
+    return kept.length > 0
+      ? { ...(account as object), FCS_ACCOUNT_DETAIL: kept }
+      : undefined;
+  };
+  const cleaned = Array.isArray(accounts)
+    ? accounts.map(clean).filter((account) => account !== undefined)
+    : Object.fromEntries(
+        Object.entries(accounts)
+          .map(([key, account]) => [key, clean(account)] as const)
+          .filter(([, account]) => account !== undefined),
+      );
+  return { ...data, FCS_ACCOUNT: cleaned };
+}
+
 function hash(value: string) {
   return forge.md.sha256.create().update(value, "utf8").digest().toHex();
 }
@@ -285,7 +318,9 @@ export async function fetchTaishinDeposits(
         z.record(z.string(), fxAccountSchema),
       ]),
     }),
-    fxData(await request(`${root}/web2/rb0800/getRB08000100Data`, "")),
+    withoutPlaceholderFxDetails(
+      fxData(await request(`${root}/web2/rb0800/getRB08000100Data`, "")),
+    ),
     "外幣帳戶清單",
   ).FCS_ACCOUNT;
   const result: TaishinDepositData = {
