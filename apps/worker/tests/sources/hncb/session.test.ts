@@ -68,7 +68,7 @@ describe("華南無信用卡同步", () => {
       .mockResolvedValue("<p>您尚未持有本行信用卡。</p>");
     const browserInstance = browser(browserPage);
     puppeteerMock.launch.mockResolvedValue(browserInstance);
-    const result = await createHncbConnector({} as Fetcher).sync({
+    const result = await createHncbConnector(browserBinding).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -182,14 +182,42 @@ function page(options?: {
   };
 }
 
+// Browser Run REST API: closeBrowserSession (07e328c) confirms remote closure
+// with DELETE /v1/devtools/browser/<sessionId> through the binding's fetch.
+const browserRunFetch = vi.fn(
+  async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    new Response(null, { status: 200 }),
+);
+const browserBinding = { fetch: browserRunFetch } as unknown as Fetcher;
+
+function deletedBrowserSessions() {
+  return browserRunFetch.mock.calls
+    .filter(([, init]) => init?.method === "DELETE")
+    .map(([input]) => String(input).split("/").pop());
+}
+
 function browser(browserPage: ReturnType<typeof page>) {
   return {
     close: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
+    // launchBrowserWithRetry watches the sync AbortSignal via "disconnected".
+    once: vi.fn(),
     pages: vi.fn().mockResolvedValue([browserPage]),
     newPage: vi.fn().mockResolvedValue(browserPage),
     sessionId: vi.fn().mockReturnValue("hncb-session"),
   };
+}
+
+/** Each Browser Run launch yields a distinct session, as in production. */
+function launchFreshBrowsers(browserPage: ReturnType<typeof page>) {
+  const launched: ReturnType<typeof browser>[] = [];
+  puppeteerMock.launch.mockImplementation(async () => {
+    const instance = browser(browserPage);
+    instance.sessionId.mockReturnValue(`hncb-session-${launched.length + 1}`);
+    launched.push(instance);
+    return instance;
+  });
+  return launched;
 }
 
 afterEach(() => {
@@ -213,7 +241,7 @@ describe("HNCB browser session lifecycle", () => {
       new Error("Unable to create new browser: code: 429"),
     );
     await expect(
-      createHncbConnector({} as Fetcher).sync(credentials),
+      createHncbConnector(browserBinding).sync(credentials),
     ).rejects.toBeInstanceOf(BrowserRunCapacityError);
   });
 
@@ -224,7 +252,7 @@ describe("HNCB browser session lifecycle", () => {
     browserInstance.pages.mockImplementation(() => new Promise(() => {}));
     puppeteerMock.launch.mockResolvedValue(browserInstance);
 
-    const preparation = prepareHncbCaptcha({} as Fetcher, credentials);
+    const preparation = prepareHncbCaptcha(browserBinding, credentials);
     const rejected = expect(preparation).rejects.toMatchObject({
       name: "HncbConnectionError",
       message: "華南瀏覽器工作超過期限，已停止，請稍後再試。",
@@ -241,24 +269,38 @@ describe("HNCB browser session lifecycle", () => {
     browserInstance.pages.mockImplementation(() => new Promise(() => {}));
     browserInstance.close.mockImplementation(() => new Promise(() => {}));
     puppeteerMock.launch.mockResolvedValue(browserInstance);
-    const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    let confirmDeleted: ((response: Response) => void) | undefined;
+    const fetch = vi.fn(
+      (_input: string, _init?: RequestInit) =>
+        new Promise<Response>((resolve) => {
+          confirmDeleted = resolve;
+        }),
+    );
 
+    let settled = false;
     const preparation = prepareHncbCaptcha(
       { fetch } as unknown as Fetcher,
       credentials,
-    );
+    ).finally(() => {
+      settled = true;
+    });
     const rejected =
       expect(preparation).rejects.toBeInstanceOf(HncbConnectionError);
-    await vi.advanceTimersByTimeAsync(35_000);
+    await vi.advanceTimersByTimeAsync(34_999);
     expect(fetch).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(10_000);
-    await rejected;
+    await vi.advanceTimersByTimeAsync(1);
 
+    // 07e328c (closeBrowserSession): the remote DELETE starts alongside
+    // browser.close() instead of after a stalled CDP close times out, and the
+    // failure is only reported once remote cleanup has answered.
     expect(browserInstance.close).toHaveBeenCalledOnce();
     expect(fetch).toHaveBeenCalledWith(
       "https://fake.host/v1/devtools/browser/hncb-session",
-      { method: "DELETE" },
+      expect.objectContaining({ method: "DELETE" }),
     );
+    expect(settled).toBe(false);
+    confirmDeleted!(new Response(null, { status: 200 }));
+    await rejected;
     expect(browserInstance.disconnect).toHaveBeenCalledOnce();
   });
 
@@ -267,7 +309,7 @@ describe("HNCB browser session lifecycle", () => {
     const browserInstance = browser(browserPage);
     puppeteerMock.launch.mockResolvedValue(browserInstance);
 
-    const result = await prepareHncbCaptcha({} as Fetcher, credentials);
+    const result = await prepareHncbCaptcha(browserBinding, credentials);
 
     expect(puppeteerMock.launch).toHaveBeenCalledOnce();
     expect(puppeteerMock.launch).toHaveBeenCalledWith(expect.anything(), {
@@ -294,7 +336,7 @@ describe("HNCB browser session lifecycle", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     try {
-      await prepareHncbCaptcha({} as Fetcher, credentials);
+      await prepareHncbCaptcha(browserBinding, credentials);
 
       const dialogHandler = browserPage.on.mock.calls.find(
         ([event]) => event === "dialog",
@@ -328,12 +370,15 @@ describe("HNCB browser session lifecycle", () => {
     ]);
     puppeteerMock.connect.mockResolvedValue(browserInstance);
 
-    const result = await prepareHncbCaptcha({} as Fetcher, {
+    const result = await prepareHncbCaptcha(browserBinding, {
       ...credentials,
       browserSessionId: "hncb-session",
     });
 
-    expect(puppeteerMock.connect).toHaveBeenCalledWith({}, "hncb-session");
+    expect(puppeteerMock.connect).toHaveBeenCalledWith(
+      browserBinding,
+      "hncb-session",
+    );
     expect(puppeteerMock.launch).not.toHaveBeenCalled();
     expect(browserInstance.disconnect).toHaveBeenCalledOnce();
     expect(result.browserSessionId).toBe("hncb-session");
@@ -349,7 +394,7 @@ describe("HNCB browser session lifecycle", () => {
     ]);
 
     await expect(
-      prepareHncbCaptcha({} as Fetcher, {
+      prepareHncbCaptcha(browserBinding, {
         ...credentials,
         browserSessionId: "hncb-session",
       }),
@@ -365,7 +410,7 @@ describe("HNCB browser session lifecycle", () => {
     ]);
     puppeteerMock.connect.mockResolvedValue(browserInstance);
 
-    const result = await createHncbConnector({} as Fetcher).sync({
+    const result = await createHncbConnector(browserBinding).sync({
       ...credentials,
       browserSessionId: "hncb-session",
       browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -373,7 +418,10 @@ describe("HNCB browser session lifecycle", () => {
       captcha: "1234",
     });
 
-    expect(puppeteerMock.connect).toHaveBeenCalledWith({}, "hncb-session");
+    expect(puppeteerMock.connect).toHaveBeenCalledWith(
+      browserBinding,
+      "hncb-session",
+    );
     expect(puppeteerMock.launch).not.toHaveBeenCalled();
     expect(browserPage.type).toHaveBeenCalledWith(
       "#TrxCaptchaKey",
@@ -389,7 +437,10 @@ describe("HNCB browser session lifecycle", () => {
       sessionCookies: expect.stringContaining("JSESSIONID"),
     });
     expect(browserInstance.close).toHaveBeenCalledOnce();
-    expect(browserInstance.disconnect).not.toHaveBeenCalled();
+    // 07e328c closes through closeBrowserSession: local close plus a remote
+    // DELETE, followed by a local disconnect. The CAPTCHA session is
+    // terminated, not preserved.
+    expect(deletedBrowserSessions()).toEqual(["hncb-session"]);
   });
 
   it("keeps syncing when the login submit call never returns", async () => {
@@ -413,7 +464,7 @@ describe("HNCB browser session lifecycle", () => {
     ]);
     puppeteerMock.connect.mockResolvedValue(browserInstance);
 
-    const pending = createHncbConnector({} as Fetcher).sync({
+    const pending = createHncbConnector(browserBinding).sync({
       ...credentials,
       browserSessionId: "hncb-session",
       browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -448,7 +499,7 @@ describe("HNCB browser session lifecycle", () => {
     ]);
     puppeteerMock.connect.mockResolvedValue(browserInstance);
 
-    const result = await createHncbConnector({} as Fetcher).sync({
+    const result = await createHncbConnector(browserBinding).sync({
       ...credentials,
       browserSessionId: "hncb-session",
       browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -469,7 +520,7 @@ describe("HNCB browser session lifecycle", () => {
     puppeteerMock.launch.mockResolvedValue(browserInstance);
     const recognize = vi.fn();
 
-    const result = await createHncbConnector({} as Fetcher, recognize).sync({
+    const result = await createHncbConnector(browserBinding, recognize).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -510,7 +561,7 @@ describe("HNCB browser session lifecycle", () => {
     puppeteerMock.launch.mockResolvedValue(browserInstance);
     const recognize = vi.fn().mockResolvedValue("1234");
 
-    const pending = createHncbConnector({} as Fetcher, recognize).sync({
+    const pending = createHncbConnector(browserBinding, recognize).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         { name: "JSESSIONID", value: "stale", domain: "netbank.hncb.com.tw" },
@@ -531,7 +582,7 @@ describe("HNCB browser session lifecycle", () => {
     const browserInstance = browser(browserPage);
     puppeteerMock.launch.mockResolvedValue(browserInstance);
 
-    const result = await createHncbConnector({} as Fetcher).sync({
+    const result = await createHncbConnector(browserBinding).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -566,7 +617,7 @@ describe("HNCB browser session lifecycle", () => {
     puppeteerMock.connect.mockResolvedValue(browserInstance);
 
     await expect(
-      createHncbConnector({} as Fetcher).sync({
+      createHncbConnector(browserBinding).sync({
         ...credentials,
         browserSessionId: "hncb-session",
         browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -576,7 +627,10 @@ describe("HNCB browser session lifecycle", () => {
     ).rejects.toBeInstanceOf(HncbCaptchaRejectedError);
 
     expect(browserInstance.close).toHaveBeenCalledOnce();
-    expect(browserInstance.disconnect).not.toHaveBeenCalled();
+    // 07e328c closes through closeBrowserSession: local close plus a remote
+    // DELETE, followed by a local disconnect. The CAPTCHA session is
+    // terminated, not preserved.
+    expect(deletedBrowserSessions()).toEqual(["hncb-session"]);
   });
 
   it("does not call an indeterminate prepared login a CAPTCHA error", async () => {
@@ -590,7 +644,7 @@ describe("HNCB browser session lifecycle", () => {
     ]);
     puppeteerMock.connect.mockResolvedValue(browserInstance);
 
-    const sync = createHncbConnector({} as Fetcher).sync({
+    const sync = createHncbConnector(browserBinding).sync({
       ...credentials,
       browserSessionId: "hncb-session",
       browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -633,7 +687,7 @@ describe("HNCB browser session lifecycle", () => {
       .mockResolvedValueOnce("0000")
       .mockResolvedValueOnce("1234");
 
-    const result = await createHncbConnector({} as Fetcher, recognize).sync(
+    const result = await createHncbConnector(browserBinding, recognize).sync(
       credentials,
     );
 
@@ -662,7 +716,7 @@ describe("HNCB browser session lifecycle", () => {
     puppeteerMock.launch.mockResolvedValue(browserInstance);
     const recognize = vi.fn().mockResolvedValue("1234");
 
-    const sync = createHncbConnector({} as Fetcher, recognize).sync(
+    const sync = createHncbConnector(browserBinding, recognize).sync(
       credentials,
     );
     const rejected = expect(sync).rejects.toMatchObject({
@@ -693,28 +747,37 @@ describe("HNCB browser session lifecycle", () => {
     const recognize = vi.fn().mockResolvedValue("1234");
 
     await expect(
-      createHncbConnector({} as Fetcher, recognize).sync(credentials),
+      createHncbConnector(browserBinding, recognize).sync(credentials),
     ).rejects.toBeInstanceOf(HncbCredentialRejectedError);
     expect(recognize).toHaveBeenCalledOnce();
   });
 
   it("treats a blank login page as a connection error instead of captcha failure", async () => {
     const browserPage = page({ blankLoginPage: true });
-    const browserInstance = browser(browserPage);
-    puppeteerMock.launch.mockResolvedValue(browserInstance);
+    const launched = launchFreshBrowsers(browserPage);
     const recognize = vi.fn().mockResolvedValue("1234");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    await expect(
-      createHncbConnector({} as Fetcher, recognize).sync(credentials),
-    ).rejects.toMatchObject({
-      name: "HncbConnectionError",
-      message: "華南登入頁沒有在期限內載入完整表單，請稍後再試。",
-    });
+    // 07e328c moved the first login-page load into prepareBrowserLoginWithRetry:
+    // a page that never becomes ready is retried on up to three fresh sessions
+    // and then ends as a connection failure (the raw readiness timeout mapped
+    // by mapHncbError), never as a CAPTCHA problem.
+    const sync = createHncbConnector(browserBinding, recognize).sync(
+      credentials,
+    );
+    await expect(sync).rejects.toBeInstanceOf(HncbConnectionError);
+    await expect(sync).rejects.not.toBeInstanceOf(HncbCaptchaRejectedError);
 
     expect(recognize).not.toHaveBeenCalled();
-    expect(browserPage.goto).toHaveBeenCalledOnce();
-    expect(browserInstance.close).toHaveBeenCalledOnce();
+    expect(launched).toHaveLength(3);
+    expect(browserPage.goto).toHaveBeenCalledTimes(3);
+    for (const instance of launched)
+      expect(instance.close).toHaveBeenCalledOnce();
+    expect(deletedBrowserSessions()).toEqual([
+      "hncb-session-1",
+      "hncb-session-2",
+      "hncb-session-3",
+    ]);
     expect(browserPage.goto).toHaveBeenCalledWith(
       LOGIN_URL,
       expect.objectContaining({
@@ -746,42 +809,49 @@ describe("HNCB browser session lifecycle", () => {
     warn.mockRestore();
   });
 
-  it("stops immediately on Chromium's failed login page", async () => {
+  it("does not wait for the login form on Chromium's failed login page and stops after three fresh sessions", async () => {
     const browserPage = page({ errorPage: true });
-    const browserInstance = browser(browserPage);
-    puppeteerMock.launch.mockResolvedValue(browserInstance);
+    const launched = launchFreshBrowsers(browserPage);
     const recognize = vi.fn();
 
+    // 07e328c made the chromewebdata error page retryable login preparation
+    // (isLoginPageUnavailable) and dropped "已停止重試" from its message.
     await expect(
-      createHncbConnector({} as Fetcher, recognize).sync(credentials),
+      createHncbConnector(browserBinding, recognize).sync(credentials),
     ).rejects.toMatchObject({
       name: "HncbConnectionError",
-      message: "華南登入頁載入失敗，已停止重試，請稍後再試。",
+      message: "華南登入頁載入失敗，請稍後再試。",
     });
-    expect(browserPage.goto).toHaveBeenCalledOnce();
+    expect(launched).toHaveLength(3);
+    expect(browserPage.goto).toHaveBeenCalledTimes(3);
     expect(browserPage.waitForFunction).not.toHaveBeenCalled();
     expect(recognize).not.toHaveBeenCalled();
-    expect(browserInstance.close).toHaveBeenCalledOnce();
+    for (const instance of launched)
+      expect(instance.close).toHaveBeenCalledOnce();
   });
 
   it("does not let a stalled navigation consume the whole browser deadline", async () => {
     vi.useFakeTimers();
     const browserPage = page({ blankLoginPage: true, hangNavigation: true });
-    const browserInstance = browser(browserPage);
-    puppeteerMock.launch.mockResolvedValue(browserInstance);
+    const launched = launchFreshBrowsers(browserPage);
     const recognize = vi.fn();
 
-    const sync = createHncbConnector({} as Fetcher, recognize).sync(
+    const sync = createHncbConnector(browserBinding, recognize).sync(
       credentials,
     );
-    const rejected = expect(sync).rejects.toMatchObject({
-      name: "HncbConnectionError",
-      message: "華南登入頁沒有在期限內載入完整表單，請稍後再試。",
-    });
-    await vi.advanceTimersByTimeAsync(7_000);
+    const rejected = expect(sync).rejects.toBeInstanceOf(HncbConnectionError);
+    // Each hung navigation is cut at the 6-second hard timeout. With the
+    // three fresh-session preparation attempts from 07e328c this ends long
+    // before the 45-second preparation budget or the 120-second sync deadline.
+    await vi.advanceTimersByTimeAsync(20_000);
     await rejected;
+    await expect(sync).rejects.not.toMatchObject({
+      message: "華南瀏覽器工作超過期限，已停止，請稍後再試。",
+    });
     expect(recognize).not.toHaveBeenCalled();
-    expect(browserInstance.close).toHaveBeenCalledOnce();
+    expect(launched).toHaveLength(3);
+    for (const instance of launched)
+      expect(instance.close).toHaveBeenCalledOnce();
   });
 
   it("throws when logged-in pages parse to empty data", async () => {
@@ -793,7 +863,7 @@ describe("HNCB browser session lifecycle", () => {
     puppeteerMock.connect.mockResolvedValue(browserInstance);
 
     await expect(
-      createHncbConnector({} as Fetcher).sync({
+      createHncbConnector(browserBinding).sync({
         ...credentials,
         browserSessionId: "hncb-session",
         browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),

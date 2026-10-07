@@ -352,6 +352,9 @@ function makePage(options?: {
             typeof payload === "string" ? payload : JSON.stringify(payload),
           ),
       };
+      return page.emitResponseObject(response);
+    },
+    emitResponseObject<T>(response: T) {
       for (const listener of listeners.get("response") ?? [])
         listener(response);
       return response;
@@ -456,10 +459,26 @@ function makePage(options?: {
   return page;
 }
 
+// Browser Run REST API: closeBrowserSession (07e328c) confirms remote closure
+// with DELETE /v1/devtools/browser/<sessionId> through the binding's fetch.
+const browserRunFetch = vi.fn(
+  async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    new Response(null, { status: 200 }),
+);
+const browserBinding = { fetch: browserRunFetch } as unknown as Fetcher;
+
+function deletedBrowserSessions() {
+  return browserRunFetch.mock.calls
+    .filter(([, init]) => init?.method === "DELETE")
+    .map(([input]) => String(input).split("/").pop());
+}
+
 function makeBrowser(page: ReturnType<typeof makePage>) {
   return {
     close: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
+    // launchBrowserWithRetry watches the sync AbortSignal via "disconnected".
+    once: vi.fn(),
     pages: vi.fn().mockResolvedValue([page]),
     newPage: vi.fn().mockResolvedValue(page),
     sessionId: vi.fn().mockReturnValue("firstbank-session"),
@@ -782,7 +801,7 @@ describe("第一銀行 browser session lifecycle", () => {
       new Error("Unable to create new browser: code: 429"),
     );
     await expect(
-      createFirstbankConnector({} as Fetcher).sync(credentials),
+      createFirstbankConnector(browserBinding).sync(credentials),
     ).rejects.toBeInstanceOf(BrowserRunCapacityError);
   });
 
@@ -791,7 +810,7 @@ describe("第一銀行 browser session lifecycle", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const result = await prepareFirstbankCaptcha({} as Fetcher, credentials);
+    const result = await prepareFirstbankCaptcha(browserBinding, credentials);
 
     expect(puppeteerMock.launch).toHaveBeenCalledWith(
       expect.objectContaining({ fetch: expect.any(Function) }),
@@ -819,12 +838,15 @@ describe("第一銀行 browser session lifecycle", () => {
     ]);
     puppeteerMock.connect.mockResolvedValue(browser);
 
-    const result = await prepareFirstbankCaptcha({} as Fetcher, {
+    const result = await prepareFirstbankCaptcha(browserBinding, {
       ...credentials,
       browserSessionId: "firstbank-session",
     });
 
-    expect(puppeteerMock.connect).toHaveBeenCalledWith({}, "firstbank-session");
+    expect(puppeteerMock.connect).toHaveBeenCalledWith(
+      browserBinding,
+      "firstbank-session",
+    );
     expect(puppeteerMock.launch).not.toHaveBeenCalled();
     expect(browser.disconnect).toHaveBeenCalledOnce();
     expect(result.browserSessionId).toBe("firstbank-session");
@@ -847,12 +869,15 @@ describe("第一銀行 browser session lifecycle", () => {
     puppeteerMock.connect.mockResolvedValue(browser);
 
     await expect(
-      prepareFirstbankCaptcha({} as Fetcher, {
+      prepareFirstbankCaptcha(browserBinding, {
         ...credentials,
         browserSessionId: "firstbank-session",
       }),
     ).resolves.toMatchObject({ browserSessionId: "firstbank-session" });
-    expect(puppeteerMock.connect).toHaveBeenCalledWith({}, "firstbank-session");
+    expect(puppeteerMock.connect).toHaveBeenCalledWith(
+      browserBinding,
+      "firstbank-session",
+    );
     expect(puppeteerMock.launch).not.toHaveBeenCalled();
   });
 
@@ -869,14 +894,17 @@ describe("第一銀行 browser session lifecycle", () => {
     ]);
     puppeteerMock.connect.mockResolvedValue(browser);
 
-    const result = await createFirstbankConnector({} as Fetcher).sync({
+    const result = await createFirstbankConnector(browserBinding).sync({
       ...credentials,
       browserSessionId: "firstbank-session",
       browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       captcha: "XVSH",
     });
 
-    expect(puppeteerMock.connect).toHaveBeenCalledWith({}, "firstbank-session");
+    expect(puppeteerMock.connect).toHaveBeenCalledWith(
+      browserBinding,
+      "firstbank-session",
+    );
     expect(page.type).toHaveBeenCalledWith(
       "#vrfyCode",
       "XVSH",
@@ -896,7 +924,10 @@ describe("第一銀行 browser session lifecycle", () => {
       ]),
     );
     expect(browser.close).toHaveBeenCalledOnce();
-    expect(browser.disconnect).not.toHaveBeenCalled();
+    // 07e328c closes through closeBrowserSession: local close plus a remote
+    // DELETE, followed by a local disconnect. The session is terminated, not
+    // preserved for another CAPTCHA.
+    expect(deletedBrowserSessions()).toEqual(["firstbank-session"]);
   });
 
   it.each([false, true])(
@@ -919,7 +950,7 @@ describe("第一銀行 browser session lifecycle", () => {
       puppeteerMock.launch.mockResolvedValue(browser);
       const recognize = vi.fn().mockResolvedValue("XVSH");
       await expect(
-        createFirstbankConnector({} as Fetcher, recognize).sync(credentials),
+        createFirstbankConnector(browserBinding, recognize).sync(credentials),
       ).rejects.toThrow(FIRSTBANK_SESSION_OCCUPIED_MESSAGE);
       expect(recognize).toHaveBeenCalledTimes(alreadyLoggedIn ? 0 : 1);
       expect(page.mouse.click).toHaveBeenCalledTimes(alreadyLoggedIn ? 0 : 1);
@@ -946,7 +977,7 @@ describe("第一銀行 browser session lifecycle", () => {
     ]);
     puppeteerMock.connect.mockResolvedValue(browser);
     await expect(
-      createFirstbankConnector({} as Fetcher).sync({
+      createFirstbankConnector(browserBinding).sync({
         ...credentials,
         browserSessionId: "firstbank-session",
         browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -970,7 +1001,7 @@ describe("第一銀行 browser session lifecycle", () => {
     const recognize = vi.fn();
 
     const result = await createFirstbankConnector(
-      {} as Fetcher,
+      browserBinding,
       recognize,
     ).sync({
       ...credentials,
@@ -1023,7 +1054,7 @@ describe("第一銀行 browser session lifecycle", () => {
     puppeteerMock.launch.mockResolvedValue(browser);
 
     try {
-      await createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+      await createFirstbankConnector(browserBinding, vi.fn()).sync({
         ...credentials,
         sessionCookies: JSON.stringify([
           {
@@ -1074,16 +1105,18 @@ describe("第一銀行 browser session lifecycle", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const result = await createFirstbankConnector({} as Fetcher, vi.fn()).sync({
-      ...credentials,
-      sessionCookies: JSON.stringify([
-        {
-          name: "SESSION",
-          value: "encrypted-at-rest",
-          domain: "ibank.firstbank.com.tw",
-        },
-      ]),
-    });
+    const result = await createFirstbankConnector(browserBinding, vi.fn()).sync(
+      {
+        ...credentials,
+        sessionCookies: JSON.stringify([
+          {
+            name: "SESSION",
+            value: "encrypted-at-rest",
+            domain: "ibank.firstbank.com.tw",
+          },
+        ]),
+      },
+    );
 
     expect(result.bankAccounts).toEqual(
       expect.arrayContaining([
@@ -1115,7 +1148,7 @@ describe("第一銀行 browser session lifecycle", () => {
     const recognize = vi.fn().mockResolvedValue("bad");
 
     await expect(
-      createFirstbankConnector({} as Fetcher, recognize).sync(credentials),
+      createFirstbankConnector(browserBinding, recognize).sync(credentials),
     ).rejects.toBeInstanceOf(FirstbankVerificationRequiredError);
     expect(recognize).toHaveBeenCalledTimes(3);
     expect(browser.close).toHaveBeenCalledOnce();
@@ -1133,7 +1166,7 @@ describe("第一銀行 browser session lifecycle", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
     const recognize = vi.fn().mockResolvedValue("XVSH");
-    const sync = createFirstbankConnector({} as Fetcher, recognize).sync(
+    const sync = createFirstbankConnector(browserBinding, recognize).sync(
       credentials,
     );
 
@@ -1159,7 +1192,7 @@ describe("第一銀行 browser session lifecycle", () => {
     puppeteerMock.connect.mockResolvedValue(browser);
 
     await expect(
-      createFirstbankConnector({} as Fetcher).sync({
+      createFirstbankConnector(browserBinding).sync({
         ...credentials,
         browserSessionId: "firstbank-session",
         browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -1186,7 +1219,7 @@ describe("第一銀行 browser session lifecycle", () => {
     puppeteerMock.connect.mockResolvedValue(browser);
 
     await expect(
-      createFirstbankConnector({} as Fetcher).sync({
+      createFirstbankConnector(browserBinding).sync({
         ...credentials,
         browserSessionId: "firstbank-session",
         browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -1206,7 +1239,7 @@ describe("第一銀行 browser session lifecycle", () => {
     ]);
     puppeteerMock.connect.mockResolvedValue(browser);
 
-    const sync = createFirstbankConnector({} as Fetcher).sync({
+    const sync = createFirstbankConnector(browserBinding).sync({
       ...credentials,
       browserSessionId: "firstbank-session",
       browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -1261,7 +1294,7 @@ describe("第一銀行信用卡 Browser Run 擷取", () => {
       const browser = makeBrowser(page);
       puppeteerMock.launch.mockResolvedValue(browser);
       try {
-        const pending = createFirstbankConnector({} as Fetcher).sync({
+        const pending = createFirstbankConnector(browserBinding).sync({
           ...credentials,
           sessionCookies: JSON.stringify([
             {
@@ -1320,7 +1353,7 @@ describe("第一銀行信用卡 Browser Run 擷取", () => {
     });
     puppeteerMock.launch.mockResolvedValue(makeBrowser(page));
     try {
-      const pending = createFirstbankConnector({} as Fetcher).sync({
+      const pending = createFirstbankConnector(browserBinding).sync({
         ...credentials,
         sessionCookies: JSON.stringify([
           {
@@ -1359,7 +1392,7 @@ describe("第一銀行信用卡 Browser Run 擷取", () => {
     puppeteerMock.launch.mockResolvedValue(browser);
 
     try {
-      const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+      const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
         ...credentials,
         sessionCookies: JSON.stringify([
           {
@@ -1428,7 +1461,7 @@ describe("第一銀行信用卡 Browser Run 擷取", () => {
       }
       const browser = makeBrowser(page);
       puppeteerMock.launch.mockResolvedValue(browser);
-      const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+      const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
         ...credentials,
         sessionCookies: "[]",
       });
@@ -1482,7 +1515,7 @@ describe("第一銀行信用卡 Browser Run 擷取", () => {
         });
       const browser = makeBrowser(page);
       puppeteerMock.launch.mockResolvedValue(browser);
-      const sync = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+      const sync = createFirstbankConnector(browserBinding, vi.fn()).sync({
         ...credentials,
         sessionCookies: "[]",
       });
@@ -1573,7 +1606,7 @@ describe("第一銀行信用卡 Browser Run 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -1636,7 +1669,7 @@ describe("第一銀行信用卡 Browser Run 擷取", () => {
     puppeteerMock.launch.mockResolvedValue(browser);
 
     try {
-      const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+      const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
         ...credentials,
         sessionCookies: JSON.stringify([
           {
@@ -1685,7 +1718,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
 
     try {
       const result = await createFirstbankConnector(
-        {} as Fetcher,
+        browserBinding,
         vi.fn(),
       ).sync({
         ...credentials,
@@ -1739,7 +1772,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     puppeteerMock.launch.mockResolvedValue(browser);
 
     try {
-      const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+      const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
         ...credentials,
         sessionCookies: JSON.stringify([
           {
@@ -1798,7 +1831,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -1836,7 +1869,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -1881,7 +1914,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
 
     try {
       const result = await createFirstbankConnector(
-        {} as Fetcher,
+        browserBinding,
         vi.fn(),
       ).sync({
         ...credentials,
@@ -1943,16 +1976,18 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const result = await createFirstbankConnector({} as Fetcher, vi.fn()).sync({
-      ...credentials,
-      sessionCookies: JSON.stringify([
-        {
-          name: "SESSION",
-          value: "encrypted-at-rest",
-          domain: "ibank.firstbank.com.tw",
-        },
-      ]),
-    });
+    const result = await createFirstbankConnector(browserBinding, vi.fn()).sync(
+      {
+        ...credentials,
+        sessionCookies: JSON.stringify([
+          {
+            name: "SESSION",
+            value: "encrypted-at-rest",
+            domain: "ibank.firstbank.com.tw",
+          },
+        ]),
+      },
+    );
 
     expect(result.bankAccounts).toHaveLength(1);
     expect(result.bankTransactions).toEqual(
@@ -1982,7 +2017,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const recognize = vi.fn();
 
     const result = await createFirstbankConnector(
-      {} as Fetcher,
+      browserBinding,
       recognize,
     ).sync({
       ...credentials,
@@ -2020,7 +2055,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     });
     puppeteerMock.launch.mockResolvedValue(makeBrowser(page));
 
-    const pending = createFirstbankConnector({} as Fetcher).sync({
+    const pending = createFirstbankConnector(browserBinding).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -2057,16 +2092,18 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const result = await createFirstbankConnector({} as Fetcher, vi.fn()).sync({
-      ...credentials,
-      sessionCookies: JSON.stringify([
-        {
-          name: "SESSION",
-          value: "encrypted-at-rest",
-          domain: "ibank.firstbank.com.tw",
-        },
-      ]),
-    });
+    const result = await createFirstbankConnector(browserBinding, vi.fn()).sync(
+      {
+        ...credentials,
+        sessionCookies: JSON.stringify([
+          {
+            name: "SESSION",
+            value: "encrypted-at-rest",
+            domain: "ibank.firstbank.com.tw",
+          },
+        ]),
+      },
+    );
 
     expect(result.bankTransactions).toEqual(
       expect.arrayContaining([
@@ -2088,7 +2125,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -2112,16 +2149,18 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const result = await createFirstbankConnector({} as Fetcher, vi.fn()).sync({
-      ...credentials,
-      sessionCookies: JSON.stringify([
-        {
-          name: "SESSION",
-          value: "encrypted-at-rest",
-          domain: "ibank.firstbank.com.tw",
-        },
-      ]),
-    });
+    const result = await createFirstbankConnector(browserBinding, vi.fn()).sync(
+      {
+        ...credentials,
+        sessionCookies: JSON.stringify([
+          {
+            name: "SESSION",
+            value: "encrypted-at-rest",
+            domain: "ibank.firstbank.com.tw",
+          },
+        ]),
+      },
+    );
 
     expect(result.bankTransactions).toEqual(
       expect.arrayContaining([
@@ -2152,16 +2191,18 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const result = await createFirstbankConnector({} as Fetcher, vi.fn()).sync({
-      ...credentials,
-      sessionCookies: JSON.stringify([
-        {
-          name: "SESSION",
-          value: "encrypted-at-rest",
-          domain: "ibank.firstbank.com.tw",
-        },
-      ]),
-    });
+    const result = await createFirstbankConnector(browserBinding, vi.fn()).sync(
+      {
+        ...credentials,
+        sessionCookies: JSON.stringify([
+          {
+            name: "SESSION",
+            value: "encrypted-at-rest",
+            domain: "ibank.firstbank.com.tw",
+          },
+        ]),
+      },
+    );
 
     expect(result.bankTransactions).toEqual(
       expect.arrayContaining([
@@ -2218,16 +2259,18 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const result = await createFirstbankConnector({} as Fetcher, vi.fn()).sync({
-      ...credentials,
-      sessionCookies: JSON.stringify([
-        {
-          name: "SESSION",
-          value: "encrypted-at-rest",
-          domain: "ibank.firstbank.com.tw",
-        },
-      ]),
-    });
+    const result = await createFirstbankConnector(browserBinding, vi.fn()).sync(
+      {
+        ...credentials,
+        sessionCookies: JSON.stringify([
+          {
+            name: "SESSION",
+            value: "encrypted-at-rest",
+            domain: "ibank.firstbank.com.tw",
+          },
+        ]),
+      },
+    );
 
     expect(result.bankTransactions).toEqual(
       expect.arrayContaining([
@@ -2268,16 +2311,18 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const result = await createFirstbankConnector({} as Fetcher, vi.fn()).sync({
-      ...credentials,
-      sessionCookies: JSON.stringify([
-        {
-          name: "SESSION",
-          value: "encrypted-at-rest",
-          domain: "ibank.firstbank.com.tw",
-        },
-      ]),
-    });
+    const result = await createFirstbankConnector(browserBinding, vi.fn()).sync(
+      {
+        ...credentials,
+        sessionCookies: JSON.stringify([
+          {
+            name: "SESSION",
+            value: "encrypted-at-rest",
+            domain: "ibank.firstbank.com.tw",
+          },
+        ]),
+      },
+    );
 
     expect(result.bankTransactions).toEqual(
       expect.arrayContaining([
@@ -2298,16 +2343,18 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const result = await createFirstbankConnector({} as Fetcher, vi.fn()).sync({
-      ...credentials,
-      sessionCookies: JSON.stringify([
-        {
-          name: "SESSION",
-          value: "encrypted-at-rest",
-          domain: "ibank.firstbank.com.tw",
-        },
-      ]),
-    });
+    const result = await createFirstbankConnector(browserBinding, vi.fn()).sync(
+      {
+        ...credentials,
+        sessionCookies: JSON.stringify([
+          {
+            name: "SESSION",
+            value: "encrypted-at-rest",
+            domain: "ibank.firstbank.com.tw",
+          },
+        ]),
+      },
+    );
     expect(result.bankTransactions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ amount: -100, description: "測試交易" }),
@@ -2342,16 +2389,18 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const result = await createFirstbankConnector({} as Fetcher, vi.fn()).sync({
-      ...credentials,
-      sessionCookies: JSON.stringify([
-        {
-          name: "SESSION",
-          value: "encrypted-at-rest",
-          domain: "ibank.firstbank.com.tw",
-        },
-      ]),
-    });
+    const result = await createFirstbankConnector(browserBinding, vi.fn()).sync(
+      {
+        ...credentials,
+        sessionCookies: JSON.stringify([
+          {
+            name: "SESSION",
+            value: "encrypted-at-rest",
+            domain: "ibank.firstbank.com.tw",
+          },
+        ]),
+      },
+    );
 
     expect(result.bankTransactions).toEqual(
       expect.arrayContaining([
@@ -2372,7 +2421,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -2399,7 +2448,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -2437,7 +2486,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -2472,7 +2521,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -2525,7 +2574,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
 
     try {
       const result = await createFirstbankConnector(
-        {} as Fetcher,
+        browserBinding,
         vi.fn(),
       ).sync({
         ...credentials,
@@ -2570,10 +2619,9 @@ describe("第一銀行交易明細 010103 擷取", () => {
           json: vi.fn().mockRejectedValue(new Error("not json")),
           text: vi.fn().mockResolvedValue(""),
         };
-        const pageListeners = page.on.mock.calls.find(
-          ([event]) => event === "response",
-        )?.[1] as Listener | undefined;
-        pageListeners?.(response);
+        // Dispatch to live listeners only: the login-preparation diagnostics
+        // listener (07e328c) is registered first and removed after prepare.
+        page.emitResponseObject(response);
       }
     });
     const browser = makeBrowser(page);
@@ -2581,7 +2629,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
 
     try {
       await expect(
-        createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+        createFirstbankConnector(browserBinding, vi.fn()).sync({
           ...credentials,
           sessionCookies: JSON.stringify([
             {
@@ -2620,7 +2668,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -2677,16 +2725,18 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const result = await createFirstbankConnector({} as Fetcher, vi.fn()).sync({
-      ...credentials,
-      sessionCookies: JSON.stringify([
-        {
-          name: "SESSION",
-          value: "encrypted-at-rest",
-          domain: "ibank.firstbank.com.tw",
-        },
-      ]),
-    });
+    const result = await createFirstbankConnector(browserBinding, vi.fn()).sync(
+      {
+        ...credentials,
+        sessionCookies: JSON.stringify([
+          {
+            name: "SESSION",
+            value: "encrypted-at-rest",
+            domain: "ibank.firstbank.com.tw",
+          },
+        ]),
+      },
+    );
 
     expect(result.bankTransactions).toEqual(
       expect.arrayContaining([
@@ -2723,7 +2773,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -2761,7 +2811,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -2793,7 +2843,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -2833,7 +2883,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     puppeteerMock.launch.mockResolvedValue(browser);
 
     try {
-      const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+      const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
         ...credentials,
         sessionCookies: JSON.stringify([
           {
@@ -2907,7 +2957,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -2946,16 +2996,18 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const result = await createFirstbankConnector({} as Fetcher, vi.fn()).sync({
-      ...credentials,
-      sessionCookies: JSON.stringify([
-        {
-          name: "SESSION",
-          value: "encrypted-at-rest",
-          domain: "ibank.firstbank.com.tw",
-        },
-      ]),
-    });
+    const result = await createFirstbankConnector(browserBinding, vi.fn()).sync(
+      {
+        ...credentials,
+        sessionCookies: JSON.stringify([
+          {
+            name: "SESSION",
+            value: "encrypted-at-rest",
+            domain: "ibank.firstbank.com.tw",
+          },
+        ]),
+      },
+    );
 
     expect(result.bankTransactions).toEqual(
       expect.arrayContaining([
@@ -2978,7 +3030,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {
@@ -3011,7 +3063,7 @@ describe("第一銀行交易明細 010103 擷取", () => {
     const browser = makeBrowser(page);
     puppeteerMock.launch.mockResolvedValue(browser);
 
-    const pending = createFirstbankConnector({} as Fetcher, vi.fn()).sync({
+    const pending = createFirstbankConnector(browserBinding, vi.fn()).sync({
       ...credentials,
       sessionCookies: JSON.stringify([
         {

@@ -9,6 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createTestD1 } from "../../helpers/d1";
 
 const now = "2026-07-15T00:00:00.000Z";
+const lockedUntil = "2999-01-01T00:00:00.000Z";
 
 describe("sync job user-action pause", () => {
   let harness: Awaited<ReturnType<typeof createTestD1>>;
@@ -70,12 +71,12 @@ describe("sync job user-action pause", () => {
       .prepare(
         `INSERT INTO sync_jobs (
           id, connector_id, scope, enabled, interval_minutes, next_run_at,
-          created_at, updated_at
+          locked_by, locked_until, created_at, updated_at
         ) VALUES (
-          'sinopac:all', 'sinopac', 'all', 1, 1440, ?, ?, ?
+          'sinopac:all', 'sinopac', 'all', 1, 1440, ?, 'run-1', ?, ?, ?
         )`,
       )
-      .bind("2026-07-16T00:00:00.000Z", now, now)
+      .bind("2026-07-16T00:00:00.000Z", lockedUntil, now, now)
       .run();
 
     const job = {
@@ -87,14 +88,19 @@ describe("sync job user-action pause", () => {
       next_run_at: "2026-07-16T00:00:00.000Z",
     } as SyncJobRow;
 
-    await failSyncJob(db, job, {
-      status: "needs_user_action",
-      errorMessage: "請重新驗證",
-    });
-    await markManualSyncFailure(db, "sinopac", "all", {
-      status: "needs_user_action",
-      errorMessage: "請重新驗證",
-    });
+    await failSyncJob(
+      db,
+      job,
+      { status: "needs_user_action", errorMessage: "請重新驗證" },
+      "run-1",
+    );
+    await markManualSyncFailure(
+      db,
+      "sinopac",
+      "all",
+      { status: "needs_user_action", errorMessage: "請重新驗證" },
+      "run-1",
+    );
 
     const row = await db
       .prepare(
@@ -116,13 +122,13 @@ describe("sync job user-action pause", () => {
       .prepare(
         `INSERT INTO sync_jobs (
           id, connector_id, scope, enabled, interval_minutes, next_run_at,
-          last_status, last_error, created_at, updated_at
+          last_status, last_error, locked_by, locked_until, created_at, updated_at
         ) VALUES (
           'taishin:all', 'taishin', 'all', 1, 1440, ?,
-          'failed', '連線失敗', ?, ?
+          'failed', '連線失敗', 'run-1', ?, ?, ?
         )`,
       )
-      .bind("2026-07-16T00:00:00.000Z", now, now)
+      .bind("2026-07-16T00:00:00.000Z", lockedUntil, now, now)
       .run();
     const read = () =>
       db
@@ -135,14 +141,35 @@ describe("sync job user-action pause", () => {
           last_success_at: string | null;
         }>();
 
-    await markManualSyncSuccess(db, "taishin", "all", "即時消費暫時無法取得");
+    // 不持有同步鎖的執行不能寫入結果。
+    expect(
+      await markManualSyncSuccess(
+        db,
+        "taishin",
+        "all",
+        "run-other",
+        "部分資料未取得",
+      ),
+    ).toBe(false);
+    expect(await read()).toMatchObject({
+      last_status: "failed",
+      last_error: "連線失敗",
+    });
+
+    await markManualSyncSuccess(
+      db,
+      "taishin",
+      "all",
+      "run-1",
+      "部分資料未取得",
+    );
     expect(await read()).toMatchObject({
       last_status: "success",
-      last_error: "即時消費暫時無法取得",
+      last_error: "部分資料未取得",
       last_success_at: expect.any(String),
     });
 
-    await markManualSyncSuccess(db, "taishin", "all");
+    await markManualSyncSuccess(db, "taishin", "all", "run-1");
     expect(await read()).toMatchObject({
       last_status: "success",
       last_error: null,

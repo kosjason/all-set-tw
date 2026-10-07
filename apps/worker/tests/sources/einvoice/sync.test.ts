@@ -94,9 +94,36 @@ function env(): Env {
         preparedStatements.push({ sql, bind });
         return { bind };
       }),
+      // e0295fc 起同步寫入經 guardSyncDatabase 與 sync-lock guard 一起 batch。
+      batch: vi.fn(async (statements: unknown[]) =>
+        statements.map(() => ({
+          success: true,
+          results: [],
+          meta: { changes: 1 },
+        })),
+      ),
     } as unknown as D1Database,
     CONFIG_ENCRYPTION_KEY: "test-key",
   } as Env;
+}
+
+/** created_at 取呼叫當下時間，讓 SYNC_MAX_DURATION_MS 期限不會在測試中觸發。 */
+function einvoiceRun(overrides: Record<string, unknown> = {}) {
+  const now = new Date().toISOString();
+  return {
+    id: "run-1",
+    trigger: "manual",
+    status: "processing",
+    settings_version: "2026-08-12T00:00:00.000Z",
+    total_item_count: 36,
+    pending_item_count: 36,
+    processing_item_count: 0,
+    done_item_count: 0,
+    promoted_at: null,
+    created_at: now,
+    updated_at: now,
+    ...overrides,
+  };
 }
 
 function claimedItem(index: number) {
@@ -156,17 +183,7 @@ describe("e-invoice chunk sync service", () => {
     });
     mocks.renewEinvoiceRunChunkLease.mockResolvedValue(true);
     mocks.transitionEinvoiceRunStatus.mockResolvedValue(true);
-    mocks.getEinvoiceRun.mockResolvedValue({
-      id: "run-1",
-      trigger: "manual",
-      status: "processing",
-      settings_version: "2026-08-12T00:00:00.000Z",
-      total_item_count: 36,
-      pending_item_count: 36,
-      processing_item_count: 0,
-      done_item_count: 0,
-      promoted_at: null,
-    });
+    mocks.getEinvoiceRun.mockImplementation(async () => einvoiceRun());
     mocks.claimEinvoiceRunItems.mockResolvedValue([]);
     mocks.fetchEInvoiceInvoiceDetail.mockImplementation(
       async (_session, task: { sourceId: string }) =>
@@ -176,7 +193,10 @@ describe("e-invoice chunk sync service", () => {
     mocks.releaseEinvoiceRunClaimForRetry.mockResolvedValue(0);
   });
 
-  it("holds the connector lock with the durable lease between chunks", async () => {
+  // fork 原本的 30 分鐘 DURABLE_SYNC_LOCK_LEASE_MS 已移除，改採上游 e0295fc：
+  // 每個 chunk 以 SYNC_LOCK_LEASE_MS（10 分鐘）續租連接器鎖，並由 heartbeat
+  // 與整體 SYNC_MAX_DURATION_MS 期限約束。
+  it("holds the connector lock with the sync lock lease between chunks", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-25T00:00:00.000Z"));
     try {
@@ -190,7 +210,7 @@ describe("e-invoice chunk sync service", () => {
     );
     expect(hold?.bind).toHaveBeenCalledWith(
       "run-1",
-      "2026-09-25T00:30:00.000Z",
+      "2026-09-25T00:10:00.000Z",
       "manual",
       "2026-09-25T00:00:00.000Z",
       expect.any(String),
@@ -337,17 +357,14 @@ describe("e-invoice chunk sync service", () => {
   });
 
   it("refreshes one expired persisted session while initializing headers", async () => {
-    mocks.getEinvoiceRun.mockResolvedValueOnce({
-      id: "run-1",
-      trigger: "manual",
-      status: "queued",
-      settings_version: null,
-      total_item_count: 0,
-      pending_item_count: 0,
-      processing_item_count: 0,
-      done_item_count: 0,
-      promoted_at: null,
-    });
+    mocks.getEinvoiceRun.mockResolvedValueOnce(
+      einvoiceRun({
+        status: "queued",
+        settings_version: null,
+        total_item_count: 0,
+        pending_item_count: 0,
+      }),
+    );
     mocks.initializeEInvoiceSync.mockRejectedValueOnce(new Error("HTTP 401"));
     mocks.claimEinvoiceRunSessionRefresh.mockResolvedValueOnce(true);
 
@@ -377,17 +394,14 @@ describe("e-invoice chunk sync service", () => {
   });
 
   it("does not auto-refresh a fresh login failure without a persisted session", async () => {
-    mocks.getEinvoiceRun.mockResolvedValueOnce({
-      id: "run-1",
-      trigger: "manual",
-      status: "queued",
-      settings_version: null,
-      total_item_count: 0,
-      pending_item_count: 0,
-      processing_item_count: 0,
-      done_item_count: 0,
-      promoted_at: null,
-    });
+    mocks.getEinvoiceRun.mockResolvedValueOnce(
+      einvoiceRun({
+        status: "queued",
+        settings_version: null,
+        total_item_count: 0,
+        pending_item_count: 0,
+      }),
+    );
     mocks.decryptJson.mockResolvedValueOnce({
       mobile: "0912345678",
       password: "secret",

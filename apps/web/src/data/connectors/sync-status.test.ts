@@ -33,6 +33,10 @@ function job(overrides: Partial<SyncJobRow>): SyncJobRow {
     lastError: null,
     updatedAt: "2026-08-01T00:00:00.000Z",
     running: false,
+    runId: null,
+    phase: null,
+    lastProgressAt: null,
+    retryAfterSeconds: 0,
     ...overrides,
   };
 }

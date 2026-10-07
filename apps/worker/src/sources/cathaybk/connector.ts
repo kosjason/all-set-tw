@@ -1,10 +1,15 @@
 import type { SyncResult } from "../types";
-import { launchBrowserWithRetry } from "../browser.js";
+import {
+  connectBrowserWithCancellation,
+  prepareBrowserLoginWithRetry,
+  closeBrowserSession,
+} from "../browser.js";
 import puppeteer, {
   type Browser,
   type CookieParam,
   type HTTPRequest,
   type Page,
+  TimeoutError,
 } from "@cloudflare/puppeteer";
 import type {
   BankAccount,
@@ -14,7 +19,11 @@ import type {
 } from "@taiwan-fin-hub/shared";
 import { BANK_SYNC_MONTHS } from "../sync-window";
 import { isNoCreditCardMessage } from "../credit-card-status";
-import { type CathaybkConfig } from "./protocol";
+import {
+  type CathaybkConfig,
+  parseCathayCardStatus,
+  parseCathayForeignDeposits,
+} from "./protocol";
 import {
   deriveCathayDepositCounterparty,
   maskCathayDepositRaw,
@@ -31,12 +40,16 @@ import {
 const LOGIN_URL = "https://www.cathaybk.com.tw/MyBank/";
 const DEPOSIT_OVERVIEW_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0101_DepInq";
+const FOREIGN_DEPOSIT_OVERVIEW_URL =
+  "https://www.cathaybk.com.tw/OnlineBanking/FAcctInq/R0101_FDepInq";
 const CREDIT_CARD_OVERVIEW_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/CQuery/C0101_BillOverview";
 const CREDIT_CARD_BILL_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/CQuery/C0102_BillInq";
 
 const API_DEPOSIT_TX = "B_ACCT_Q_TransferDetail";
+const API_FOREIGN_DEPOSIT_OVERVIEW = "R_ACCT_Q_OverView";
+const API_CARD_STATUS = "C_COM_Q_CardStatus";
 const OTP_SESSION_TTL_MS = 2 * 60 * 1000;
 const TRUSTED_DEVICE_NAME = "ALL SET 同步";
 const OTP_SUBMIT_LABEL_PATTERN = /驗證|確認|確定|送出|登入/;
@@ -166,6 +179,7 @@ async function scrapeWithBrowser(
   let page: Page | undefined;
   let preserveSession = false;
   let loggedOut = false;
+  let phase = "browser";
 
   try {
     console.log(
@@ -173,15 +187,30 @@ async function scrapeWithBrowser(
         ? "[cathaybk] reconnecting to verification session"
         : "[cathaybk] launching browser",
     );
-    b = reconnecting
-      ? await connectCathayBrowser(browserBinding, config.browserSessionId!)
-      : await launchBrowserWithRetry(browserBinding, {
-          keep_alive: OTP_SESSION_TTL_MS,
-        });
-    const pages = await b.pages();
-    page = pages[0] ?? (await b.newPage());
-
-    await page.setViewport({ width: 1280, height: 800 });
+    if (reconnecting) {
+      b = await connectCathayBrowser(browserBinding, config.browserSessionId!);
+      const pages = await b.pages();
+      page = pages[0] ?? (await b.newPage());
+      await page.setViewport({ width: 1280, height: 800 });
+    } else {
+      const prepared = await prepareBrowserLoginWithRetry({
+        binding: browserBinding,
+        connectorId: "cathaybk",
+        launchOptions: { keep_alive: OTP_SESSION_TTL_MS },
+        prepare: async (browser, observePage) => {
+          const pages = await browser.pages();
+          const page = pages[0] ?? (await browser.newPage());
+          observePage(page);
+          await page.setViewport({ width: 1280, height: 800 });
+          await restoreCathayTrustedState(page, config);
+          await prepareCathayLoginPage(page);
+          return page;
+        },
+      });
+      b = prepared.browser;
+      page = prepared.value;
+    }
+    phase = "login";
 
     if (config.browserSessionId) {
       if (!config.otpChannel) {
@@ -213,12 +242,8 @@ async function scrapeWithBrowser(
         throw error;
       }
     } else {
-      const restoredState = await restoreCathayTrustedState(page, config);
-      if (restoredState) {
-        console.log("[cathaybk] restored trusted browser state");
-      }
       try {
-        await loginCathay(page, config);
+        await loginCathay(page, config, true);
       } catch (error) {
         if (!(error instanceof CathayVerificationRequiredError)) throw error;
         const sessionId = b.sessionId();
@@ -236,19 +261,30 @@ async function scrapeWithBrowser(
     }
 
     console.log("[cathaybk] collecting deposit accounts");
+    phase = "deposits";
     const deposits = await scrapeDeposits(page, syncWindowDays);
 
+    phase = "foreign_deposits";
+    const foreignDeposits = await scrapeForeignDeposits(page);
+
     console.log("[cathaybk] collecting credit cards");
+    phase = "credit_cards";
     const cards = await scrapeCreditCards(page);
 
+    phase = "logout";
     const trustedState = await captureCathayTrustedState(page);
     await logoutCathay(page);
     loggedOut = true;
 
     return {
-      bankAccounts: [...deposits.bankAccounts, ...cards.bankAccounts],
+      bankAccounts: [
+        ...deposits.bankAccounts,
+        ...foreignDeposits.bankAccounts,
+        ...cards.bankAccounts,
+      ],
       bankBalanceSnapshots: [
         ...deposits.bankBalanceSnapshots,
+        ...foreignDeposits.bankBalanceSnapshots,
         ...cards.bankBalanceSnapshots,
       ],
       bankTransactions: [
@@ -265,6 +301,8 @@ async function scrapeWithBrowser(
       JSON.stringify({
         event: "cathaybk_scrape_failed",
         errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR",
+        phase,
+        currentUrl: page ? safeCathayDiagnosticUrl(page.url()) : undefined,
       }),
     );
     throw error;
@@ -276,7 +314,7 @@ async function scrapeWithBrowser(
           await logoutCathay(page);
         }
       } finally {
-        await b.close();
+        await closeBrowserSession(browserBinding, b);
       }
     }
   }
@@ -363,7 +401,7 @@ async function connectCathayBrowser(
   );
   if (!session) throw new CathayOtpSessionExpiredError();
   try {
-    return await puppeteer.connect(browserBinding, sessionId);
+    return await connectBrowserWithCancellation(browserBinding, sessionId);
   } catch {
     throw new CathayOtpSessionExpiredError();
   }
@@ -403,6 +441,7 @@ export async function submitCathayOtp(
   page: Pick<
     Page,
     | "click"
+    | "cookies"
     | "evaluate"
     | "type"
     | "url"
@@ -504,7 +543,9 @@ export async function submitCathayOtp(
     page
       .waitForFunction(
         () =>
-          (window.location.href.includes("/OnlineBanking/") &&
+          ((window.location.href.includes("/OnlineBanking/") ||
+            window.location.pathname.replace(/\/+$/, "").toLowerCase() ===
+              "/mybank/quicklinks/home") &&
             document.querySelector('[data-cathay-otp-input="true"]') ===
               null) ||
           /登入安全再升級|立即啟用|信任裝置|設定裝置名稱|確定加入|啟用成功/.test(
@@ -519,8 +560,11 @@ export async function submitCathayOtp(
   await verificationResult;
   const verified = await page.evaluate(() => {
     const normalizedText = (document.body?.innerText ?? "").replace(/\s+/g, "");
+    // 國泰登入後可能停在 /MyBank/Quicklinks/Home（例如密碼逾半年未更新的提醒）。
     return (
-      (window.location.href.includes("/OnlineBanking/") &&
+      ((window.location.href.includes("/OnlineBanking/") ||
+        window.location.pathname.replace(/\/+$/, "").toLowerCase() ===
+          "/mybank/quicklinks/home") &&
         document.querySelector('[data-cathay-otp-input="true"]') === null) ||
       /登入安全再升級|立即啟用|信任裝置|設定裝置名稱|確定加入|啟用成功/.test(
         normalizedText,
@@ -538,9 +582,56 @@ export async function submitCathayOtp(
   }
 }
 
-export async function completeCathayTrustedDeviceSetup(
-  page: Pick<Page, "click" | "evaluate" | "type" | "waitForFunction">,
+/** 密碼逾半年未更新時，國泰會在 OTP 後先顯示提醒頁，擋住後續的信任裝置設定。 */
+export async function dismissCathayPasswordNoticeIfPresent(
+  page: Pick<Page, "click" | "evaluate" | "waitForFunction">,
 ) {
+  const found = await page.evaluate(() => {
+    const normalizedText = (document.body?.innerText ?? "").replace(/\s+/g, "");
+    if (!/密碼已超過.*未更新/.test(normalizedText)) return false;
+    const skip = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'a, button, input[type="button"], [role="button"]',
+      ),
+    ).find((control) => {
+      const rect = control.getBoundingClientRect();
+      const text = `${control.textContent ?? ""} ${control.getAttribute("value") ?? ""}`;
+      return rect.width > 0 && rect.height > 0 && /暫不變更/.test(text);
+    });
+    if (skip) skip.dataset.cathayPasswordNoticeSkip = "true";
+    return Boolean(skip);
+  });
+  if (!found) return false;
+
+  console.log("[cathaybk] dismissing password change notice");
+  await page.click('[data-cathay-password-notice-skip="true"]');
+  await page
+    .waitForFunction(
+      () =>
+        !/密碼已超過.*未更新/.test(
+          (document.body?.innerText ?? "").replace(/\s+/g, ""),
+        ),
+      { timeout: 15_000 },
+    )
+    .catch(() => null);
+  return true;
+}
+
+/** CUB.eBank.DeviceId 可能是 HttpOnly，document.cookie 看不到，需以 CDP 讀取。 */
+async function hasCathayDeviceIdCookie(page: Pick<Page, "cookies">) {
+  const cookies = await page
+    .cookies(LOGIN_URL, DEPOSIT_OVERVIEW_URL, CREDIT_CARD_OVERVIEW_URL)
+    .catch(() => []);
+  return cookies.some(isCathayCookie);
+}
+
+export async function completeCathayTrustedDeviceSetup(
+  page: Pick<
+    Page,
+    "click" | "cookies" | "evaluate" | "type" | "waitForFunction"
+  >,
+) {
+  await dismissCathayPasswordNoticeIfPresent(page);
   await page
     .waitForFunction(
       () =>
@@ -662,7 +753,18 @@ export async function completeCathayTrustedDeviceSetup(
     step = await findStep();
   }
 
-  if (!step.hasNameInput && !step.hasConfirm) return step.success;
+  if (!step.hasNameInput && !step.hasConfirm) {
+    if (step.success || (await hasCathayDeviceIdCookie(page))) return true;
+    console.warn(
+      JSON.stringify({
+        event: "cathaybk_trusted_device_not_detected",
+        currentPath: await page
+          .evaluate(() => window.location.pathname)
+          .catch(() => "unknown"),
+      }),
+    );
+    return false;
+  }
   if (!step.hasNameInput || !step.hasConfirm) {
     console.warn(
       JSON.stringify({
@@ -690,13 +792,14 @@ export async function completeCathayTrustedDeviceSetup(
       { timeout: 15_000 },
     )
     .catch(() => null);
-  return page.evaluate(() => {
+  const confirmed = await page.evaluate(() => {
     const normalizedText = (document.body?.innerText ?? "").replace(/\s+/g, "");
     return (
       document.cookie.includes("CUB.eBank.DeviceId=") ||
       /啟用成功|已加入信任裝置/.test(normalizedText)
     );
   });
+  return confirmed || hasCathayDeviceIdCookie(page);
 }
 
 export type CathayLoginPage = Pick<
@@ -946,13 +1049,25 @@ export function isCathayAuthenticatedUrl(value: string) {
   }
 }
 
+async function prepareCathayLoginPage(page: CathayLoginPage) {
+  await page.goto(LOGIN_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: 15_000,
+  });
+  await dismissInterstitialIfPresent(page);
+  await dismissCathaySystemMessageIfPresent(page);
+  for (const selector of ["#CustID", "#UserIdKeyin", "#PasswordKeyin"]) {
+    await page.waitForSelector(selector, { timeout: 15_000 });
+  }
+}
+
 export async function loginCathay(
   page: CathayLoginPage,
   config: CathaybkConfig,
+  prepared = false,
 ) {
   attachCathaySafeDiagnostics(page, config);
-  console.log("[cathaybk] navigating to login page");
-  await page.goto(LOGIN_URL, { waitUntil: "networkidle2", timeout: 60000 });
+  if (!prepared) await prepareCathayLoginPage(page);
 
   // ponytail: bank shows "未完成正常的登出程序" both on page load AND after clicking login
   // if a prior session didn't log out — retry up to 3 times
@@ -1178,6 +1293,39 @@ function assertCathayNotLoggedOut(page: Pick<Page, "url">) {
   }
 }
 
+/** 執行 `action` 並等這次觸發的國泰 API 回應；較早的同名請求不算數。 */
+async function readCathayQueryResponse(
+  page: Page,
+  api: string,
+  action: () => Promise<void>,
+  timeout = 30000,
+) {
+  let query: HTTPRequest | undefined;
+  const onRequest = (request: HTTPRequest) => {
+    if (!query && request.method() === "POST" && request.url().includes(api)) {
+      query = request;
+    }
+  };
+  const controller = new AbortController();
+  page.on("request", onRequest);
+  try {
+    // Register both listeners before the action. A response from an older
+    // request cannot satisfy this wait, even when its datas array is empty.
+    const [response] = await Promise.all([
+      page.waitForResponse((response) => response.request() === query, {
+        timeout,
+        signal: controller.signal,
+      }),
+      action(),
+    ]);
+    assertCathayNotLoggedOut(page);
+    return response;
+  } finally {
+    controller.abort();
+    page.off("request", onRequest);
+  }
+}
+
 async function scrapeDeposits(
   page: Page,
   lookbackDays: number,
@@ -1193,9 +1341,7 @@ async function scrapeDeposits(
     timeout: 60000,
   });
   console.log("[cathaybk] deposit page opened");
-  if (page.url().toLowerCase().includes("/logout/")) {
-    throw new Error("Cathay Bank forced logout on deposit page.");
-  }
+  assertCathayNotLoggedOut(page);
 
   // Wait for account number buttons to render
   await page
@@ -1417,6 +1563,35 @@ async function scrapeDeposits(
     creditCardBills: [],
     ...(warnings.length ? { warnings } : {}),
   };
+}
+
+async function scrapeForeignDeposits(page: Page) {
+  const response = await readCathayQueryResponse(
+    page,
+    API_FOREIGN_DEPOSIT_OVERVIEW,
+    async () => {
+      await page.goto(FOREIGN_DEPOSIT_OVERVIEW_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      });
+    },
+    60000,
+  );
+  if (response.status() !== 200) {
+    throw new Error("國泰世華外幣活存查詢失敗，未更新資料。");
+  }
+  const result = parseCathayForeignDeposits(
+    await response.json().catch(() => {
+      throw new Error("國泰世華外幣活存回應不是有效 JSON，未更新資料。");
+    }),
+  );
+  console.log(
+    JSON.stringify({
+      event: "cathaybk_foreign_deposits",
+      accountCount: result.bankAccounts.length,
+    }),
+  );
+  return result;
 }
 
 export function appendCathayDepositTransactions(
@@ -1711,19 +1886,47 @@ export async function scrapeCreditCards(page: Page): Promise<Scraped> {
   const asOfAt = new Date().toISOString();
 
   // ── C0101: card overview (DOM) ─────────────────────────────────────────
-  await page.goto(CREDIT_CARD_OVERVIEW_URL, {
-    waitUntil: "networkidle2",
-    timeout: 60000,
-  });
+  const statusResponse = await readCathayQueryResponse(
+    page,
+    API_CARD_STATUS,
+    async () => {
+      await page.goto(CREDIT_CARD_OVERVIEW_URL, {
+        waitUntil: "networkidle2",
+        timeout: 60000,
+      });
+    },
+    60000,
+  );
   console.log("[cathaybk] credit card overview opened");
-  // The overview renders after load; a fixed delay sometimes read the page
-  // before the card block appeared and reported no card. Customers without a
-  // card wait for the timeout.
+  if (statusResponse.status() !== 200) {
+    throw new Error("國泰世華信用卡狀態查詢失敗，未更新資料。");
+  }
+  const cardStatus = parseCathayCardStatus(
+    await statusResponse.json().catch(() => {
+      throw new Error("國泰世華信用卡狀態回應不是有效 JSON，未更新資料。");
+    }),
+  );
+  console.log(JSON.stringify({ event: "cathaybk_card_status", cardStatus }));
+  // The bank's C0101 frontend treats Invalid as no credit card.
+  if (cardStatus === "Invalid") {
+    return {
+      bankAccounts: [],
+      bankBalanceSnapshots: [],
+      bankTransactions: [],
+      creditCardBills: [],
+    };
+  }
+  let waitTimedOut = false;
   await page
-    .waitForFunction(() => /卡片末四碼/.test(document.body?.innerText ?? ""), {
-      timeout: 15000,
-    })
-    .catch(() => null);
+    .waitForFunction(
+      () => /卡片末四碼[：:]\s*\d{4}/.test(document.body?.innerText ?? ""),
+      { timeout: 15000 },
+    )
+    .catch((error: unknown) => {
+      if (!(error instanceof TimeoutError)) throw error;
+      waitTimedOut = true;
+    });
+  assertCathayNotLoggedOut(page);
 
   const overviewText = await page.evaluate(() => document.body.innerText);
   const cardOverview = parseCathayCardOverview(overviewText);
@@ -1735,6 +1938,8 @@ export async function scrapeCreditCards(page: Page): Promise<Scraped> {
       cardCount: cardOverview.cardLast4s.length,
       paymentDueDateAvailable: Boolean(cardOverview.paymentDueDate),
       noPaymentNeeded: cardOverview.noPaymentNeeded,
+      waitTimedOut,
+      currentUrl: safeCathayDiagnosticUrl(page.url()),
     }),
   );
 

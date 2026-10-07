@@ -105,6 +105,8 @@ test("taishin parser selfcheck", async () => {
         },
         error: null,
       },
+      // 42ac0da made qryUnposted a required feed; an empty list is valid.
+      unbilled: { value: { unpostedTx: {} }, error: null },
     },
     new Date("2026-07-23T00:00:00.000Z"),
   );

@@ -57,10 +57,11 @@ vi.mock("../../../../src/db", async (importOriginal) => ({
   releaseSyncJobLock: mocks.releaseSyncJobLock,
 }));
 
-vi.mock("../../../../src/features/sync/lock", () => ({
-  canonicalSyncLockRowId: (connectorId: string) => `${connectorId}:all`,
+vi.mock("../../../../src/features/sync/lock", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../../../src/features/sync/lock")
+  >()),
   startSyncLockHeartbeat: mocks.startSyncLockHeartbeat,
-  SYNC_LOCK_LEASE_MS: 10 * 60 * 1000,
 }));
 
 vi.mock("../../../../src/features/sync/errors", async (importOriginal) => ({
@@ -168,6 +169,11 @@ function syncJob(
   };
 }
 
+/** 同一次排程執行中取得連接器鎖的 runId；完成／失敗寫入必須帶同一個 owner。 */
+function lockRunId() {
+  return mocks.acquireSyncJobLock.mock.calls[0]![1].runId as string;
+}
+
 function env(send = vi.fn().mockResolvedValue(undefined)) {
   return {
     DB: {} as D1Database,
@@ -179,7 +185,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.finalizeOpenDefaultScheduleBatch.mockResolvedValue(null);
   mocks.acquireSyncJobLock.mockResolvedValue(true);
-  mocks.completeSyncJob.mockResolvedValue(undefined);
+  // e0295fc 起完成／失敗寫入只在 run 仍持有連接器鎖時成功，並回傳是否寫入。
+  mocks.completeSyncJob.mockResolvedValue(true);
+  mocks.failSyncJob.mockResolvedValue(true);
   mocks.releaseSyncJobLock.mockResolvedValue(undefined);
   mocks.startSyncLockHeartbeat.mockReturnValue(vi.fn());
   mocks.startEinvoiceSyncRun.mockResolvedValue({
@@ -248,10 +256,15 @@ describe("scheduled sync rounds", () => {
 
     await runSchedulerTick(env(), scheduledController);
 
-    expect(mocks.failSyncJob).toHaveBeenCalledWith(expect.anything(), job, {
-      status: "failed",
-      errorMessage: "同步失敗，但未取得錯誤原因。",
-    });
+    expect(mocks.failSyncJob).toHaveBeenCalledWith(
+      expect.anything(),
+      job,
+      {
+        status: "failed",
+        errorMessage: "同步失敗，但未取得錯誤原因。",
+      },
+      lockRunId(),
+    );
     expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
       event: "sync_run_failed",
       connectorId: "esun",
@@ -368,6 +381,7 @@ describe("scheduled sync rounds", () => {
     expect(mocks.completeSyncJob).toHaveBeenCalledWith(
       expect.anything(),
       job,
+      lockRunId(),
       "即時消費暫時無法取得",
     );
     expect(mocks.failSyncJob).not.toHaveBeenCalled();
@@ -383,6 +397,7 @@ describe("scheduled sync rounds", () => {
     expect(mocks.completeSyncJob).toHaveBeenCalledWith(
       expect.anything(),
       job,
+      lockRunId(),
       null,
     );
   });
@@ -457,7 +472,9 @@ describe("scheduled sync rounds", () => {
     });
   });
 
-  it("does not enqueue a reused custom e-invoice run", async () => {
+  // 上游 e0295fc 起，重用中的電子發票 run 也會重新 enqueue 以恢復中斷的
+  // Queue 鏈（與 TDCC 相同）；只有新建的 run 在 enqueue 失敗時才取消。
+  it("requeues a reused custom e-invoice run", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const job = syncJob("custom", "einvoice");
     mocks.findOpenDefaultScheduleBatchId.mockResolvedValue(null);
@@ -471,7 +488,10 @@ describe("scheduled sync rounds", () => {
       runSchedulerTick(env(send), scheduledController),
     ).resolves.toBe(true);
 
-    expect(send).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith({
+      type: "run-einvoice-chunk",
+      runId: "einvoice-running",
+    });
     expect(mocks.cancelQueuedEinvoiceSyncRun).not.toHaveBeenCalled();
   });
 

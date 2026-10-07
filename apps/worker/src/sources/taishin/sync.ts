@@ -1,5 +1,5 @@
+import { createSyncExecution } from "../../features/sync/execution";
 import type { Env } from "../../platform/env";
-import { prepareTaishinLifecycleWrite } from "../../features/sync/taishin-lifecycle";
 import { canonicalSyncLockRowId } from "../../features/sync/lock";
 import {
   acquireSyncJobLock,
@@ -27,6 +27,7 @@ import {
 } from "./connector";
 import {
   updateConnectorEncryptedConfig,
+  updateConnectorEncryptedConfigIfCurrent,
   connectorStateStatement,
   linkCanonicalBankAccountsStatement,
 } from "../../features/sync/connector-repository";
@@ -49,6 +50,8 @@ import {
   creditCardBillRecord,
 } from "../../features/sync/record-mapper";
 import { refreshBankDepositHistory } from "../../features/net-worth/service";
+import { prepareTaishinAuthorizationWrite } from "./authorizations";
+import { prepareTaishinMaskedIdentityMerge } from "./repository";
 
 export type TaishinSyncOverrides = {
   captcha?: string;
@@ -67,36 +70,44 @@ export async function prepareTaishinCaptchaSession(env: Env) {
   });
   if (!locked) throw new SyncAlreadyRunningError(connectorId);
 
+  const execution = createSyncExecution(
+    env,
+    { lockRowId, runId },
+    { deadline: Date.now() + 3 * 60 * 1000 },
+  );
   try {
-    const settings = await requireConnectorSettings(env.DB, connectorId);
-    const stored = await decryptJson<Record<string, unknown>>(
-      settings.encrypted_config,
-      configEncryptionKey(env),
-    );
-    const publicStored = settings.public_config
-      ? JSON.parse(settings.public_config)
-      : {};
-    const config = parseTaishinConfig({ ...stored, ...publicStored });
-    const prepared = await prepareTaishinCaptcha(env.BROWSER, config);
-    await updateConnectorEncryptedConfig(
-      env.DB,
-      connectorId,
-      await encryptJson(
-        {
-          ...stored,
-          browserSessionId: prepared.browserSessionId,
-          browserSessionExpiresAt: prepared.browserSessionExpiresAt,
-          captchaDigitCount: prepared.captchaDigitCount,
-        },
+    return await execution.run(async (env) => {
+      const settings = await requireConnectorSettings(env.DB, connectorId);
+      const stored = await decryptJson<Record<string, unknown>>(
+        settings.encrypted_config,
         configEncryptionKey(env),
-      ),
-    );
-    return {
-      captchaImage: prepared.captchaImage,
-      expiresAt: prepared.browserSessionExpiresAt,
-      digitCount: prepared.captchaDigitCount,
-    };
+      );
+      const publicStored = settings.public_config
+        ? JSON.parse(settings.public_config)
+        : {};
+      const config = parseTaishinConfig({ ...stored, ...publicStored });
+      const prepared = await prepareTaishinCaptcha(env.BROWSER, config);
+      await updateConnectorEncryptedConfig(
+        env.DB,
+        connectorId,
+        await encryptJson(
+          {
+            ...stored,
+            browserSessionId: prepared.browserSessionId,
+            browserSessionExpiresAt: prepared.browserSessionExpiresAt,
+            captchaDigitCount: prepared.captchaDigitCount,
+          },
+          configEncryptionKey(env),
+        ),
+      );
+      return {
+        captchaImage: prepared.captchaImage,
+        expiresAt: prepared.browserSessionExpiresAt,
+        digitCount: prepared.captchaDigitCount,
+      };
+    });
   } finally {
+    execution.stop();
     await releaseSyncJobLock(env.DB, lockRowId, runId);
   }
 }
@@ -159,9 +170,10 @@ export async function syncTaishin(
       delete cleaned.sessionCookies;
       delete cleaned.sessionCreatedAt;
     }
-    await updateConnectorEncryptedConfig(
+    await updateConnectorEncryptedConfigIfCurrent(
       env.DB,
       connectorId,
+      settings.encrypted_config,
       await encryptJson(cleaned, configEncryptionKey(env)),
     );
     if (error instanceof TaishinVerificationRequiredError) {
@@ -213,17 +225,33 @@ export async function syncTaishin(
         serializePublicConfig(connectorId, config),
         persistedCursor,
         now,
+        settings.encrypted_config,
       ),
     );
   }
 
-  const lifecycleWrite = await prepareTaishinLifecycleWrite(env.DB, records);
+  const settingsGuard = {
+    connectorId: "taishin" as const,
+    encryptedConfig: settings.encrypted_config,
+  };
+  const authorizationWrite = await prepareTaishinAuthorizationWrite(
+    env.DB,
+    records,
+    settings.encrypted_config,
+  );
+  const maskedIdentityMerge = await prepareTaishinMaskedIdentityMerge(
+    env.DB,
+    authorizationWrite.records,
+  );
   const newRecords = await persistStagedSyncWrite(env.DB, {
-    records: lifecycleWrite.records,
+    records: authorizationWrite.records,
+    settingsGuard,
     afterPromoteStatements: [
-      ...lifecycleWrite.afterPromoteStatements,
+      ...authorizationWrite.afterPromoteStatements,
+      // 舊版識別碼的列併入新版列；會刪除舊列，必須在授權寫入之後。
+      ...maskedIdentityMerge,
       ...(bankAccounts.length > 0
-        ? [linkCanonicalBankAccountsStatement(env.DB)]
+        ? [linkCanonicalBankAccountsStatement(env.DB, settingsGuard)]
         : []),
     ],
     finalizeStatements,
@@ -244,6 +272,5 @@ export async function syncTaishin(
     cursorUpdated: Boolean(
       persistedCursor && persistedCursor !== settings.sync_cursor,
     ),
-    ...(result.warnings?.length ? { warnings: result.warnings } : {}),
   };
 }

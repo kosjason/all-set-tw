@@ -231,6 +231,12 @@ function browserScenario(
   };
   const browser = {
     close: vi.fn().mockResolvedValue(undefined),
+    // closeBrowserSession (07e328c) always disconnects after closing and
+    // identifies the remote session to DELETE.
+    disconnect: vi.fn().mockResolvedValue(undefined),
+    sessionId: vi.fn().mockReturnValue("kgibank-session"),
+    // launchBrowserWithRetry watches the sync AbortSignal via "disconnected".
+    once: vi.fn(),
     pages: vi.fn().mockResolvedValue([page]),
     newPage: vi.fn().mockResolvedValue(page),
   };
@@ -243,6 +249,14 @@ function browserScenario(
     },
   };
 }
+
+// Browser Run REST API: closeBrowserSession (07e328c) confirms remote closure
+// with DELETE /v1/devtools/browser/<sessionId> through the binding's fetch.
+const browserRunFetch = vi.fn(
+  async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    new Response(null, { status: 200 }),
+);
+const browserBinding = { fetch: browserRunFetch } as unknown as Fetcher;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -259,7 +273,7 @@ describe("KGI Bank automatic CAPTCHA login", () => {
       new Error("Unable to create new browser: code: 429"),
     );
     await expect(
-      createKgibankConnector({} as Fetcher, vi.fn()).sync(credentials),
+      createKgibankConnector(browserBinding, vi.fn()).sync(credentials),
     ).rejects.toBeInstanceOf(BrowserRunCapacityError);
   });
 
@@ -268,7 +282,7 @@ describe("KGI Bank automatic CAPTCHA login", () => {
     puppeteerMock.launch.mockResolvedValue(scenario.browser);
     const recognize = vi.fn().mockResolvedValue("123456");
 
-    const result = await createKgibankConnector({} as Fetcher, recognize).sync(
+    const result = await createKgibankConnector(browserBinding, recognize).sync(
       credentials,
     );
 
@@ -302,7 +316,7 @@ describe("KGI Bank automatic CAPTCHA login", () => {
 
     try {
       const result = await createKgibankConnector(
-        {} as Fetcher,
+        browserBinding,
         recognize,
       ).sync(credentials);
 
@@ -326,7 +340,7 @@ describe("KGI Bank automatic CAPTCHA login", () => {
     const recognize = vi.fn().mockResolvedValue("123456");
 
     await expect(
-      createKgibankConnector({} as Fetcher, recognize).sync(credentials),
+      createKgibankConnector(browserBinding, recognize).sync(credentials),
     ).rejects.toBeInstanceOf(KgibankCredentialRejectedError);
 
     expect(recognize).toHaveBeenCalledOnce();
@@ -342,7 +356,7 @@ describe("KGI Bank automatic CAPTCHA login", () => {
 
     try {
       await expect(
-        createKgibankConnector({} as Fetcher, recognize).sync(credentials),
+        createKgibankConnector(browserBinding, recognize).sync(credentials),
       ).rejects.toMatchObject({
         name: KgibankVerificationRequiredError.name,
         message: expect.stringContaining("連續失敗 3 次"),
@@ -368,7 +382,7 @@ describe("KGI Bank automatic CAPTCHA login", () => {
 
     try {
       const result = await createKgibankConnector(
-        {} as Fetcher,
+        browserBinding,
         recognize,
       ).sync(credentials);
 
@@ -389,7 +403,7 @@ describe("KGI Bank automatic CAPTCHA login", () => {
     puppeteerMock.launch.mockResolvedValue(scenario.browser);
     const recognize = vi.fn().mockResolvedValue("123456");
 
-    await createKgibankConnector({} as Fetcher, recognize).sync({
+    await createKgibankConnector(browserBinding, recognize).sync({
       ...credentials,
       browserSessionId: "prepared-session",
       browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -410,7 +424,7 @@ describe("KGI Bank automatic CAPTCHA login", () => {
     const recognize = vi.fn().mockResolvedValue("123456");
 
     await expect(
-      createKgibankConnector({} as Fetcher, recognize).sync(credentials),
+      createKgibankConnector(browserBinding, recognize).sync(credentials),
     ).rejects.toMatchObject({
       name: KgibankConnectionError.name,
       message: expect.stringContaining("登入送出狀態不明"),
@@ -425,7 +439,7 @@ describe("KGI Bank automatic CAPTCHA login", () => {
     const scenario = browserScenario(["unknown"]);
     puppeteerMock.launch.mockResolvedValue(scenario.browser);
     const recognize = vi.fn().mockResolvedValue("123456");
-    const sync = createKgibankConnector({} as Fetcher, recognize).sync(
+    const sync = createKgibankConnector(browserBinding, recognize).sync(
       credentials,
     );
     const rejected = expect(sync).rejects.toBeInstanceOf(
@@ -455,7 +469,7 @@ describe("KGI Bank automatic CAPTCHA login", () => {
       const recognize = vi.fn().mockResolvedValue("123456");
 
       await expect(
-        createKgibankConnector({} as Fetcher, recognize).sync(credentials),
+        createKgibankConnector(browserBinding, recognize).sync(credentials),
       ).rejects.toThrow(message);
 
       expect(recognize).toHaveBeenCalledOnce();
@@ -470,7 +484,7 @@ describe("KGI Bank automatic CAPTCHA login", () => {
     ]);
     puppeteerMock.connect.mockResolvedValue(scenario.browser);
 
-    const result = await createKgibankConnector({} as Fetcher).sync({
+    const result = await createKgibankConnector(browserBinding).sync({
       ...credentials,
       browserSessionId: "kgibank-session",
       browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),

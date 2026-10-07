@@ -60,6 +60,10 @@ describe("SourceCard", () => {
       lastError: "同步失敗",
       updatedAt: "2026-08-21T22:00:00.000Z",
       running: false,
+      runId: null,
+      phase: null,
+      lastProgressAt: null,
+      retryAfterSeconds: 0,
     });
 
     expect(
@@ -90,6 +94,10 @@ describe("SourceCard", () => {
       lastError: null,
       updatedAt: "2026-08-21T22:00:00.000Z",
       running: false,
+      runId: null,
+      phase: null,
+      lastProgressAt: null,
+      retryAfterSeconds: 0,
     });
 
     expect(getByText("等待首次同步")).toBeInTheDocument();

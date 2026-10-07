@@ -64,6 +64,8 @@ function automaticLoginPage() {
     evaluate: vi.fn().mockResolvedValue(false),
     goto: vi.fn().mockResolvedValue(undefined),
     off: vi.fn(),
+    // prepareBrowserLoginWithRetry (07e328c) observes requestfailed/response.
+    on: vi.fn(),
     once: vi.fn(),
     setUserAgent: vi.fn().mockResolvedValue(undefined),
     setViewport: vi.fn().mockResolvedValue(undefined),
@@ -77,9 +79,27 @@ function automaticLoginPage() {
   };
 }
 
+// Browser Run REST API: closeBrowserSession (07e328c) confirms remote closure
+// with DELETE /v1/devtools/browser/<sessionId> through the binding's fetch.
+const browserRunFetch = vi.fn(
+  async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    new Response(null, { status: 200 }),
+);
+const browserBinding = { fetch: browserRunFetch } as unknown as Fetcher;
+
+function deletedBrowserSessions() {
+  return browserRunFetch.mock.calls
+    .filter(([, init]) => init?.method === "DELETE")
+    .map(([input]) => String(input).split("/").pop());
+}
+
 function launchedBrowser(page: ReturnType<typeof automaticLoginPage>) {
   return {
     close: vi.fn().mockResolvedValue(undefined),
+    // closeBrowserSession always disconnects after closing (07e328c).
+    disconnect: vi.fn().mockResolvedValue(undefined),
+    // launchBrowserWithRetry watches the sync AbortSignal via "disconnected".
+    once: vi.fn(),
     newPage: vi.fn().mockResolvedValue(page),
     pages: vi.fn().mockResolvedValue([page]),
     sessionId: vi.fn().mockReturnValue("auto-session"),
@@ -103,13 +123,13 @@ describe("sinopac browser session lifecycle", () => {
       new Error("Unable to create new browser: code: 429"),
     );
     await expect(
-      prepareSinopacCaptcha({} as Fetcher, credentials),
+      prepareSinopacCaptcha(browserBinding, credentials),
     ).rejects.toBeInstanceOf(BrowserRunCapacityError);
   });
 
   it("requires one-time verification before acquiring a browser when no bank cookies exist", async () => {
     await expect(
-      createSinopacConnector({} as Fetcher).sync(credentials),
+      createSinopacConnector(browserBinding).sync(credentials),
     ).rejects.toBeInstanceOf(SinopacVerificationRequiredError);
     expect(puppeteerMock.launch).not.toHaveBeenCalled();
   });
@@ -128,12 +148,15 @@ describe("sinopac browser session lifecycle", () => {
     ]);
     puppeteerMock.connect.mockResolvedValue(browser);
 
-    const result = await prepareSinopacCaptcha({} as Fetcher, {
+    const result = await prepareSinopacCaptcha(browserBinding, {
       ...credentials,
       browserSessionId: "pending-session",
     });
 
-    expect(puppeteerMock.connect).toHaveBeenCalledWith({}, "pending-session");
+    expect(puppeteerMock.connect).toHaveBeenCalledWith(
+      browserBinding,
+      "pending-session",
+    );
     expect(puppeteerMock.launch).not.toHaveBeenCalled();
     expect(browser.disconnect).toHaveBeenCalledOnce();
     expect(result.browserSessionId).toBe("pending-session");
@@ -155,7 +178,7 @@ describe("sinopac browser session lifecycle", () => {
     puppeteerMock.connect.mockResolvedValue(browser);
 
     await expect(
-      createSinopacConnector({} as Fetcher).sync({
+      createSinopacConnector(browserBinding).sync({
         ...credentials,
         captcha: "123456",
         browserSessionId: "pending-session",
@@ -177,7 +200,7 @@ describe("sinopac browser session lifecycle", () => {
     ]);
 
     await expect(
-      prepareSinopacCaptcha({} as Fetcher, {
+      prepareSinopacCaptcha(browserBinding, {
         ...credentials,
         browserSessionId: "pending-session",
       }),
@@ -194,7 +217,7 @@ describe("sinopac browser session lifecycle", () => {
     });
 
     await expect(
-      prepareSinopacCaptcha({} as Fetcher, credentials),
+      prepareSinopacCaptcha(browserBinding, credentials),
     ).rejects.toMatchObject({
       name: "BrowserRunCapacityError",
       kind: "acquisition_rate_limit",
@@ -216,7 +239,7 @@ describe("sinopac Gemma automatic login", () => {
       .mockResolvedValueOnce("575831");
 
     await expect(
-      loginSinopacWithOcr({} as Fetcher, credentials, recognize),
+      loginSinopacWithOcr(browserBinding, credentials, recognize),
     ).resolves.toEqual({
       sessionCookies: JSON.stringify([
         { name: "ASP.NET_SessionId", value: "fresh-session" },
@@ -228,6 +251,7 @@ describe("sinopac Gemma automatic login", () => {
     expect(page.goto).toHaveBeenCalledTimes(3);
     expect(page.click).toHaveBeenCalledOnce();
     expect(browser.close).toHaveBeenCalledOnce();
+    expect(deletedBrowserSessions()).toEqual(["auto-session"]);
   });
 
   it("stops after three failed captcha attempts", async () => {
@@ -237,12 +261,13 @@ describe("sinopac Gemma automatic login", () => {
     const recognize = vi.fn().mockResolvedValue("invalid");
 
     await expect(
-      loginSinopacWithOcr({} as Fetcher, credentials, recognize),
+      loginSinopacWithOcr(browserBinding, credentials, recognize),
     ).rejects.toThrow("連續失敗 3 次");
 
     expect(recognize).toHaveBeenCalledTimes(3);
     expect(page.goto).toHaveBeenCalledTimes(3);
     expect(browser.close).toHaveBeenCalledOnce();
+    expect(deletedBrowserSessions()).toEqual(["auto-session"]);
   });
 
   it("reloads a new captcha after bank rejection and succeeds on attempt three", async () => {
@@ -258,7 +283,7 @@ describe("sinopac Gemma automatic login", () => {
     const recognize = vi.fn().mockResolvedValue("575831");
 
     await expect(
-      loginSinopacWithOcr({} as Fetcher, credentials, recognize),
+      loginSinopacWithOcr(browserBinding, credentials, recognize),
     ).resolves.toMatchObject({
       protocol: "sinopac-mobile-app-json-v1",
     });
@@ -276,11 +301,12 @@ describe("sinopac Gemma automatic login", () => {
     const recognize = vi.fn().mockResolvedValue("575831");
 
     await expect(
-      loginSinopacWithOcr({} as Fetcher, credentials, recognize),
+      loginSinopacWithOcr(browserBinding, credentials, recognize),
     ).rejects.toBeInstanceOf(SinopacCredentialRejectedError);
 
     expect(recognize).toHaveBeenCalledOnce();
     expect(page.goto).toHaveBeenCalledOnce();
     expect(browser.close).toHaveBeenCalledOnce();
+    expect(deletedBrowserSessions()).toEqual(["auto-session"]);
   });
 });
