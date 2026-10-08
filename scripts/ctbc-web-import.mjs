@@ -632,22 +632,33 @@ function sameStatementMonth(left, right) {
 
 /**
  * 頁面自己查到的帳單月份明細：使用者在網銀帳單頁切到該月份時，頁面送出
- * `qu002/011 {curCode, month}`（分頁 `qu002/016 {…, pageNum}`）。取該月最後一次
- * 成功的回應為第 1 頁，分頁依 pageNum 收下（同頁以最後一次為準）。
+ * `qu002/011 {curCode, month}`（分頁 `qu002/016 {…, pageNum}`）。
+ * - `first`：該月最後一次成功且含 `bills` 的第 1 頁（月份沿用頁面送出的格式，供補查分頁）。
+ * - `pages`：第 2 頁以後依 pageNum 收下，同頁以最後一次為準。已出帳帳單內容不會變，
+ *   跨次瀏覽的分頁可以合併。
+ * 請求沒帶 curCode 時，只在 `allowMissingCurrency`（該月只有一個幣別）時採用，避免同一批
+ * 明細寫進多個幣別。
  */
-export function pageStatementGroup(captures, currency, month) {
+export function pageStatementGroup(
+  captures,
+  currency,
+  month,
+  { allowMissingCurrency = false } = {},
+) {
   const matches = (capture, resource) =>
     capture.resource === resource &&
     isResourceSuccess(capture.response) &&
     sameStatementMonth(capture.rqData?.month, month) &&
-    (capture.rqData?.curCode == null ||
-      stringValue(capture.rqData.curCode) === currency);
-  const first = captures
-    .filter((capture) => matches(capture, RESOURCES.creditCardMonthBills))
-    .map((capture) => responseData(capture.response))
-    .filter((data) => Array.isArray(data.bills))
+    (capture.rqData?.curCode == null
+      ? allowMissingCurrency
+      : stringValue(capture.rqData.curCode) === currency);
+  const firstCapture = captures
+    .filter(
+      (capture) =>
+        matches(capture, RESOURCES.creditCardMonthBills) &&
+        Array.isArray(responseData(capture.response).bills),
+    )
     .at(-1);
-  if (!first) return null;
   const pages = new Map();
   for (const capture of captures) {
     if (!matches(capture, RESOURCES.creditCardMonthBillsPage)) continue;
@@ -656,14 +667,23 @@ export function pageStatementGroup(captures, currency, month) {
     if (pageNum != null && pageNum >= 2 && Array.isArray(bills))
       pages.set(pageNum, bills);
   }
-  return { group: { ...first, month }, pages };
+  if (!firstCapture && pages.size === 0) return null;
+  return {
+    first: firstCapture
+      ? {
+          ...responseData(firstCapture.response),
+          month: stringValue(firstCapture.rqData.month) || month,
+        }
+      : null,
+    pages,
+  };
 }
 
 /**
  * 逐月補抓已出帳帳單明細並併回 `qu002/010` 回應的 billData。優先採用使用者在網銀
- * 帳單頁看過的月份（{@link pageStatementGroup}，工具重送常被拒絕），其餘月份再由工具
- * 查詢。查詢失敗不中止匯入：該月份只保留帳單總額，並回報月份供使用者確認；分頁沒
- * 收齊的月份照樣匯入已取得的明細，另外回報。
+ * 帳單頁看過的月份與分頁（{@link pageStatementGroup}，工具重送常被拒絕；最新一期首頁
+ * 已附第 1 頁時也採用頁面的分頁），其餘才由工具查詢。查詢失敗不中止匯入：沒有明細的
+ * 月份只保留帳單總額並回報；分頁沒收齊的月份照樣匯入已取得的明細，另外回報。
  */
 async function collectStatementDetails(
   request,
@@ -675,23 +695,28 @@ async function collectStatementDetails(
   const billData = recordValue(responseData(creditCards).billData);
   const unavailableMonths = [];
   const incompleteMonths = [];
+  const matchedCaptures = new Set();
   const billCount = (response) =>
     arrayValue(responseData(response).bills).length;
+  const currenciesOf = (month) =>
+    Object.values(billData).filter(
+      (value) => isRecord(value) && isRecord(value[month]),
+    ).length;
   for (const { currency, month, hasBills } of statementMonthsToFetch(
     creditCardOverview,
   )) {
     const target = billData[currency][month];
+    const page = pageStatementGroup(pageCardBills, currency, month, {
+      allowMissingCurrency: currenciesOf(month) === 1,
+    });
+    if (page) matchedCaptures.add(month);
     let group = hasBills ? target : null;
-    let capturedPages = new Map();
-    if (!group) {
-      const page = pageStatementGroup(pageCardBills, currency, month);
-      if (page) {
-        group = page.group;
-        capturedPages = page.pages;
-        log(
-          `信用卡帳單 ${formatStatementMonth(month)}：使用頁面查詢結果 ${arrayValue(group.bills).length} 筆`,
-        );
-      }
+    const capturedPages = page?.pages ?? new Map();
+    if (!group && page?.first) {
+      group = page.first;
+      log(
+        `信用卡帳單 ${formatStatementMonth(month)}：使用頁面查詢結果 ${arrayValue(group.bills).length} 筆`,
+      );
     }
     if (!group) {
       for (const rqData of statementDetailQueries(currency, month)) {
@@ -716,19 +741,25 @@ async function collectStatementDetails(
     const totalRows = numberValue(group.totalRow) ?? bills.length;
     if (needsMorePages(group, bills.length) && pageCount > 0) {
       const totalPages = Math.min(MAX_PAGES, Math.ceil(totalRows / pageCount));
+      // 工具補查失敗一次後不再對後面的頁送請求，但頁面已收下的頁照樣加入。
+      let replayFailed = false;
       for (let pageNum = 2; pageNum <= totalPages; pageNum += 1) {
         const captured = capturedPages.get(pageNum);
         if (captured) {
           bills.push(...captured);
           continue;
         }
-        const page = await request(
+        if (replayFailed) continue;
+        const replay = await request(
           RESOURCES.creditCardMonthBillsPage,
           { curCode: currency, month: group.month ?? month, pageNum },
           billCount,
         );
-        if (!isResourceSuccess(page)) break;
-        bills.push(...arrayValue(responseData(page).bills));
+        if (!isResourceSuccess(replay)) {
+          replayFailed = true;
+          continue;
+        }
+        bills.push(...arrayValue(responseData(replay).bills));
       }
       if (needsMorePages(group, bills.length)) incompleteMonths.push(month);
     }
@@ -744,6 +775,26 @@ async function collectStatementDetails(
       },
       bills,
     };
+  }
+  // 頁面有帳單查詢卻沒對上任何要補的月份時，列出收到的月份與幣別供排查格式差異。
+  const unmatched = pageCardBills.filter(
+    (capture) =>
+      ![...matchedCaptures].some((month) =>
+        sameStatementMonth(capture.rqData?.month, month),
+      ),
+  );
+  if (unmatched.length > 0) {
+    const seen = [
+      ...new Set(
+        unmatched.map(
+          (capture) =>
+            `${formatStatementMonth(stringValue(capture.rqData?.month))}/${/^[A-Z]{3}$/.test(stringValue(capture.rqData?.curCode)) ? capture.rqData.curCode : "?"}`,
+        ),
+      ),
+    ];
+    log(
+      `頁面帳單查詢中沒用上的月份（不需要補，或不在最近 ${STATEMENT_DETAIL_MONTHS} 期）：${seen.join("、")}`,
+    );
   }
   return { creditCards, unavailableMonths, incompleteMonths };
 }

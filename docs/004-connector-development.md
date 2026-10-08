@@ -618,9 +618,12 @@ depositTransactionsUnavailable?: boolean }`，上限 5 MB；zod 只驗證各回�
   `RequestTemplateWatcher` 因此也以 `Network.getResponseBody` 收下使用者在網銀帳單頁切換月份
   時頁面自己的 `card/qu002/011` 與分頁 `card/qu002/016` 回應（`pageCardBills`）。
   `pageStatementGroup` 依幣別與月份（`YYYY/MM` 與 `YYYYMM` 視為同一月）取該月最後一次 `0000`
-  且含 `bills` 的回應為第 1 頁、分頁依 `pageNum` 收下；有頁面結果的月份不再重送，沒收到的分頁
-  才由工具補查，仍不齊時照樣匯入已取得的明細並列出分頁未收齊的月份
-  （`statementMonthsIncomplete`）。
+  且含 `bills` 的回應為第 1 頁、分頁依 `pageNum` 收下（已出帳帳單不會變，跨次瀏覽的分頁可合併）；
+  頁面請求沒帶 `curCode` 時，只在該月只有一個幣別時採用。有頁面結果的月份不再重送；最新一期
+  首頁已附第 1 頁時也採用頁面的分頁。沒收到的分頁才由工具補查，補查失敗一次後不再對後面的頁
+  送請求、但頁面已收下的頁照樣加入；仍不齊時照樣匯入已取得的明細並列出分頁未收齊的月份
+  （`statementMonthsIncomplete`）。頁面有帳單查詢卻沒用上時，console 列出收到的月份與幣別
+  （不含金額），供排查格式差異。
 - 使用者沒在明細頁看到任何存款明細時，工具才重送 `qu002/011`，依序嘗試：頁面自己送出的查詢參數
   （使用者在網銀開過明細頁時）、`type: m0/m1/m2`、`dateRanges` 的 `YYYYMMDD` 自訂區間、
   同區間 `YYYY/MM/DD`、自行推算的月份區間；每種組合前重新呼叫 `qu002/010`，只有 `0000`

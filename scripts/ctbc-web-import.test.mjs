@@ -979,13 +979,121 @@ test("pageStatementGroup matches the month in either format and ignores failed o
       { code: "9999" },
     ),
   ];
-  assert.deepEqual(pageStatementGroup(captures, "TWD", "2026/07").group.bills, [
+  assert.deepEqual(pageStatementGroup(captures, "TWD", "2026/07").first.bills, [
     { id: "new" },
   ]);
-  assert.deepEqual(pageStatementGroup(captures, "USD", "2026/07").group.bills, [
+  assert.equal(
+    pageStatementGroup(captures, "TWD", "2026/07").first.month,
+    "2026/07",
+  );
+  assert.deepEqual(pageStatementGroup(captures, "USD", "2026/07").first.bills, [
     { id: "usd" },
   ]);
   assert.equal(pageStatementGroup(captures, "TWD", "2026/06"), null);
+});
+
+test("pageStatementGroup uses captures without curCode only when the month has one currency", () => {
+  const captures = [
+    cardBillCapture(
+      RESOURCES.creditCardMonthBills,
+      { month: "2026/07" },
+      { code: "0000", rsData: { bills: [{ id: "no-currency" }] } },
+    ),
+  ];
+  assert.equal(pageStatementGroup(captures, "TWD", "2026/07"), null);
+  assert.deepEqual(
+    pageStatementGroup(captures, "TWD", "2026/07", {
+      allowMissingCurrency: true,
+    }).first.bills,
+    [{ id: "no-currency" }],
+  );
+});
+
+test("collectCtbcPayloads uses page-captured later pages of the latest statement", async () => {
+  const overview = statementOverview();
+  Object.assign(overview.rsData.billData.TWD["2026/09"], {
+    displayPaging: true,
+    totalRow: "2",
+    pageCount: "1",
+  });
+  const { call, calls } = fakeBank({
+    creditCards: overview,
+    monthHandler: () => ({ code: "9999" }),
+    monthPageHandler: () => ({ code: "9999" }),
+  });
+  const result = await collectCtbcPayloads(call, {
+    pageCardBills: () => [
+      cardBillCapture(
+        RESOURCES.creditCardMonthBillsPage,
+        { curCode: "TWD", month: "2026/09", pageNum: 2 },
+        {
+          code: "0000",
+          rsData: { bills: [{ merchantChiName: "虛構最新一期第2頁" }] },
+        },
+      ),
+    ],
+  });
+  assert.deepEqual(
+    result.payloads.creditCards.rsData.billData.TWD["2026/09"].bills.map(
+      (bill) => bill.merchantChiName,
+    ),
+    ["虛構最新一期", "虛構最新一期第2頁"],
+  );
+  assert.deepEqual(result.statementMonthsIncomplete, []);
+  assert.ok(
+    !calls.some(
+      (entry) =>
+        entry.resource === RESOURCES.creditCardMonthBillsPage &&
+        entry.rqData.month === "2026/09",
+    ),
+  );
+});
+
+test("collectCtbcPayloads keeps later captured pages after a failed page replay", async () => {
+  const { call, calls } = fakeBank({
+    creditCards: statementOverview(),
+    monthPageHandler: () => ({ code: "9999" }),
+  });
+  const result = await collectCtbcPayloads(call, {
+    pageCardBills: () => [
+      cardBillCapture(
+        RESOURCES.creditCardMonthBills,
+        { curCode: "TWD", month: "2026/08" },
+        {
+          code: "0000",
+          rsData: {
+            displayPaging: true,
+            totalRow: "4",
+            pageCount: "1",
+            bills: [{ merchantChiName: "第1頁" }],
+          },
+        },
+      ),
+      cardBillCapture(
+        RESOURCES.creditCardMonthBillsPage,
+        { curCode: "TWD", month: "2026/08", pageNum: 3 },
+        { code: "0000", rsData: { bills: [{ merchantChiName: "第3頁" }] } },
+      ),
+    ],
+  });
+  assert.deepEqual(
+    result.payloads.creditCards.rsData.billData.TWD["2026/08"].bills.map(
+      (bill) => bill.merchantChiName,
+    ),
+    ["第1頁", "第3頁"],
+  );
+  assert.deepEqual(result.statementMonthsIncomplete, ["2026/08"]);
+  // 第 2 頁補查失敗後不再對第 4 頁送請求。
+  assert.deepEqual(
+    calls
+      .filter(
+        (entry) =>
+          entry.resource === RESOURCES.creditCardMonthBillsPage &&
+          entry.rqData.month === "2026/08",
+      )
+      .map((entry) => entry.rqData.pageNum),
+    [2],
+  );
 });
 
 test("collectCtbcPayloads keeps unbilled card information", async () => {
