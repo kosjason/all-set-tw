@@ -192,8 +192,9 @@ export const USAGE = `用法：node scripts/ctbc-web-import.mjs [選項]
   --timeout <分鐘>    等待登入的時間（預設 ${DEFAULT_LOGIN_TIMEOUT_MINUTES}）
   --profile <目錄>    使用固定的 Chrome profile（絕對路徑），結束後保留，可在其中安裝
                       密碼管理器；未指定時使用暫存 profile 並於結束時刪除
-  --deposit-wait <秒> 登入後等使用者點進存款交易明細頁的秒數；看到明細才開始查詢，
-                      逾時照常繼續（預設 ${DEFAULT_DEPOSIT_WAIT_SECONDS}，0 表示不等待）
+  --deposit-wait <秒> 登入後等使用者在網銀點開明細（信用卡帳單月份或存款交易明細）
+                      的秒數；看到明細才開始查詢，逾時照常繼續
+                      （預設 ${DEFAULT_DEPOSIT_WAIT_SECONDS}，0 表示不等待）
   --dry-run           只查詢並顯示筆數，不送到 Worker
 
 環境變數 CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET：Worker 受 Cloudflare Access
@@ -563,6 +564,7 @@ export async function collectCtbcPayloads(call, options = {}) {
   const now = options.now ?? new Date();
   const observedDepositQuery = options.observedDepositQuery ?? (() => null);
   const pageDeposits = options.pageDeposits ?? (() => []);
+  const pageCardBills = options.pageCardBills ?? (() => []);
 
   const request = async (resource, rqData, countOf) => {
     const response = await call(resource, rqData);
@@ -591,7 +593,12 @@ export async function collectCtbcPayloads(call, options = {}) {
     { now, observedDepositQuery, pageDeposits, log },
   );
   const creditCardOverview = await required(RESOURCES.creditCardBills, {});
-  const statements = await collectStatementDetails(request, creditCardOverview);
+  const statements = await collectStatementDetails(
+    request,
+    creditCardOverview,
+    pageCardBills(),
+    log,
+  );
   const creditCards = statements.creditCards;
   const unbilled = await collectUnbilled(required);
   const realtime = await collectPagedCardItems(
@@ -612,17 +619,62 @@ export async function collectCtbcPayloads(call, options = {}) {
     depositTransactionsUnavailable: deposit.unavailable,
     depositStrategy: deposit.strategy,
     statementMonthsUnavailable: statements.unavailableMonths,
+    statementMonthsIncomplete: statements.incompleteMonths,
   };
 }
 
+function sameStatementMonth(left, right) {
+  return (
+    stringValue(left).replace(/\D/g, "") ===
+    stringValue(right).replace(/\D/g, "")
+  );
+}
+
 /**
- * 逐月補抓已出帳帳單明細並併回 `qu002/010` 回應的 billData。查詢失敗不中止
- * 匯入：該月份只保留帳單總額，並回報月份供使用者確認。
+ * 頁面自己查到的帳單月份明細：使用者在網銀帳單頁切到該月份時，頁面送出
+ * `qu002/011 {curCode, month}`（分頁 `qu002/016 {…, pageNum}`）。取該月最後一次
+ * 成功的回應為第 1 頁，分頁依 pageNum 收下（同頁以最後一次為準）。
  */
-async function collectStatementDetails(request, creditCardOverview) {
+export function pageStatementGroup(captures, currency, month) {
+  const matches = (capture, resource) =>
+    capture.resource === resource &&
+    isResourceSuccess(capture.response) &&
+    sameStatementMonth(capture.rqData?.month, month) &&
+    (capture.rqData?.curCode == null ||
+      stringValue(capture.rqData.curCode) === currency);
+  const first = captures
+    .filter((capture) => matches(capture, RESOURCES.creditCardMonthBills))
+    .map((capture) => responseData(capture.response))
+    .filter((data) => Array.isArray(data.bills))
+    .at(-1);
+  if (!first) return null;
+  const pages = new Map();
+  for (const capture of captures) {
+    if (!matches(capture, RESOURCES.creditCardMonthBillsPage)) continue;
+    const pageNum = numberValue(capture.rqData.pageNum);
+    const bills = responseData(capture.response).bills;
+    if (pageNum != null && pageNum >= 2 && Array.isArray(bills))
+      pages.set(pageNum, bills);
+  }
+  return { group: { ...first, month }, pages };
+}
+
+/**
+ * 逐月補抓已出帳帳單明細並併回 `qu002/010` 回應的 billData。優先採用使用者在網銀
+ * 帳單頁看過的月份（{@link pageStatementGroup}，工具重送常被拒絕），其餘月份再由工具
+ * 查詢。查詢失敗不中止匯入：該月份只保留帳單總額，並回報月份供使用者確認；分頁沒
+ * 收齊的月份照樣匯入已取得的明細，另外回報。
+ */
+async function collectStatementDetails(
+  request,
+  creditCardOverview,
+  pageCardBills = [],
+  log = () => {},
+) {
   const creditCards = structuredClone(creditCardOverview);
   const billData = recordValue(responseData(creditCards).billData);
   const unavailableMonths = [];
+  const incompleteMonths = [];
   const billCount = (response) =>
     arrayValue(responseData(response).bills).length;
   for (const { currency, month, hasBills } of statementMonthsToFetch(
@@ -630,6 +682,17 @@ async function collectStatementDetails(request, creditCardOverview) {
   )) {
     const target = billData[currency][month];
     let group = hasBills ? target : null;
+    let capturedPages = new Map();
+    if (!group) {
+      const page = pageStatementGroup(pageCardBills, currency, month);
+      if (page) {
+        group = page.group;
+        capturedPages = page.pages;
+        log(
+          `信用卡帳單 ${formatStatementMonth(month)}：使用頁面查詢結果 ${arrayValue(group.bills).length} 筆`,
+        );
+      }
+    }
     if (!group) {
       for (const rqData of statementDetailQueries(currency, month)) {
         const response = await request(
@@ -654,6 +717,11 @@ async function collectStatementDetails(request, creditCardOverview) {
     if (needsMorePages(group, bills.length) && pageCount > 0) {
       const totalPages = Math.min(MAX_PAGES, Math.ceil(totalRows / pageCount));
       for (let pageNum = 2; pageNum <= totalPages; pageNum += 1) {
+        const captured = capturedPages.get(pageNum);
+        if (captured) {
+          bills.push(...captured);
+          continue;
+        }
         const page = await request(
           RESOURCES.creditCardMonthBillsPage,
           { curCode: currency, month: group.month ?? month, pageNum },
@@ -662,6 +730,7 @@ async function collectStatementDetails(request, creditCardOverview) {
         if (!isResourceSuccess(page)) break;
         bills.push(...arrayValue(responseData(page).bills));
       }
+      if (needsMorePages(group, bills.length)) incompleteMonths.push(month);
     }
     billData[currency][month] = {
       ...target,
@@ -676,7 +745,7 @@ async function collectStatementDetails(request, creditCardOverview) {
       bills,
     };
   }
-  return { creditCards, unavailableMonths };
+  return { creditCards, unavailableMonths, incompleteMonths };
 }
 
 function pick(value, keys) {
@@ -1183,13 +1252,24 @@ export class RequestTemplateWatcher {
   /** 尚在解析 body 的網銀請求；期間完成載入的記在 #finishedWhileClassifying。 */
   #classifying = new Set();
   #finishedWhileClassifying = new Set();
-  /** 已確認是頁面存款明細查詢、等待載入完成的請求：key → rqData。 */
-  #pendingDeposits = new Map();
+  /**
+   * 已確認是頁面明細查詢（存款明細、信用卡帳單月份與分頁）、等待載入完成的請求：
+   * key → `{ resource, rqData }`。
+   */
+  #pendingCaptures = new Map();
   template = null;
   templateSessionId = null;
   observedDepositQuery = null;
   /** 頁面自己的存款明細查詢與回應：`{ rqData, response }`。 */
   pageDeposits = [];
+  /**
+   * 頁面自己的信用卡帳單月份明細（`qu002/011`）與分頁（`qu002/016`）查詢與回應：
+   * `{ resource, rqData, response }`。工具重送這兩個查詢會被中信拒絕（9999），
+   * 使用者在網銀帳單頁切換月份時，直接收下頁面得到的結果。
+   */
+  pageCardBills = [];
+  /** 使用者在網銀帳單頁看過的月份（`{curCode, month}` 的 month，原樣保留）。 */
+  observedCardBillMonths = new Set();
   /** 頁面存款明細請求與工具模板的差異（只有欄位名稱，供診斷 H404）。 */
   depositEnvelopeDiff = null;
   /** 頁面自己送出的網銀 resource（只有路徑，依首次出現順序，最多 40 個）。 */
@@ -1216,8 +1296,8 @@ export class RequestTemplateWatcher {
       for (const key of [...this.#pageInFlight]) {
         if (key.startsWith(prefix)) this.#pageInFlight.delete(key);
       }
-      for (const key of [...this.#pendingDeposits.keys()]) {
-        if (key.startsWith(prefix)) this.#pendingDeposits.delete(key);
+      for (const key of [...this.#pendingCaptures.keys()]) {
+        if (key.startsWith(prefix)) this.#pendingCaptures.delete(key);
       }
     });
     this.#cdp.on("Network.requestWillBeSent", (params, sessionId) =>
@@ -1255,14 +1335,24 @@ export class RequestTemplateWatcher {
     });
   }
 
-  /** 等使用者點進存款交易明細頁；看到頁面的查詢參數即回傳 true，逾時或中斷回傳 false。 */
-  async waitForDepositQuery(timeoutMs, shouldStop = () => false) {
+  /** 使用者已在頁面看過存款交易明細或信用卡帳單月份明細。 */
+  get observedDetailPage() {
+    return (
+      Boolean(this.observedDepositQuery) || this.observedCardBillMonths.size > 0
+    );
+  }
+
+  /**
+   * 等使用者在網銀點開明細（信用卡帳單月份或存款交易明細）；看到頁面的查詢即回傳
+   * true，逾時或中斷回傳 false。
+   */
+  async waitForDetailPage(timeoutMs, shouldStop = () => false) {
     const deadline = Date.now() + timeoutMs;
-    while (!this.observedDepositQuery && !shouldStop()) {
+    while (!this.observedDetailPage && !shouldStop()) {
       if (Date.now() >= deadline) return false;
       await sleep(250);
     }
-    return Boolean(this.observedDepositQuery);
+    return this.observedDetailPage;
   }
 
   #onResponse(params, sessionId, seq) {
@@ -1289,14 +1379,14 @@ export class RequestTemplateWatcher {
     }
   }
 
-  /** 頁面存款明細查詢載入完成後取回回應；載入失敗則放棄。 */
+  /** 頁面明細查詢載入完成後取回回應；載入失敗則放棄。 */
   #onLoadingDone(key, requestId, sessionId, event) {
     if (this.#pageInFlight.delete(key)) this.#lastPageActivity = Date.now();
-    const rqData = this.#pendingDeposits.get(key);
-    if (rqData !== undefined) {
-      this.#pendingDeposits.delete(key);
+    const pending = this.#pendingCaptures.get(key);
+    if (pending !== undefined) {
+      this.#pendingCaptures.delete(key);
       if (event === "Network.loadingFinished") {
-        void this.#captureDeposit(requestId, sessionId, rqData);
+        void this.#capturePage(requestId, sessionId, pending);
       }
     } else if (
       event === "Network.loadingFinished" &&
@@ -1306,7 +1396,7 @@ export class RequestTemplateWatcher {
     }
   }
 
-  async #captureDeposit(requestId, sessionId, rqData) {
+  async #capturePage(requestId, sessionId, { resource, rqData }) {
     this.#capturing += 1;
     try {
       const { body = "", base64Encoded } = await this.#cdp.send(
@@ -1317,7 +1407,10 @@ export class RequestTemplateWatcher {
       const response = JSON.parse(
         base64Encoded ? Buffer.from(body, "base64").toString("utf8") : body,
       );
-      if (isRecord(response)) this.pageDeposits.push({ rqData, response });
+      if (!isRecord(response)) return;
+      if (resource === RESOURCES.depositTransactions)
+        this.pageDeposits.push({ rqData, response });
+      else this.pageCardBills.push({ resource, rqData, response });
     } catch {
       // 取不到頁面的回應時，這次就沒有該查詢的頁面結果。
     } finally {
@@ -1380,6 +1473,16 @@ export class RequestTemplateWatcher {
     }
   }
 
+  /** 頁面明細查詢：已載入完成就立即擷取，否則等載入完成。 */
+  #scheduleCapture(key, requestId, sessionId, pending) {
+    if (this.#finishedWhileClassifying.has(key)) {
+      void this.#capturePage(requestId, sessionId, pending);
+    } else if (this.#pageInFlight.has(key)) {
+      this.#pendingCaptures.set(key, pending);
+    }
+    // 其餘情況是分類期間就載入失敗或分頁已 detach，不擷取。
+  }
+
   async #classifyRequest(params, sessionId, seq, key) {
     const request = params.request;
     const ignore = () => this.tokens.classify(key, "ignored");
@@ -1440,12 +1543,22 @@ export class RequestTemplateWatcher {
           request.headers,
         );
       }
-      if (this.#finishedWhileClassifying.has(key)) {
-        void this.#captureDeposit(params.requestId, sessionId, body.rqData);
-      } else if (this.#pageInFlight.has(key)) {
-        this.#pendingDeposits.set(key, body.rqData);
-      }
-      // 其餘情況是分類期間就載入失敗或分頁已 detach，不擷取。
+      this.#scheduleCapture(key, params.requestId, sessionId, {
+        resource: body.resource,
+        rqData: body.rqData,
+      });
+    }
+    if (
+      (body.resource === RESOURCES.creditCardMonthBills ||
+        body.resource === RESOURCES.creditCardMonthBillsPage) &&
+      isRecord(body.rqData)
+    ) {
+      const month = stringValue(body.rqData.month);
+      if (month) this.observedCardBillMonths.add(month);
+      this.#scheduleCapture(key, params.requestId, sessionId, {
+        resource: body.resource,
+        rqData: body.rqData,
+      });
     }
     if (this.template) return;
     const template = extractRequestTemplate(
@@ -1881,19 +1994,17 @@ async function run(argv) {
     await watcher.waitForTemplate(options.loginTimeoutMinutes * 60_000);
     if (aborting) return 130;
     session = new PageApiSession(browser, watcher);
-    if (options.depositWaitSeconds > 0 && !watcher.observedDepositQuery) {
+    if (options.depositWaitSeconds > 0 && !watcher.observedDetailPage) {
       console.log(
-        `已偵測到登入。請點進存款帳戶的交易明細，看到明細後工具才開始查詢（最多等 ${formatSeconds(options.depositWaitSeconds)}，沒點也會繼續）。`,
+        `已偵測到登入。請在網銀點開要匯入的明細：信用卡「帳單」切到要補明細的月份，或存款帳戶的交易明細；看到明細後工具才開始查詢（最多等 ${formatSeconds(options.depositWaitSeconds)}，沒點也會繼續）。`,
       );
-      const observed = await watcher.waitForDepositQuery(
+      const observed = await watcher.waitForDetailPage(
         options.depositWaitSeconds * 1_000,
         () => aborting,
       );
       if (aborting) return 130;
       console.log(
-        observed
-          ? "已取得存款明細查詢參數。"
-          : "未偵測到存款明細頁，改用預設查詢參數。",
+        observed ? "已看到明細頁。" : "未偵測到明細頁，改用工具自己的查詢。",
       );
       if (!observed) {
         console.log(
@@ -1917,12 +2028,12 @@ async function run(argv) {
         `存款明細頁請求與工具的差異：body=${list(bodyKeys)}；標頭=${list(headerNames)}；網址參數=${list(queryNames)}`,
       );
     }
-    // 使用者還在操作頁面時不送查詢。看過明細後多等一些，讓使用者切換期間或帳戶補舊資料，
-    // 每次切換的頁面結果都會收下。
-    const quietMs = watcher.observedDepositQuery ? 15_000 : 5_000;
-    if (watcher.observedDepositQuery) {
+    // 使用者還在操作頁面時不送查詢。看過明細後多等一些，讓使用者切換月份、期間或帳戶
+    // 補舊資料，每次切換的頁面結果都會收下。
+    const quietMs = watcher.observedDetailPage ? 15_000 : 5_000;
+    if (watcher.observedDetailPage) {
       console.log(
-        "要補更早的交易，可在明細頁切換查詢期間或帳戶；停止操作 15 秒後開始查詢。",
+        "要補其他月份，可繼續在網銀切換信用卡帳單月份或存款明細期間；停止操作 15 秒後開始查詢。",
       );
     }
     const quiet = await watcher.waitForQuiet(quietMs, 180_000, () => aborting);
@@ -1938,6 +2049,7 @@ async function run(argv) {
           log: (line) => console.log(line),
           observedDepositQuery: () => watcher.observedDepositQuery,
           pageDeposits: () => watcher.pageDeposits,
+          pageCardBills: () => watcher.pageCardBills,
         },
       );
     } finally {
@@ -1957,7 +2069,12 @@ async function run(argv) {
     );
     if (result.statementMonthsUnavailable?.length) {
       console.log(
-        `帳單明細未取得的月份：${result.statementMonthsUnavailable.map((month) => formatStatementMonth(month)).join("、")}（僅匯入帳單總額）。`,
+        `帳單明細未取得的月份：${result.statementMonthsUnavailable.map((month) => formatStatementMonth(month)).join("、")}（僅匯入帳單總額；到網銀信用卡「帳單」切到這些月份後再匯入一次即可補上）。`,
+      );
+    }
+    if (result.statementMonthsIncomplete?.length) {
+      console.log(
+        `帳單明細分頁未收齊的月份：${result.statementMonthsIncomplete.map((month) => formatStatementMonth(month)).join("、")}（已匯入取得的部分；在網銀把該月份每一頁都翻過再匯入一次即可補齊）。`,
       );
     }
     if (result.depositTransactionsUnavailable) {
