@@ -273,6 +273,17 @@ describe("學過的商家：晚開發票自動配對", () => {
     expect(roles.get("inv-09")?.roleReason).toBe("invoice");
   });
 
+  it("學過的商家這次在 3 天內開發票時照樣配對，但不標成晚開", () => {
+    const { matches, roles } = run(
+      [card()],
+      [inv("inv-09", "2026-09-26", 596)],
+      { preferences: [julyLink()] },
+    );
+    expect(matches.invoiceToTransactionId.get("inv-09")).toBe("tx-09");
+    expect(matches.details.get("inv-09")?.learned).toBeUndefined();
+    expect(roles.get("inv-09")?.roleReason).toBe("invoice_matched");
+  });
+
   it("學過的證據優先於一般自動配對：附近另一張同額發票不會先把刷卡配走", () => {
     const { matches, roles } = run(
       [card()],
@@ -290,13 +301,18 @@ describe("學過的商家：晚開發票自動配對", () => {
     expect(roles.get("inv-cash")?.roleReason).toBe("invoice");
   });
 
-  it("大量資料時學習階段仍是線性成本", () => {
+  it("大量資料時不做發票×交易的全掃描（效能煙霧測試）", () => {
     const transactions: Tx[] = [];
     const invoices: ActivityInvoice[] = [];
     for (let index = 0; index < 2000; index += 1) {
       const day = `2026-${String(1 + (index % 9)).padStart(2, "0")}-${String(1 + (index % 28)).padStart(2, "0")}`;
       transactions.push(
-        tx(`t${index}`, day, -(100 + (index % 500)), `虛構商店${index % 50}`),
+        tx(
+          `t${index}`,
+          day,
+          -(100 + (index % 500)),
+          index % 3 === 0 ? CARD_TEXT : `虛構商店${index % 50}`,
+        ),
       );
       invoices.push(
         inv(`i${index}`, day, 100 + ((index * 7) % 500), {

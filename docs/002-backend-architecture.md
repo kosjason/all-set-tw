@@ -544,7 +544,7 @@ NFKC／小寫／空白正規化）、同幣別與原幣金額、且在該組第�
 
 信用卡載具：發票的 `carrier_type` 不是手機條碼／自然人憑證／悠遊卡／一卡通（`NON_CARD_CARRIER_TYPES`），
 且 `carrier_suffix` 為 4 位數字並等於某張已同步信用卡帳戶的 `account_last4` 時，該發票只與這張卡的交易配對，
-日差視窗放寬到 5 天（入帳日可能晚於消費日）。因此載入範圍前後各多 `INVOICE_MATCH_CONTEXT_DAYS`（10）天。
+日差視窗放寬到 5 天（入帳日可能晚於消費日）。因此載入範圍前後各多 `INVOICE_MATCH_CONTEXT_DAYS`（14）天（fork：學過的晚開發票與晚開提醒看刷卡早 0–7 天）。
 
 `matchStatus`（`InvoiceMatchInfo`，另帶 `matchedTransactionId`、`matchScore`、`carrierCardSuffix`、`awaitingOverdue`）：
 
@@ -1341,7 +1341,7 @@ Connector 不得直接寫入金融資料表。
 - 電子發票 durable promotion 使用相同 settings-version guard 保存新發票快照；
   集保使用既有 promotion 與鎖的 run ID。結果發佈與來源結果更新共用 CAS transaction。
 - `reports/activity-detail-service.ts` 在報告結案及手動補救後，以完整同日候選與既有活動配對
-  規則建立展示快照；載入範圍另含前後 `INVOICE_MATCH_CONTEXT_DAYS`（10 天，信用卡載具配對窗 5 天的兩倍），讓唯一性判斷
+  規則建立展示快照；載入範圍另含前後 `INVOICE_MATCH_CONTEXT_DAYS`（14 天，晚開發票視窗 7 天的兩倍），讓唯一性判斷
   看得到所有競爭候選。活動搜尋依命中日期分批載入，缺少鄰近日期，因此只做同日配對
   （`dayWindow: 0`），不做跨日容差配對。交易與發票在來源明細中合併，同批新增資料與活動筆數可不同；
   已配對授權與已入帳交易只呈現一次。跨來源列仍各自說明各來源的變動。

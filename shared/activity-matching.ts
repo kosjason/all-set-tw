@@ -460,9 +460,11 @@ export function lateInvoiceMerchantLearning(
 }
 
 /**
- * 學習過的晚開發票：未配對的台幣發票，與刷卡早 0–{@link LATE_INVOICE_DAY_WINDOW}
+ * 學過的晚開發票：尚未手動處理的台幣發票，與刷卡早 0–{@link LATE_INVOICE_DAY_WINDOW}
  * 天、金額完全相同、同一帳戶且賣方／商家組合曾被使用者手動連結過的支出，雙向
- * 唯一時配對。沿用一般配對的資格（真正的台幣支出、信用卡載具限定該卡）。
+ * 唯一時配對；在一般自動配對之前執行。沿用一般配對的資格（真正的台幣支出、
+ * 信用卡載具限定該卡）。只看賣方學過的發票，交易依（消費日, 金額）建索引，
+ * 不做全資料的發票×交易掃描。
  */
 function assignLearnedLateInvoices<I extends MatchingInvoice>(
   invoices: I[],
@@ -511,8 +513,11 @@ function assignLearnedLateInvoices<I extends MatchingInvoice>(
       );
     return merchantKeys.get(transaction.id);
   };
-  const candidates: Array<{ invoice: I; transaction: MatchingTransaction }> =
-    [];
+  const candidates: Array<{
+    invoice: I;
+    transaction: MatchingTransaction;
+    lateBy: number;
+  }> = [];
   for (const { invoice, sellerKey, invoiceDay } of targets) {
     const carrierSuffix = carrierSuffixFor(invoice);
     for (let lateBy = 0; lateBy <= window; lateBy += 1)
@@ -532,7 +537,7 @@ function assignLearnedLateInvoices<I extends MatchingInvoice>(
             learnedKey(sellerKey, transaction.accountId!, merchantKey),
           )
         )
-          candidates.push({ invoice, transaction });
+          candidates.push({ invoice, transaction, lateBy });
       }
   }
   const invoiceCounts = countBy(candidates, ({ invoice }) => invoice.id);
@@ -540,7 +545,7 @@ function assignLearnedLateInvoices<I extends MatchingInvoice>(
     candidates,
     ({ transaction }) => transaction.id,
   );
-  for (const { invoice, transaction } of candidates) {
+  for (const { invoice, transaction, lateBy } of candidates) {
     if (
       invoiceCounts.get(invoice.id) !== 1 ||
       transactionCounts.get(transaction.id) !== 1
@@ -551,7 +556,8 @@ function assignLearnedLateInvoices<I extends MatchingInvoice>(
     details.set(invoice.id, {
       outcome: "matched",
       transactionId: transaction.id,
-      learned: true,
+      // 這次其實在一般配對視窗內（發票沒有晚開）時，不標成「晚開的發票」。
+      ...(lateBy > INVOICE_MATCH_DAY_WINDOW ? { learned: true } : {}),
       score: normalizedScore(
         INVOICE_MATCH_SCORE.exactAmount + INVOICE_MATCH_SCORE.merchantStrong,
       ),
