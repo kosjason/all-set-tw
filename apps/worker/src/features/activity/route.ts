@@ -5,7 +5,10 @@ import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
 import { jsonError, parseKeysetPagination } from "../../platform/http";
 import { validationHook } from "../../platform/validation";
-import { currentActivityMonthKey } from "@taiwan-fin-hub/shared";
+import {
+  currentActivityMonthKey,
+  MANUAL_LINK_DAY_WINDOW,
+} from "@taiwan-fin-hub/shared";
 import { searchActivity } from "./search-service";
 import { exportActivity } from "./export-service";
 import {
@@ -259,7 +262,7 @@ function mappingError(error: unknown) {
   if (error instanceof MappingDateMismatchError)
     return jsonError(
       "MAPPING_DATE_MISMATCH",
-      "Invoice and bank transaction must be on the same day.",
+      `發票與交易的日期相差超過 ${MANUAL_LINK_DAY_WINDOW} 天，無法連結。`,
       400,
     );
   if (error instanceof MappingTransactionNotExpenseError)

@@ -6,6 +6,7 @@ import {
   categoryLabel,
   economicRoleOverrideKey,
   getCategoryDefinition,
+  INVOICE_MATCH_CONTEXT_DAYS,
   invoiceItemsPreview,
   invoiceMerchantIdentity,
   isIncomeCategoryId,
@@ -588,9 +589,10 @@ export async function annotateBankTransactions<
     safely(
       "load invoices for bank",
       () =>
+        // 與活動頁相同的配對範圍，學習過的晚開發票與唯一性檢查才會一致。
         getInvoicesRange(db, {
-          from: shiftDay(days[0], -6),
-          to: shiftDay(days.at(-1)!, 7),
+          from: shiftDay(days[0], -INVOICE_MATCH_CONTEXT_DAYS),
+          to: shiftDay(days.at(-1)!, INVOICE_MATCH_CONTEXT_DAYS + 1),
         }),
       [],
     ),

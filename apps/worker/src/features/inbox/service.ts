@@ -251,7 +251,7 @@ function activityItems(items: ActivityItem[], months: string[]): InboxItem[] {
           kind: "duplicate_ambiguous",
           severity: "tidy",
           title: `確認發票是否重複：${item.title}`,
-          detail: `${day} 的發票在前後 3 天內有多筆同金額刷卡，無法自動判斷是否為同一筆消費。`,
+          detail: `${day} 的發票附近有同金額、尚未配對的刷卡（可能是發票晚開），無法自動判斷是否為同一筆消費。`,
           target: activityTarget(item, month),
           createdAt: item.date,
           action: { kind: "review_activity", label: "確認配對" },

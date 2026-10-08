@@ -481,7 +481,9 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
 電子發票：已與交易配對者 `duplicateOf` 指向該交易（金額以交易為準，使用者手動連結時
 `confirmed`）；使用者選「分開記錄」者為 `spending`／`confirmed`；其餘未配對發票為 `spending`。
 候選分數差距不足（`ambiguous`），或 ±3 天內有同金額、仍計為消費且未配對的 TWD 支出時，
-標為 `needs_review`（`invoice_ambiguous`）。信用卡載具發票等待刷卡交易時為
+標為 `needs_review`（`invoice_ambiguous`）。fork：發票金額至少 NT$100 時，刷卡早於發票 0–7 天
+（發票晚開）也算，只載入當日的搜尋不延伸。依學過的晚開商家自動配對者原因為 `invoice_learned`
+（規則見前端文件「發票配對」第 5 步）。信用卡載具發票等待刷卡交易時為
 `invoice_awaiting_card`，超過 10 天才 `needs_review`。電支儲值是移轉、國外交易服務費不是消費本體，
 都不作為發票的重複候選。同一筆消費重複開立的外幣發票（見下節「重複開立」），沒對到付款的那幾張
 `duplicateOf` 指向代表這筆消費的發票（`kind = invoice`）、`needs_review`（`invoice_repeat`），不計入金額。

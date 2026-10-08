@@ -313,10 +313,18 @@ summary」），前端不自行加總：
 4. 國外商家：前後 3 天內的信用卡負數支出，金額差不超過發票的 5%（至少 NT$30），且發票
    賣方與交易描述有相同英數品牌字詞（去除 LLC、Inc 等字尾；少數等價品牌如
    Valve↔Steam、Anthropic↔Claude 以別名表處理），同樣須雙向唯一。
+5. fork：學過的晚開發票。使用者手動連結「發票比刷卡晚 4–7 天」的組合時
+   （`lateInvoiceMerchantLearning`，例如月費刷卡後幾天才開發票），記下發票賣方 key、刷卡商家 key
+   （`bankMerchantIdentity`）與帳戶；之後剩下未配對的台幣發票，與刷卡早 0–7 天、金額完全相同、
+   同帳戶且同一組賣方／商家的支出雙向唯一時自動配對（`learned`，角色原因 `invoice_learned`）。
+   學習紀錄不另存表，由 `listInvoiceTransactionPreferences` 從手動連結推導（`learnedMerchant`），
+   改成「分開記錄」即失效；沿用一般配對資格（真正的台幣支出、信用卡載具限定該卡）。
 
 電子支付儲值（系統規則 `system:bank:ewallet-topup`）視為轉入自己的電子錢包，經濟角色為
 `own_transfer` 並排除收支，也不作為任何發票的自動配對對象；錢包內的消費以發票計入。步驟 3、4 也略過已
-排除收支的交易與退款。手動配對候選列出前後 3 天內的 TWD 支出，依金額差、日期差排序。
+排除收支的交易與退款。手動配對候選列出前後 `MANUAL_LINK_DAY_WINDOW`（7）天內的 TWD 支出，依金額差、
+日期差排序；後端手動連結同樣接受 7 天內（發票可能晚開）。有界載入的前後範圍為
+`INVOICE_MATCH_CONTEXT_DAYS`（14 天）。
 活動搜尋結果只含命中日期，前後端都以同日配對計算。
 
 ## 活動金額顯示

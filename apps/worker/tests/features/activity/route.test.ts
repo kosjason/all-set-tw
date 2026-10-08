@@ -41,6 +41,28 @@ function createDb() {
       },
     ],
     [
+      "transaction-eight-days-later",
+      {
+        id: "transaction-eight-days-later",
+        postedDate: "2026-07-14",
+        authorizedAt: null,
+        amount: -50,
+        currency: "TWD",
+        accountType: "checking",
+      },
+    ],
+    [
+      "transaction-seven-days-earlier",
+      {
+        id: "transaction-seven-days-earlier",
+        postedDate: "2026-07-01",
+        authorizedAt: "2026-06-29T10:00:00+08:00",
+        amount: -50,
+        currency: "TWD",
+        accountType: "credit",
+      },
+    ],
+    [
       "transaction-next-taipei-day",
       {
         id: "transaction-next-taipei-day",
@@ -181,7 +203,29 @@ describe("activity invoice transaction mappings", () => {
     });
   });
 
-  it("rejects invalid, cross-day, and already-used mappings", async () => {
+  it.each([
+    "transaction-other-day",
+    "transaction-next-taipei-day",
+    "transaction-seven-days-earlier",
+  ])("發票晚開或提早開立 7 天內可以手動連結（%s）", async (transactionId) => {
+    const { db, preferences } = createDb();
+    const response = await activityRoutes.request(
+      "/activity/invoice-mappings/invoice-1",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transactionId }),
+      },
+      { DB: db } as Env,
+    );
+    expect(response.status).toBe(200);
+    expect(preferences.get("invoice-1")).toMatchObject({
+      transactionId,
+      decision: "linked",
+    });
+  });
+
+  it("rejects invalid, over-7-days, and already-used mappings", async () => {
     const { db, preferences } = createDb();
     const invalid = await activityRoutes.request(
       "/activity/invoice-mappings/invoice-1",
@@ -194,29 +238,19 @@ describe("activity invoice transaction mappings", () => {
     );
     expect(invalid.status).toBe(400);
 
-    const crossDay = await activityRoutes.request(
+    const eightDays = await activityRoutes.request(
       "/activity/invoice-mappings/invoice-1",
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transactionId: "transaction-other-day" }),
+        body: JSON.stringify({ transactionId: "transaction-eight-days-later" }),
       },
       { DB: db } as Env,
     );
-    expect(crossDay.status).toBe(400);
-
-    const crossTaipeiDay = await activityRoutes.request(
-      "/activity/invoice-mappings/invoice-1",
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          transactionId: "transaction-next-taipei-day",
-        }),
-      },
-      { DB: db } as Env,
-    );
-    expect(crossTaipeiDay.status).toBe(400);
+    expect(eightDays.status).toBe(400);
+    await expect(eightDays.json()).resolves.toMatchObject({
+      error: { code: "MAPPING_DATE_MISMATCH" },
+    });
 
     preferences.set("invoice-2", {
       invoiceId: "invoice-2",

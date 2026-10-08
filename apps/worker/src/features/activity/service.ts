@@ -1,3 +1,4 @@
+import { MANUAL_LINK_DAY_WINDOW } from "@taiwan-fin-hub/shared";
 import {
   findLinkedInvoiceId,
   findMappingInvoice,
@@ -17,6 +18,11 @@ const taipeiDayFormatter = new Intl.DateTimeFormat("en", {
   month: "2-digit",
   day: "2-digit",
 });
+
+function dayIndex(day: string) {
+  const [year, month, date] = day.split("-").map(Number);
+  return Date.UTC(year, month - 1, date) / 86_400_000;
+}
 
 function financialDay(value?: string | null) {
   if (!value) return undefined;
@@ -47,7 +53,13 @@ export async function linkInvoiceToTransaction(
   const transactionDay = financialDay(
     transaction.authorizedAt ?? transaction.postedDate?.slice(0, 10),
   );
-  if (!invoiceDay || invoiceDay !== transactionDay)
+  // 發票可能晚開（例如月費刷卡後幾天才開立），前後 MANUAL_LINK_DAY_WINDOW 天內都可連結。
+  if (
+    !invoiceDay ||
+    !transactionDay ||
+    Math.abs(dayIndex(invoiceDay) - dayIndex(transactionDay)) >
+      MANUAL_LINK_DAY_WINDOW
+  )
     throw new MappingDateMismatchError();
 
   const isExpense =
