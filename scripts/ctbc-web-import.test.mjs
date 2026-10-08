@@ -1009,6 +1009,42 @@ test("pageStatementGroup uses captures without curCode only when the month has o
   );
 });
 
+test("collectCtbcPayloads does not apply a capture without curCode to a month with two currencies", async () => {
+  const overview = statementOverview();
+  overview.rsData.billData.USD = {
+    "2026/08": { summary: { billAmt: 10 }, bills: [] },
+  };
+  const lines = [];
+  const { call } = fakeBank({
+    creditCards: overview,
+    monthHandler: () => ({ code: "9999" }),
+  });
+  const result = await collectCtbcPayloads(call, {
+    log: (line) => lines.push(line),
+    pageCardBills: () => [
+      cardBillCapture(
+        RESOURCES.creditCardMonthBills,
+        { month: "2026/08" },
+        { code: "0000", rsData: { bills: [{ merchantChiName: "不明幣別" }] } },
+      ),
+      cardBillCapture(
+        RESOURCES.creditCardMonthBills,
+        { curCode: "TWD", month: "2031/01" },
+        { code: "0000", rsData: { bills: [] } },
+      ),
+    ],
+  });
+  const billData = result.payloads.creditCards.rsData.billData;
+  assert.equal(billData.TWD["2026/08"].bills.length, 0);
+  assert.equal(billData.USD["2026/08"].bills.length, 0);
+  assert.deepEqual(result.statementMonthsUnavailable, [
+    "2026/08",
+    "2026/07",
+    "2026/08",
+  ]);
+  assert.ok(lines.includes("頁面帳單查詢對不上帳單月份或幣別：2031/01/TWD"));
+});
+
 test("collectCtbcPayloads uses page-captured later pages of the latest statement", async () => {
   const overview = statementOverview();
   Object.assign(overview.rsData.billData.TWD["2026/09"], {

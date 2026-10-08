@@ -695,7 +695,6 @@ async function collectStatementDetails(
   const billData = recordValue(responseData(creditCards).billData);
   const unavailableMonths = [];
   const incompleteMonths = [];
-  const matchedCaptures = new Set();
   const billCount = (response) =>
     arrayValue(responseData(response).bills).length;
   const currenciesOf = (month) =>
@@ -709,7 +708,6 @@ async function collectStatementDetails(
     const page = pageStatementGroup(pageCardBills, currency, month, {
       allowMissingCurrency: currenciesOf(month) === 1,
     });
-    if (page) matchedCaptures.add(month);
     let group = hasBills ? target : null;
     const capturedPages = page?.pages ?? new Map();
     if (!group && page?.first) {
@@ -776,11 +774,21 @@ async function collectStatementDetails(
       bills,
     };
   }
-  // 頁面有帳單查詢卻沒對上任何要補的月份時，列出收到的月份與幣別供排查格式差異。
+  // 頁面查到帳單、卻對不上 billData 任何月份或幣別時列出（只有月份與幣別），供真實帳號
+  // 驗收時排查格式差異；看的是不需要補的月份不算。
   const unmatched = pageCardBills.filter(
     (capture) =>
-      ![...matchedCaptures].some((month) =>
-        sameStatementMonth(capture.rqData?.month, month),
+      capture.resource === RESOURCES.creditCardMonthBills &&
+      isResourceSuccess(capture.response) &&
+      Array.isArray(responseData(capture.response).bills) &&
+      !Object.entries(billData).some(
+        ([currency, months]) =>
+          isRecord(months) &&
+          (capture.rqData?.curCode == null ||
+            stringValue(capture.rqData.curCode) === currency) &&
+          Object.keys(months).some((month) =>
+            sameStatementMonth(capture.rqData?.month, month),
+          ),
       ),
   );
   if (unmatched.length > 0) {
@@ -792,9 +800,7 @@ async function collectStatementDetails(
         ),
       ),
     ];
-    log(
-      `頁面帳單查詢中沒用上的月份（不需要補，或不在最近 ${STATEMENT_DETAIL_MONTHS} 期）：${seen.join("、")}`,
-    );
+    log(`頁面帳單查詢對不上帳單月份或幣別：${seen.join("、")}`);
   }
   return { creditCards, unavailableMonths, incompleteMonths };
 }
