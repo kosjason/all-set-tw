@@ -446,7 +446,7 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
   投資交易明細以交易名稱判斷；無法可靠判斷時為 `null`。
 - `roleReason`：判定依據（`override`、`calculation_preference`、`own_account`、`unsynced_card`、
   `auto_transfer`、`card_payment`、`possible_unsynced_card`、`ewallet_topup`、`merchant_rule`、`rule`、
-  `category`、`excluded`、`sign`、`invoice`、`invoice_matched`、`invoice_ambiguous`、`invoice_awaiting_card`、
+  `category`、`excluded`、`sign`、`invoice`、`invoice_matched`、`invoice_learned`、`invoice_ambiguous`、`invoice_awaiting_card`、
   `invoice_voided`、`trade`），只供說明與除錯。`roleReason = excluded` 是舊的「不計入收支」設定
   （角色為 `own_transfer`），與 `excluded` 角色無關。
 
@@ -481,7 +481,9 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
 電子發票：已與交易配對者 `duplicateOf` 指向該交易（金額以交易為準，使用者手動連結時
 `confirmed`）；使用者選「分開記錄」者為 `spending`／`confirmed`；其餘未配對發票為 `spending`。
 候選分數差距不足（`ambiguous`），或 ±3 天內有同金額、仍計為消費且未配對的 TWD 支出時，
-標為 `needs_review`（`invoice_ambiguous`）。信用卡載具發票等待刷卡交易時為
+標為 `needs_review`（`invoice_ambiguous`）。fork：發票金額至少 NT$100 時，刷卡早於發票 0–7 天
+（發票晚開）也算，只載入當日的搜尋不延伸。依學過的晚開商家自動配對者原因為 `invoice_learned`
+（規則見前端文件「發票配對」第 5 步）。信用卡載具發票等待刷卡交易時為
 `invoice_awaiting_card`，超過 10 天才 `needs_review`。電支儲值是移轉、國外交易服務費不是消費本體，
 都不作為發票的重複候選。同一筆消費重複開立的外幣發票（見下節「重複開立」），沒對到付款的那幾張
 `duplicateOf` 指向代表這筆消費的發票（`kind = invoice`）、`needs_review`（`invoice_repeat`），不計入金額。
@@ -542,7 +544,7 @@ NFKC／小寫／空白正規化）、同幣別與原幣金額、且在該組第�
 
 信用卡載具：發票的 `carrier_type` 不是手機條碼／自然人憑證／悠遊卡／一卡通（`NON_CARD_CARRIER_TYPES`），
 且 `carrier_suffix` 為 4 位數字並等於某張已同步信用卡帳戶的 `account_last4` 時，該發票只與這張卡的交易配對，
-日差視窗放寬到 5 天（入帳日可能晚於消費日）。因此載入範圍前後各多 `INVOICE_MATCH_CONTEXT_DAYS`（10）天。
+日差視窗放寬到 5 天（入帳日可能晚於消費日）。因此載入範圍前後各多 `INVOICE_MATCH_CONTEXT_DAYS`（14）天（fork：學過的晚開發票與晚開提醒看刷卡早 0–7 天）。
 
 `matchStatus`（`InvoiceMatchInfo`，另帶 `matchedTransactionId`、`matchScore`、`carrierCardSuffix`、`awaitingOverdue`）：
 
@@ -1339,7 +1341,7 @@ Connector 不得直接寫入金融資料表。
 - 電子發票 durable promotion 使用相同 settings-version guard 保存新發票快照；
   集保使用既有 promotion 與鎖的 run ID。結果發佈與來源結果更新共用 CAS transaction。
 - `reports/activity-detail-service.ts` 在報告結案及手動補救後，以完整同日候選與既有活動配對
-  規則建立展示快照；載入範圍另含前後 `INVOICE_MATCH_CONTEXT_DAYS`（10 天，信用卡載具配對窗 5 天的兩倍），讓唯一性判斷
+  規則建立展示快照；載入範圍另含前後 `INVOICE_MATCH_CONTEXT_DAYS`（14 天，晚開發票視窗 7 天的兩倍），讓唯一性判斷
   看得到所有競爭候選。活動搜尋依命中日期分批載入，缺少鄰近日期，因此只做同日配對
   （`dayWindow: 0`），不做跨日容差配對。交易與發票在來源明細中合併，同批新增資料與活動筆數可不同；
   已配對授權與已入帳交易只呈現一次。跨來源列仍各自說明各來源的變動。

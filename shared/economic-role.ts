@@ -1,6 +1,9 @@
 import {
   INVOICE_MATCH_DAY_WINDOW,
+  invoiceLateByDays,
   invoiceTransactionDayGap,
+  LATE_INVOICE_DAY_WINDOW,
+  LATE_INVOICE_MIN_AMOUNT,
   isForeignTransactionFee,
   isStoredValueTopUp,
   type InvoiceTransactionMatches,
@@ -146,6 +149,8 @@ export type EconomicRoleReason =
   | "sign"
   | "invoice"
   | "invoice_matched"
+  /** 依使用者先前手動連結過的賣方與刷卡商家，與晚開的發票自動配對。 */
+  | "invoice_learned"
   | "invoice_ambiguous"
   /** 發票載具是已同步的信用卡，等待該卡交易同步後合併。 */
   | "invoice_awaiting_card"
@@ -444,7 +449,10 @@ export type RoleTransaction = MatchingTransaction &
  * - 重複開立（配對結果 repeat）：duplicateOf 指向代表這筆消費的發票（已配對者，
  *   沒有付款紀錄時為第一張），needs_review，原因 invoice_repeat，不計入金額。
  * - 其餘未配對：消費；若 ±3 天內有同金額、仍計為消費且未配對的交易
- *   （配對無法唯一決定），標示 needs_review。外幣發票的金額不是台幣，不做此判斷。
+ *   （配對無法唯一決定），標示 needs_review。發票金額至少
+ *   {@link LATE_INVOICE_MIN_AMOUNT} 時，刷卡早於發票 0–{@link LATE_INVOICE_DAY_WINDOW}
+ *   天也算（發票晚開）。dayWindow 為 0（只載入當日的搜尋）時不延伸。外幣發票的
+ *   金額不是台幣，不做此判斷。
  */
 export function deriveInvoiceEconomicRoles<I extends MatchingInvoice>(
   invoices: I[],
@@ -475,7 +483,9 @@ export function deriveInvoiceEconomicRoles<I extends MatchingInvoice>(
       result.set(invoice.id, {
         ...roleFields(
           "spending",
-          "invoice_matched",
+          matches.details?.get(invoice.id)?.learned
+            ? "invoice_learned"
+            : "invoice_matched",
           decision?.decision === "linked" ? "confirmed" : "auto",
         ),
         duplicateOf: { kind: "bank_transaction", id: transactionId },
@@ -499,7 +509,13 @@ export function deriveInvoiceEconomicRoles<I extends MatchingInvoice>(
       unmatchedSpending.some((transaction) => {
         if (Math.abs(transaction.amount) !== invoice.amount) return false;
         const gap = invoiceTransactionDayGap(invoice, transaction);
-        return gap != null && gap <= dayWindow;
+        if (gap != null && gap <= dayWindow) return true;
+        if (dayWindow === 0 || invoice.amount < LATE_INVOICE_MIN_AMOUNT)
+          return false;
+        const lateBy = invoiceLateByDays(invoice, transaction);
+        return (
+          lateBy != null && lateBy >= 0 && lateBy <= LATE_INVOICE_DAY_WINDOW
+        );
       });
     result.set(
       invoice.id,

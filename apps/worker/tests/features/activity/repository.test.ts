@@ -82,7 +82,35 @@ describe("activity repository on D1", () => {
         decision: id === "separate" ? "separate" : "linked",
         createdAt: "created",
         updatedAt: "updated",
+        // 這些連結都是同日（不是發票晚開），不產生學習紀錄。
+        learnedMerchant: null,
       })),
     );
+  });
+
+  it("發票晚開的手動連結帶出學習紀錄（賣方統編、刷卡商家、帳戶）", async () => {
+    const db = harness.binding;
+    await db.batch([
+      db.prepare(
+        "INSERT INTO bank_transactions (id, connector_id, source_id, account_id, authorized_at, posted_date, amount, currency, description, status, created_at, updated_at) VALUES ('late-card', 'test', 'late-card', 'card', '2026-07-24T08:10:00+08:00', '2026-07-26', -596, 'TWD', '虛構電池服務 TAOYUA', 'posted', 't', 't')",
+      ),
+      db.prepare(
+        `INSERT INTO invoices (id, connector_id, source_id, invoice_date, seller_name, amount, raw_payload, created_at, updated_at)
+         VALUES ('late-invoice', 'einvoice', 'late-invoice', '2026-07-30', '虛構能源股份有限公司', 596, '{"invoice":{"sellerBan":"12345678"}}', 'created', 'updated')`,
+      ),
+      db.prepare(
+        "INSERT INTO invoice_transaction_preferences VALUES ('late-invoice', 'late-card', 'linked', 'created', 'updated')",
+      ),
+    ]);
+    const preferences = await listInvoiceTransactionPreferences(db);
+    expect(
+      preferences.find(({ invoiceId }) => invoiceId === "late-invoice"),
+    ).toMatchObject({
+      learnedMerchant: {
+        sellerKey: "ban:12345678",
+        merchantKey: "name:虛構電池服務taoyua",
+        accountId: "card",
+      },
+    });
   });
 });

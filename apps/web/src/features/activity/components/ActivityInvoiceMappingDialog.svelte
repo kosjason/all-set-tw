@@ -44,7 +44,7 @@
   } from "../model/labels";
   import {
     invoiceTransactionDayGap,
-    INVOICE_MATCH_DAY_WINDOW,
+    MANUAL_LINK_DAY_WINDOW,
   } from "@/data/activity/matching";
   import { formatCurrency, formatDate } from "@/shared/format/financial";
 
@@ -152,10 +152,10 @@
             class="rounded-xl border border-dashed border-ink/15 bg-paper p-6 text-center"
           >
             <p class="font-semibold">
-              前後 {INVOICE_MATCH_DAY_WINDOW} 天沒有可配對的支出
+              前後 {MANUAL_LINK_DAY_WINDOW} 天沒有可配對的支出
             </p>
             <p class="mt-1 text-caption text-subtle">
-              只有發票日期前後 {INVOICE_MATCH_DAY_WINDOW} 天內的 TWD 銀行或信用卡支出會列在這裡。
+              只有發票日期前後 {MANUAL_LINK_DAY_WINDOW} 天內的 TWD 銀行或信用卡支出會列在這裡；發票晚開（例如月費刷卡後幾天才開立）也可以連結。
             </p>
           </div>{:else}{#each candidates as transaction (transaction.id)}{@const difference =
               invoiceTransactionDifference(

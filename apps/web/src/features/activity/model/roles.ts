@@ -154,8 +154,10 @@ export function activityRoleReasonLabel(
       return "未配對交易的電子發票，列為消費";
     case "invoice_matched":
       return "已與銀行／信用卡交易配對，金額以交易為準";
+    case "invoice_learned":
+      return "依你先前手動連結過的商家，與晚開的發票自動配對，金額以交易為準";
     case "invoice_ambiguous":
-      return "附近有同金額的交易，無法確定是否為同一筆消費";
+      return "附近有同金額、尚未配對的交易（也可能是發票晚開），無法確定是否為同一筆消費";
     case "invoice_voided":
       return "發票已作廢或註銷，不計入收支";
     case "invoice_repeat":

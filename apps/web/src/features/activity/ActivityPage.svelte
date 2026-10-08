@@ -81,6 +81,7 @@
   import {
     deduplicateBankTransactions,
     invoiceTransactionCandidates,
+    MANUAL_LINK_DAY_WINDOW,
     matchInvoicesToTransactions,
   } from "@/data/activity/matching";
   import { getActivityDataStatus } from "./model/load-status";
@@ -637,6 +638,7 @@
       activityBankTransactions,
       mappingDialog.invoice,
       unavailableTransactionIds,
+      MANUAL_LINK_DAY_WINDOW,
     );
   });
   // 改分類：先改這一筆（個別覆寫），有商家時再詢問是否套用到同商家並記住。
