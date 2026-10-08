@@ -157,7 +157,7 @@ export function activityRoleReasonLabel(
     case "invoice_learned":
       return "依你先前手動連結過的商家，與晚開的發票自動配對，金額以交易為準";
     case "invoice_ambiguous":
-      return "附近有同金額、尚未配對的交易（可能是發票晚開），無法確定是否為同一筆消費";
+      return "附近有同金額、尚未配對的交易（也可能是發票晚開），無法確定是否為同一筆消費";
     case "invoice_voided":
       return "發票已作廢或註銷，不計入收支";
     case "invoice_repeat":

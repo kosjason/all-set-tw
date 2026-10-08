@@ -329,8 +329,25 @@ export function matchInvoicesToTransactions<I extends MatchingInvoice>(
     transactions: new Set<string>(),
   };
   let round = new Map<I[], I>();
+  // 學過的晚開發票（使用者手動連結過的賣方＋刷卡商家＋帳戶）是比日差與金額更強的
+  // 證據，先於一般自動配對，避免附近另一張同額發票先把那筆刷卡配走。
+  assignLearnedLateInvoices(
+    remainingInvoices.filter(
+      (invoice) =>
+        !groupedIds.has(invoice.id) && !isForeignCurrencyInvoice(invoice),
+    ),
+    eligibleTransactions.filter(
+      (transaction) => !transactionToInvoice.has(transaction.id),
+    ),
+    learnedMerchantKeys(preferences),
+    dayWindow === 0 ? 0 : LATE_INVOICE_DAY_WINDOW,
+    carrierSuffixFor,
+    invoiceToTransactionId,
+    transactionToInvoice,
+    details,
+  );
   let pending = remainingInvoices.filter(
-    (invoice) => !groupedIds.has(invoice.id),
+    (invoice) => !groupedIds.has(invoice.id) && !details.has(invoice.id),
   );
   for (const group of repeatGroups) {
     const member = nextMember(group);
@@ -370,23 +387,6 @@ export function matchInvoicesToTransactions<I extends MatchingInvoice>(
     }
     round = next;
   }
-  assignLearnedLateInvoices(
-    remainingInvoices.filter(
-      (invoice) =>
-        !details.has(invoice.id) &&
-        !groupedIds.has(invoice.id) &&
-        !isForeignCurrencyInvoice(invoice),
-    ),
-    eligibleTransactions.filter(
-      (transaction) => !transactionToInvoice.has(transaction.id),
-    ),
-    learnedMerchantKeys(preferences),
-    dayWindow === 0 ? 0 : LATE_INVOICE_DAY_WINDOW,
-    carrierSuffixFor,
-    invoiceToTransactionId,
-    transactionToInvoice,
-    details,
-  );
   for (const invoice of remainingInvoices) {
     if (details.has(invoice.id)) continue;
     details.set(invoice.id, {
@@ -475,8 +475,33 @@ function assignLearnedLateInvoices<I extends MatchingInvoice>(
   details: Map<string, InvoiceMatchDetail>,
 ) {
   if (learned.size === 0 || window === 0) return;
-  const candidates: Array<{ invoice: I; transaction: MatchingTransaction }> =
-    [];
+  // 只看賣方學過的發票；交易依（消費日, 金額）建索引，每張發票只查 0–window 天。
+  const learnedSellers = new Set(
+    [...learned].map((key) => key.slice(0, key.indexOf("\u0000"))),
+  );
+  const targets = invoices.flatMap((invoice) => {
+    const sellerKey = invoiceMerchantIdentity(invoice)?.merchantKey;
+    const invoiceDay = dayNumber(invoice.invoiceDate);
+    return sellerKey &&
+      learnedSellers.has(sellerKey) &&
+      invoiceDay != null &&
+      invoice.amount > 0
+      ? [{ invoice, sellerKey, invoiceDay }]
+      : [];
+  });
+  if (targets.length === 0) return;
+  const amounts = new Set(targets.map(({ invoice }) => invoice.amount));
+  const byDayAmount = new Map<string, MatchingTransaction[]>();
+  for (const transaction of transactions) {
+    const amount = Math.abs(transaction.amount);
+    if (!transaction.accountId || !amounts.has(amount)) continue;
+    const day = outflowDay(transaction);
+    if (day == null) continue;
+    const key = `${day}:${amount}`;
+    const group = byDayAmount.get(key) ?? [];
+    group.push(transaction);
+    byDayAmount.set(key, group);
+  }
   const merchantKeys = new Map<string, string | undefined>();
   const merchantKeyOf = (transaction: MatchingTransaction) => {
     if (!merchantKeys.has(transaction.id))
@@ -486,30 +511,29 @@ function assignLearnedLateInvoices<I extends MatchingInvoice>(
       );
     return merchantKeys.get(transaction.id);
   };
-  for (const invoice of invoices) {
-    const invoiceDay = dayNumber(invoice.invoiceDate);
-    const sellerKey = invoiceMerchantIdentity(invoice)?.merchantKey;
-    if (invoiceDay == null || !sellerKey || !(invoice.amount > 0)) continue;
+  const candidates: Array<{ invoice: I; transaction: MatchingTransaction }> =
+    [];
+  for (const { invoice, sellerKey, invoiceDay } of targets) {
     const carrierSuffix = carrierSuffixFor(invoice);
-    for (const transaction of transactions) {
-      const day = outflowDay(transaction);
-      if (day == null || !transaction.accountId) continue;
-      const lateBy = invoiceDay - day;
-      if (lateBy < 0 || lateBy > window) continue;
-      if (Math.abs(transaction.amount) !== invoice.amount) continue;
-      if (
-        carrierSuffix &&
-        (transaction.accountType !== "credit" ||
-          transaction.accountLast4 !== carrierSuffix)
-      )
-        continue;
-      const merchantKey = merchantKeyOf(transaction);
-      if (
-        merchantKey &&
-        learned.has(learnedKey(sellerKey, transaction.accountId, merchantKey))
-      )
-        candidates.push({ invoice, transaction });
-    }
+    for (let lateBy = 0; lateBy <= window; lateBy += 1)
+      for (const transaction of byDayAmount.get(
+        `${invoiceDay - lateBy}:${invoice.amount}`,
+      ) ?? []) {
+        if (
+          carrierSuffix &&
+          (transaction.accountType !== "credit" ||
+            transaction.accountLast4 !== carrierSuffix)
+        )
+          continue;
+        const merchantKey = merchantKeyOf(transaction);
+        if (
+          merchantKey &&
+          learned.has(
+            learnedKey(sellerKey, transaction.accountId!, merchantKey),
+          )
+        )
+          candidates.push({ invoice, transaction });
+      }
   }
   const invoiceCounts = countBy(candidates, ({ invoice }) => invoice.id);
   const transactionCounts = countBy(

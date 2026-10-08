@@ -273,6 +273,42 @@ describe("學過的商家：晚開發票自動配對", () => {
     expect(roles.get("inv-09")?.roleReason).toBe("invoice");
   });
 
+  it("學過的證據優先於一般自動配對：附近另一張同額發票不會先把刷卡配走", () => {
+    const { matches, roles } = run(
+      [card()],
+      [
+        inv("inv-cash", "2026-09-25", 596, {
+          sellerName: "另一家虛構商店",
+          sellerBan: "87654321",
+        }),
+        invoice(),
+      ],
+      { preferences: [julyLink()] },
+    );
+    expect(matches.invoiceToTransactionId.get("inv-09")).toBe("tx-09");
+    expect(matches.invoiceToTransactionId.has("inv-cash")).toBe(false);
+    expect(roles.get("inv-cash")?.roleReason).toBe("invoice");
+  });
+
+  it("大量資料時學習階段仍是線性成本", () => {
+    const transactions: Tx[] = [];
+    const invoices: ActivityInvoice[] = [];
+    for (let index = 0; index < 2000; index += 1) {
+      const day = `2026-${String(1 + (index % 9)).padStart(2, "0")}-${String(1 + (index % 28)).padStart(2, "0")}`;
+      transactions.push(
+        tx(`t${index}`, day, -(100 + (index % 500)), `虛構商店${index % 50}`),
+      );
+      invoices.push(
+        inv(`i${index}`, day, 100 + ((index * 7) % 500), {
+          sellerBan: index % 3 === 0 ? "12345678" : String(10000000 + index),
+        }),
+      );
+    }
+    const started = performance.now();
+    run(transactions, invoices, { preferences: [julyLink()] });
+    expect(performance.now() - started).toBeLessThan(3000);
+  });
+
   it("輸入順序不影響結果", () => {
     const transactions = [
       card(),

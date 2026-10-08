@@ -557,7 +557,7 @@ function shiftDay(day: string, offset: number) {
 }
 
 /**
- * 以交易所在日期前後各 6 天的發票完成配對後註記 `/api/bank` 的交易，
+ * 以交易所在日期前後 `INVOICE_MATCH_CONTEXT_DAYS` 天的發票完成配對後註記 `/api/bank` 的交易，
  * 讓已配對交易的商家、品項與分類與活動列表一致。
  */
 export async function annotateBankTransactions<

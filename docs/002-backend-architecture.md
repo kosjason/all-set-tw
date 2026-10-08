@@ -446,7 +446,7 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
   投資交易明細以交易名稱判斷；無法可靠判斷時為 `null`。
 - `roleReason`：判定依據（`override`、`calculation_preference`、`own_account`、`unsynced_card`、
   `auto_transfer`、`card_payment`、`possible_unsynced_card`、`ewallet_topup`、`merchant_rule`、`rule`、
-  `category`、`excluded`、`sign`、`invoice`、`invoice_matched`、`invoice_ambiguous`、`invoice_awaiting_card`、
+  `category`、`excluded`、`sign`、`invoice`、`invoice_matched`、`invoice_learned`、`invoice_ambiguous`、`invoice_awaiting_card`、
   `invoice_voided`、`trade`），只供說明與除錯。`roleReason = excluded` 是舊的「不計入收支」設定
   （角色為 `own_transfer`），與 `excluded` 角色無關。
 
