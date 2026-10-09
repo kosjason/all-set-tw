@@ -99,6 +99,7 @@ const RESOURCE_LABELS = {
 function resourceLabel(resource) {
   return RESOURCE_LABELS[resource] ?? "網銀查詢";
 }
+
 const MAX_PAGES = 20;
 const REQUEST_TIMEOUT_MS = 45_000;
 
@@ -1674,6 +1675,91 @@ export class RequestTemplateWatcher {
   }
 }
 
+/**
+ * 登入後的流程：視需要等使用者點開明細頁、等頁面靜止，再唯讀查詢。不論查詢成功、失敗
+ * 或因頁面不靜止而中止，都會登出網銀（登出可重複呼叫；收到中斷訊號時回傳 null）。
+ */
+export async function queryAfterLogin(
+  watcher,
+  session,
+  options,
+  { isAborting = () => false, log = (line) => console.log(line) } = {},
+) {
+  try {
+    if (options.depositWaitSeconds === 0 && !watcher.observedDetailPage) {
+      log(
+        "已偵測到登入。頁面靜止 5 秒後自動開始查詢，不用再點任何地方；完成前請勿操作該視窗。",
+      );
+    }
+    if (options.depositWaitSeconds > 0 && !watcher.observedDetailPage) {
+      log(
+        `已偵測到登入。請在網銀點開要匯入的明細：信用卡「帳單」切到要補明細的月份，或存款帳戶的交易明細；看到明細後工具才開始查詢（最多等 ${formatSeconds(options.depositWaitSeconds)}，沒點也會繼續）。`,
+      );
+      const observed = await watcher.waitForDetailPage(
+        options.depositWaitSeconds * 1_000,
+        isAborting,
+      );
+      if (isAborting()) return null;
+      log(observed ? "已看到明細頁。" : "未偵測到明細頁，改用工具自己的查詢。");
+      if (!observed) {
+        log(
+          `登入後頁面送出的請求：${watcher.pageResources.join("、") || "無"}`,
+        );
+      }
+    }
+    if (watcher.observedDepositQuery) {
+      const captured = await watcher.waitForPageDeposit(15_000, isAborting);
+      if (isAborting()) return null;
+      log(
+        captured
+          ? "已取得存款明細頁的查詢結果。"
+          : "未取得可用的存款明細頁查詢結果。",
+      );
+    }
+    if (watcher.depositEnvelopeDiff) {
+      const { bodyKeys, headerNames, queryNames } = watcher.depositEnvelopeDiff;
+      const list = (values) => (values.length ? values.join("、") : "無");
+      log(
+        `存款明細頁請求與工具的差異：body=${list(bodyKeys)}；標頭=${list(headerNames)}；網址參數=${list(queryNames)}`,
+      );
+    }
+    // 使用者還在操作頁面時不送查詢。看過明細後多等一些，讓使用者切換月份、期間或帳戶
+    // 補舊資料，每次切換的頁面結果都會收下。
+    const quietMs = watcher.observedDetailPage ? 15_000 : 5_000;
+    if (watcher.observedDetailPage) {
+      log(
+        "要補其他月份，可繼續在網銀切換信用卡帳單月份或存款明細期間；停止操作 15 秒後開始查詢。",
+      );
+    }
+    const quiet = await watcher.waitForQuiet(quietMs, 180_000, isAborting);
+    if (isAborting()) return null;
+    if (!quiet) {
+      // 頁面一直有請求時同時查詢會輪替 x-auth-token，實測整批 9994；寧可中止請使用者重來。
+      throw new CtbcWebImportError(
+        "網銀頁面 3 分鐘內一直有操作，工具無法開始查詢（同時查詢會讓網銀判定登入失效）；未匯入任何資料。請重新匯入，登入後不要操作視窗。",
+      );
+    }
+    log("開始唯讀查詢；完成前請勿操作該視窗。");
+
+    return await collectCtbcPayloads(
+      (resource, rqData) => session.call(resource, rqData),
+      {
+        log,
+        observedDepositQuery: () => watcher.observedDepositQuery,
+        pageDeposits: () => watcher.pageDeposits,
+        pageCardBills: () => watcher.pageCardBills,
+      },
+    );
+  } finally {
+    try {
+      const response = await session.logout();
+      log(formatResourceLog(RESOURCES.logout, responseCode(response)));
+    } catch {
+      log(formatResourceLog(RESOURCES.logout, "failed"));
+    }
+  }
+}
+
 /** 在已登入的頁面內以 XHR 發出請求，讓頁面既有的安全機制照常處理。 */
 class PageApiSession {
   #cdp;
@@ -2097,84 +2183,10 @@ async function run(argv) {
     await watcher.waitForTemplate(options.loginTimeoutMinutes * 60_000);
     if (aborting) return 130;
     session = new PageApiSession(browser, watcher);
-    if (options.depositWaitSeconds === 0 && !watcher.observedDetailPage) {
-      console.log(
-        "已偵測到登入。頁面靜止 5 秒後自動開始查詢，不用再點任何地方；完成前請勿操作該視窗。",
-      );
-    }
-    if (options.depositWaitSeconds > 0 && !watcher.observedDetailPage) {
-      console.log(
-        `已偵測到登入。請在網銀點開要匯入的明細：信用卡「帳單」切到要補明細的月份，或存款帳戶的交易明細；看到明細後工具才開始查詢（最多等 ${formatSeconds(options.depositWaitSeconds)}，沒點也會繼續）。`,
-      );
-      const observed = await watcher.waitForDetailPage(
-        options.depositWaitSeconds * 1_000,
-        () => aborting,
-      );
-      if (aborting) return 130;
-      console.log(
-        observed ? "已看到明細頁。" : "未偵測到明細頁，改用工具自己的查詢。",
-      );
-      if (!observed) {
-        console.log(
-          `登入後頁面送出的請求：${watcher.pageResources.join("、") || "無"}`,
-        );
-      }
-    }
-    if (watcher.observedDepositQuery) {
-      const captured = await watcher.waitForPageDeposit(15_000, () => aborting);
-      if (aborting) return 130;
-      console.log(
-        captured
-          ? "已取得存款明細頁的查詢結果。"
-          : "未取得可用的存款明細頁查詢結果。",
-      );
-    }
-    if (watcher.depositEnvelopeDiff) {
-      const { bodyKeys, headerNames, queryNames } = watcher.depositEnvelopeDiff;
-      const list = (values) => (values.length ? values.join("、") : "無");
-      console.log(
-        `存款明細頁請求與工具的差異：body=${list(bodyKeys)}；標頭=${list(headerNames)}；網址參數=${list(queryNames)}`,
-      );
-    }
-    // 使用者還在操作頁面時不送查詢。看過明細後多等一些，讓使用者切換月份、期間或帳戶
-    // 補舊資料，每次切換的頁面結果都會收下。
-    const quietMs = watcher.observedDetailPage ? 15_000 : 5_000;
-    if (watcher.observedDetailPage) {
-      console.log(
-        "要補其他月份，可繼續在網銀切換信用卡帳單月份或存款明細期間；停止操作 15 秒後開始查詢。",
-      );
-    }
-    const quiet = await watcher.waitForQuiet(quietMs, 180_000, () => aborting);
-    if (aborting) return 130;
-    if (!quiet) {
-      // 頁面一直有請求時同時查詢會輪替 x-auth-token，實測整批 9994；寧可中止請使用者重來。
-      throw new CtbcWebImportError(
-        "網銀頁面 3 分鐘內一直有操作，工具無法開始查詢（同時查詢會讓網銀判定登入失效）；未匯入任何資料。請重新匯入，登入後不要操作視窗。",
-      );
-    }
-    console.log("開始唯讀查詢；完成前請勿操作該視窗。");
-
-    let result;
-    try {
-      result = await collectCtbcPayloads(
-        (resource, rqData) => session.call(resource, rqData),
-        {
-          log: (line) => console.log(line),
-          observedDepositQuery: () => watcher.observedDepositQuery,
-          pageDeposits: () => watcher.pageDeposits,
-          pageCardBills: () => watcher.pageCardBills,
-        },
-      );
-    } finally {
-      try {
-        const response = await session.logout();
-        console.log(
-          formatResourceLog(RESOURCES.logout, responseCode(response)),
-        );
-      } catch {
-        console.log(formatResourceLog(RESOURCES.logout, "failed"));
-      }
-    }
+    const result = await queryAfterLogin(watcher, session, options, {
+      isAborting: () => aborting,
+    });
+    if (result === null) return 130;
 
     const summary = summarizePayloads(result);
     console.log(

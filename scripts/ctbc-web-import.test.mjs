@@ -17,6 +17,7 @@ import {
   pageStatementGroup,
   parseArgs,
   prepareFixedProfile,
+  queryAfterLogin,
   userDataDirPattern,
   pickTemplateHeaders,
   redactMessage,
@@ -1487,4 +1488,79 @@ test("RequestTemplateWatcher settles when reading the response body fails", asyn
   assert.equal(await watcher.waitForPageDeposit(300), false);
   assert.equal(await watcher.waitForQuiet(10, 1_000), true);
   assert.equal(watcher.pageDeposits.length, 0);
+});
+
+function fakeLoggedInWatcher(quiet) {
+  return {
+    observedDetailPage: false,
+    observedDepositQuery: null,
+    depositEnvelopeDiff: null,
+    pageResources: [],
+    pageDeposits: [],
+    pageCardBills: [],
+    waitForQuiet: async () => quiet,
+  };
+}
+
+function fakeSession(call = async () => ({ code: "0000" })) {
+  const session = { calls: 0, logouts: 0 };
+  session.call = async (resource, rqData) => {
+    session.calls += 1;
+    return call(resource, rqData);
+  };
+  session.logout = async () => {
+    session.logouts += 1;
+    return { code: "0000" };
+  };
+  return session;
+}
+
+test("queryAfterLogin aborts without querying when the page never settles, and still logs out", async () => {
+  const session = fakeSession();
+  const lines = [];
+  await assert.rejects(
+    queryAfterLogin(
+      fakeLoggedInWatcher(false),
+      session,
+      {
+        depositWaitSeconds: 0,
+      },
+      { log: (line) => lines.push(line) },
+    ),
+    (error) =>
+      error instanceof CtbcWebImportError && /3 分鐘/.test(error.message),
+  );
+  assert.equal(session.calls, 0);
+  assert.equal(session.logouts, 1);
+  assert.ok(lines.some((line) => line.includes("不用再點任何地方")));
+});
+
+test("queryAfterLogin queries right after login by default and logs out once", async () => {
+  const { call } = fakeBank();
+  const session = fakeSession(call);
+  const result = await queryAfterLogin(
+    fakeLoggedInWatcher(true),
+    session,
+    { depositWaitSeconds: 0 },
+    { log: () => {} },
+  );
+  assert.equal(result.payloads.creditCards.code, "0000");
+  assert.ok(session.calls > 0);
+  assert.equal(session.logouts, 1);
+});
+
+test("queryAfterLogin logs out when a query fails", async () => {
+  const session = fakeSession(async () => ({ code: "9992" }));
+  await assert.rejects(
+    queryAfterLogin(
+      fakeLoggedInWatcher(true),
+      session,
+      {
+        depositWaitSeconds: 0,
+      },
+      { log: () => {} },
+    ),
+    /登入已失效/,
+  );
+  assert.equal(session.logouts, 1);
 });
