@@ -28,7 +28,15 @@ export const DEFAULT_WORKER_URL = "http://localhost:8797";
 export const DEFAULT_DEBUG_PORT = 9333;
 export const DEFAULT_LOGIN_URL = "https://www.ctbcbank.com/twrbc/";
 export const DEFAULT_LOGIN_TIMEOUT_MINUTES = 10;
-export const DEFAULT_DEPOSIT_WAIT_SECONDS = 600;
+/**
+ * 登入後預設不等使用者點明細頁，頁面靜止就開始查詢。實測（2026-10）等待期間網銀閒置太久
+ * 會被自動登出，之後查詢一律 9992、整次匯入失敗；信用卡最新一期、未出帳與即時消費工具
+ * 自己就查得到。補舊帳單月份或存款明細時才用 `--deposit-wait` 指定等待秒數。
+ */
+export const DEFAULT_DEPOSIT_WAIT_SECONDS = 0;
+/** 網銀回這些代碼表示登入已失效（閒置被登出，或同時操作網銀造成 token 失效）。 */
+const SESSION_LOST_CODES = new Set(["9992", "9994"]);
+
 const MAX_DEPOSIT_WAIT_SECONDS = 600;
 
 export const EBMW_RESOURCE_PATH =
@@ -68,6 +76,30 @@ const TEMPLATE_HEADER_NAMES = [
 ];
 const DEPOSIT_HISTORY_MONTHS = 3;
 export const STATEMENT_DETAIL_MONTHS = 3;
+
+/**
+ * 錯誤訊息用的查詢名稱。資源路徑（如 `/twrbc-deposit/qu001/010`）會被遮蔽規則當成
+ * token 擋掉，使用者只看到「[redacted]」。
+ */
+const RESOURCE_LABELS = {
+  [RESOURCES.depositOverview]: "存款總覽",
+  [RESOURCES.depositInit]: "存款帳戶",
+  [RESOURCES.depositTransactions]: "存款明細",
+  [RESOURCES.creditCardBills]: "信用卡帳單",
+  [RESOURCES.creditCardMonthBills]: "信用卡帳單月份明細",
+  [RESOURCES.creditCardMonthBillsPage]: "信用卡帳單明細分頁",
+  [RESOURCES.unbilledInit]: "未出帳消費",
+  [RESOURCES.unbilled]: "未出帳消費明細",
+  [RESOURCES.unbilledPage]: "未出帳消費分頁",
+  [RESOURCES.realtime]: "即時消費",
+  [RESOURCES.realtimePage]: "即時消費分頁",
+  [RESOURCES.logout]: "登出",
+};
+
+function resourceLabel(resource) {
+  return RESOURCE_LABELS[resource] ?? "網銀查詢";
+}
+
 const MAX_PAGES = 20;
 const REQUEST_TIMEOUT_MS = 45_000;
 
@@ -192,9 +224,10 @@ export const USAGE = `用法：node scripts/ctbc-web-import.mjs [選項]
   --timeout <分鐘>    等待登入的時間（預設 ${DEFAULT_LOGIN_TIMEOUT_MINUTES}）
   --profile <目錄>    使用固定的 Chrome profile（絕對路徑），結束後保留，可在其中安裝
                       密碼管理器；未指定時使用暫存 profile 並於結束時刪除
-  --deposit-wait <秒> 登入後等使用者在網銀點開明細（信用卡帳單月份或存款交易明細）
-                      的秒數；看到明細才開始查詢，逾時照常繼續
-                      （預設 ${DEFAULT_DEPOSIT_WAIT_SECONDS}，0 表示不等待）
+  --deposit-wait <秒> 補舊帳單月份或存款明細時才用：登入後等使用者在網銀點開明細
+                      （信用卡帳單月份或存款交易明細）的秒數，看到明細才開始查詢，
+                      逾時照常繼續。網銀閒置約 10 分鐘會自動登出，建議 300 以內
+                      （預設 ${DEFAULT_DEPOSIT_WAIT_SECONDS}：登入後頁面靜止就開始查詢）
   --dry-run           只查詢並顯示筆數，不送到 Worker
 
 環境變數 CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET：Worker 受 Cloudflare Access
@@ -565,6 +598,8 @@ export async function collectCtbcPayloads(call, options = {}) {
   const observedDepositQuery = options.observedDepositQuery ?? (() => null);
   const pageDeposits = options.pageDeposits ?? (() => []);
   const pageCardBills = options.pageCardBills ?? (() => []);
+  /** 沒有頁面存款明細時也重送（只供測試查詢策略；實測重送一律 H404）。 */
+  const alwaysReplayDeposits = options.alwaysReplayDeposits === true;
 
   const request = async (resource, rqData, countOf) => {
     const response = await call(resource, rqData);
@@ -575,8 +610,11 @@ export async function collectCtbcPayloads(call, options = {}) {
   const required = async (resource, rqData, countOf) => {
     const response = await request(resource, rqData, countOf);
     if (!isResourceSuccess(response)) {
+      const code = responseCode(response);
       throw new CtbcWebImportError(
-        `${resource} 查詢失敗（code=${responseCode(response)}），未匯入任何資料。`,
+        SESSION_LOST_CODES.has(code)
+          ? `中信網銀登入已失效（code=${code}），可能是登入後閒置太久被自動登出，或同時在操作網銀；未匯入任何資料。請重新匯入，登入後不要操作視窗。`
+          : `中信網銀查詢「${resourceLabel(resource)}」失敗（code=${code}），未匯入任何資料。`,
       );
     }
     return response;
@@ -590,7 +628,7 @@ export async function collectCtbcPayloads(call, options = {}) {
   const deposit = await collectDepositTransactions(
     request,
     extractDepositAccounts(depositOverview),
-    { now, observedDepositQuery, pageDeposits, log },
+    { now, observedDepositQuery, pageDeposits, alwaysReplayDeposits, log },
   );
   const creditCardOverview = await required(RESOURCES.creditCardBills, {});
   const statements = await collectStatementDetails(
@@ -814,7 +852,7 @@ function pick(value, keys) {
 async function collectDepositTransactions(
   request,
   accounts,
-  { now, observedDepositQuery, pageDeposits, log },
+  { now, observedDepositQuery, pageDeposits, alwaysReplayDeposits, log },
 ) {
   const transactions = [];
   let workingStrategy = null;
@@ -830,6 +868,13 @@ async function collectDepositTransactions(
       accounts.map((account) => account.accountId),
       { anyAccount: true },
     ).length > 0;
+  // 使用者這次沒在網銀點開存款明細：不重送注定 H404 的查詢（每個帳戶十幾個請求，排在
+  // 信用卡查詢之前，徒增時間與風控風險），只更新餘額，也不帶「部分資料未取得」警告。
+  if (!pageSeen && observedDepositQuery() == null && !alwaysReplayDeposits) {
+    if (accounts.length > 0)
+      log("存款明細：這次沒有在網銀點開存款明細，只更新存款餘額。");
+    return { transactions: [], unavailable: false, strategy: null };
+  }
 
   for (const { accountId, balance } of accounts) {
     const firstInit = await request(RESOURCES.depositInit, { accountId });
@@ -1630,6 +1675,91 @@ export class RequestTemplateWatcher {
   }
 }
 
+/**
+ * 登入後的流程：視需要等使用者點開明細頁、等頁面靜止，再唯讀查詢。不論查詢成功、失敗
+ * 或因頁面不靜止而中止，都會登出網銀（登出可重複呼叫；收到中斷訊號時回傳 null）。
+ */
+export async function queryAfterLogin(
+  watcher,
+  session,
+  options,
+  { isAborting = () => false, log = (line) => console.log(line) } = {},
+) {
+  try {
+    if (options.depositWaitSeconds === 0 && !watcher.observedDetailPage) {
+      log(
+        "已偵測到登入。頁面靜止 5 秒後自動開始查詢，不用再點任何地方；完成前請勿操作該視窗。",
+      );
+    }
+    if (options.depositWaitSeconds > 0 && !watcher.observedDetailPage) {
+      log(
+        `已偵測到登入。請在網銀點開要匯入的明細：信用卡「帳單」切到要補明細的月份，或存款帳戶的交易明細；看到明細後工具才開始查詢（最多等 ${formatSeconds(options.depositWaitSeconds)}，沒點也會繼續）。`,
+      );
+      const observed = await watcher.waitForDetailPage(
+        options.depositWaitSeconds * 1_000,
+        isAborting,
+      );
+      if (isAborting()) return null;
+      log(observed ? "已看到明細頁。" : "未偵測到明細頁，改用工具自己的查詢。");
+      if (!observed) {
+        log(
+          `登入後頁面送出的請求：${watcher.pageResources.join("、") || "無"}`,
+        );
+      }
+    }
+    if (watcher.observedDepositQuery) {
+      const captured = await watcher.waitForPageDeposit(15_000, isAborting);
+      if (isAborting()) return null;
+      log(
+        captured
+          ? "已取得存款明細頁的查詢結果。"
+          : "未取得可用的存款明細頁查詢結果。",
+      );
+    }
+    if (watcher.depositEnvelopeDiff) {
+      const { bodyKeys, headerNames, queryNames } = watcher.depositEnvelopeDiff;
+      const list = (values) => (values.length ? values.join("、") : "無");
+      log(
+        `存款明細頁請求與工具的差異：body=${list(bodyKeys)}；標頭=${list(headerNames)}；網址參數=${list(queryNames)}`,
+      );
+    }
+    // 使用者還在操作頁面時不送查詢。看過明細後多等一些，讓使用者切換月份、期間或帳戶
+    // 補舊資料，每次切換的頁面結果都會收下。
+    const quietMs = watcher.observedDetailPage ? 15_000 : 5_000;
+    if (watcher.observedDetailPage) {
+      log(
+        "要補其他月份，可繼續在網銀切換信用卡帳單月份或存款明細期間；停止操作 15 秒後開始查詢。",
+      );
+    }
+    const quiet = await watcher.waitForQuiet(quietMs, 180_000, isAborting);
+    if (isAborting()) return null;
+    if (!quiet) {
+      // 頁面一直有請求時同時查詢會輪替 x-auth-token，實測整批 9994；寧可中止請使用者重來。
+      throw new CtbcWebImportError(
+        "網銀頁面 3 分鐘內一直有操作，工具無法開始查詢（同時查詢會讓網銀判定登入失效）；未匯入任何資料。請重新匯入，登入後不要操作視窗。",
+      );
+    }
+    log("開始唯讀查詢；完成前請勿操作該視窗。");
+
+    return await collectCtbcPayloads(
+      (resource, rqData) => session.call(resource, rqData),
+      {
+        log,
+        observedDepositQuery: () => watcher.observedDepositQuery,
+        pageDeposits: () => watcher.pageDeposits,
+        pageCardBills: () => watcher.pageCardBills,
+      },
+    );
+  } finally {
+    try {
+      const response = await session.logout();
+      log(formatResourceLog(RESOURCES.logout, responseCode(response)));
+    } catch {
+      log(formatResourceLog(RESOURCES.logout, "failed"));
+    }
+  }
+}
+
 /** 在已登入的頁面內以 XHR 發出請求，讓頁面既有的安全機制照常處理。 */
 class PageApiSession {
   #cdp;
@@ -1688,12 +1818,14 @@ class PageApiSession {
       REQUEST_TIMEOUT_MS + 15_000,
     );
     if (evaluated.exceptionDetails) {
-      throw new CtbcWebImportError(`${resource} 頁面內請求失敗。`);
+      throw new CtbcWebImportError(
+        `「${resourceLabel(resource)}」頁面內請求失敗。`,
+      );
     }
     const result = evaluated.result?.value;
     if (!isRecord(result) || result.status !== 200) {
       throw new CtbcWebImportError(
-        `${resource} 請求失敗（HTTP ${isRecord(result) ? Number(result.status) || 0 : 0}）。`,
+        `「${resourceLabel(resource)}」請求失敗（HTTP ${isRecord(result) ? Number(result.status) || 0 : 0}）。`,
       );
     }
     // 回應 token 已由 Network.responseReceived 依抵達順序記錄；這裡只在沒有追蹤到任何
@@ -1712,7 +1844,7 @@ class PageApiSession {
       // Fall through.
     }
     throw new CtbcWebImportError(
-      `${resource} 回應不是預期格式（可能已登出或被安全機制阻擋），未匯入任何資料。`,
+      `「${resourceLabel(resource)}」回應不是預期格式（可能已登出或被安全機制阻擋），未匯入任何資料。`,
     );
   }
 }
@@ -2051,74 +2183,10 @@ async function run(argv) {
     await watcher.waitForTemplate(options.loginTimeoutMinutes * 60_000);
     if (aborting) return 130;
     session = new PageApiSession(browser, watcher);
-    if (options.depositWaitSeconds > 0 && !watcher.observedDetailPage) {
-      console.log(
-        `已偵測到登入。請在網銀點開要匯入的明細：信用卡「帳單」切到要補明細的月份，或存款帳戶的交易明細；看到明細後工具才開始查詢（最多等 ${formatSeconds(options.depositWaitSeconds)}，沒點也會繼續）。`,
-      );
-      const observed = await watcher.waitForDetailPage(
-        options.depositWaitSeconds * 1_000,
-        () => aborting,
-      );
-      if (aborting) return 130;
-      console.log(
-        observed ? "已看到明細頁。" : "未偵測到明細頁，改用工具自己的查詢。",
-      );
-      if (!observed) {
-        console.log(
-          `登入後頁面送出的請求：${watcher.pageResources.join("、") || "無"}`,
-        );
-      }
-    }
-    if (watcher.observedDepositQuery) {
-      const captured = await watcher.waitForPageDeposit(15_000, () => aborting);
-      if (aborting) return 130;
-      console.log(
-        captured
-          ? "已取得存款明細頁的查詢結果。"
-          : "未取得可用的存款明細頁查詢結果。",
-      );
-    }
-    if (watcher.depositEnvelopeDiff) {
-      const { bodyKeys, headerNames, queryNames } = watcher.depositEnvelopeDiff;
-      const list = (values) => (values.length ? values.join("、") : "無");
-      console.log(
-        `存款明細頁請求與工具的差異：body=${list(bodyKeys)}；標頭=${list(headerNames)}；網址參數=${list(queryNames)}`,
-      );
-    }
-    // 使用者還在操作頁面時不送查詢。看過明細後多等一些，讓使用者切換月份、期間或帳戶
-    // 補舊資料，每次切換的頁面結果都會收下。
-    const quietMs = watcher.observedDetailPage ? 15_000 : 5_000;
-    if (watcher.observedDetailPage) {
-      console.log(
-        "要補其他月份，可繼續在網銀切換信用卡帳單月份或存款明細期間；停止操作 15 秒後開始查詢。",
-      );
-    }
-    const quiet = await watcher.waitForQuiet(quietMs, 180_000, () => aborting);
-    if (aborting) return 130;
-    if (!quiet && !aborting) console.log("頁面持續有請求，仍開始查詢。");
-    console.log("開始唯讀查詢；完成前請勿操作該視窗。");
-
-    let result;
-    try {
-      result = await collectCtbcPayloads(
-        (resource, rqData) => session.call(resource, rqData),
-        {
-          log: (line) => console.log(line),
-          observedDepositQuery: () => watcher.observedDepositQuery,
-          pageDeposits: () => watcher.pageDeposits,
-          pageCardBills: () => watcher.pageCardBills,
-        },
-      );
-    } finally {
-      try {
-        const response = await session.logout();
-        console.log(
-          formatResourceLog(RESOURCES.logout, responseCode(response)),
-        );
-      } catch {
-        console.log(formatResourceLog(RESOURCES.logout, "failed"));
-      }
-    }
+    const result = await queryAfterLogin(watcher, session, options, {
+      isAborting: () => aborting,
+    });
+    if (result === null) return 130;
 
     const summary = summarizePayloads(result);
     console.log(

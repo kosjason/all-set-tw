@@ -17,6 +17,7 @@ import {
   pageStatementGroup,
   parseArgs,
   prepareFixedProfile,
+  queryAfterLogin,
   userDataDirPattern,
   pickTemplateHeaders,
   redactMessage,
@@ -69,7 +70,7 @@ test("parseArgs applies defaults and validates options", () => {
     loginUrl: "https://www.ctbcbank.com/twrbc/",
     loginTimeoutMinutes: 10,
     profileDir: undefined,
-    depositWaitSeconds: 600,
+    depositWaitSeconds: 0,
     dryRun: false,
     help: false,
     accessClientId: undefined,
@@ -385,12 +386,34 @@ function fakeBank({
   return { call, calls };
 }
 
+test("collectCtbcPayloads skips deposit details the user did not open, without a warning", async () => {
+  const lines = [];
+  const { call, calls } = fakeBank();
+  const result = await collectCtbcPayloads(call, {
+    log: (line) => lines.push(line),
+  });
+  assert.equal(result.depositTransactionsUnavailable, false);
+  assert.deepEqual(result.payloads.depositTransactions, {
+    rsData: { detailList: [] },
+  });
+  assert.ok(
+    !calls.some((entry) =>
+      [RESOURCES.depositInit, RESOURCES.depositTransactions].includes(
+        entry.resource,
+      ),
+    ),
+  );
+  assert.equal(result.payloads.creditCards.code, "0000");
+  assert.ok(lines.some((line) => line.includes("只更新存款餘額")));
+});
+
 test("collectCtbcPayloads marks deposit transactions unavailable when every strategy fails", async () => {
   const lines = [];
   const { call, calls } = fakeBank();
   const result = await collectCtbcPayloads(call, {
     log: (line) => lines.push(line),
     now: new Date("2026-09-26T04:00:00.000Z"),
+    alwaysReplayDeposits: true,
   });
 
   assert.equal(result.depositTransactionsUnavailable, true);
@@ -450,6 +473,7 @@ test("collectCtbcPayloads uses the first working strategy and tags source accoun
 
   const result = await collectCtbcPayloads(call, {
     now: new Date("2026-09-26T04:00:00.000Z"),
+    alwaysReplayDeposits: true,
   });
 
   assert.equal(result.depositTransactionsUnavailable, false);
@@ -592,9 +616,10 @@ test("collectCtbcPayloads skips every replay once the page showed deposits", asy
   });
   assert.equal(withBalance.depositTransactionsUnavailable, true);
 
-  // 全部帳戶都沒取得時，即使餘額都是 0 也要警告。
+  // 使用者點開過存款明細、但全部帳戶都沒取得時，即使餘額都是 0 也要警告。
   const nothing = await collectCtbcPayloads(
     fakeBank({ balances: ["0", "NT$ 0"] }).call,
+    { observedDepositQuery: () => ({ accountId: ACCOUNT_A, type: "m0" }) },
   );
   assert.equal(nothing.depositTransactionsUnavailable, true);
 });
@@ -690,11 +715,27 @@ test("describeEnvelopeDiff reports field names without values", () => {
   }
 });
 
+test("collectCtbcPayloads explains an expired login instead of printing the resource path", async () => {
+  for (const code of ["9992", "9994"]) {
+    const error = await collectCtbcPayloads(async () => ({ code })).catch(
+      (cause) => cause,
+    );
+    assert.ok(error instanceof CtbcWebImportError);
+    assert.match(error.message, /登入已失效/);
+    assert.equal(redactMessage(error.message), error.message);
+  }
+  const other = await collectCtbcPayloads(async () => ({ code: "E001" })).catch(
+    (cause) => cause,
+  );
+  assert.match(other.message, /「存款總覽」失敗（code=E001）/);
+  assert.equal(redactMessage(other.message), other.message);
+});
+
 test("collectCtbcPayloads stops without importing when a required resource fails", async () => {
   const { call } = fakeBank({ failResource: RESOURCES.creditCardBills });
   await assert.rejects(collectCtbcPayloads(call), (error) => {
     assert.ok(error instanceof CtbcWebImportError);
-    assert.match(error.message, /\/twrbc-card\/qu002\/010.*code=9991/);
+    assert.match(error.message, /「信用卡帳單」失敗（code=9991）/);
     assert.ok(!error.message.includes("未提供"));
     assert.ok(!error.message.includes(ACCOUNT_A));
     return true;
@@ -1447,4 +1488,113 @@ test("RequestTemplateWatcher settles when reading the response body fails", asyn
   assert.equal(await watcher.waitForPageDeposit(300), false);
   assert.equal(await watcher.waitForQuiet(10, 1_000), true);
   assert.equal(watcher.pageDeposits.length, 0);
+});
+
+function fakeLoggedInWatcher(quiet) {
+  return {
+    observedDetailPage: false,
+    observedDepositQuery: null,
+    depositEnvelopeDiff: null,
+    pageResources: [],
+    pageDeposits: [],
+    pageCardBills: [],
+    waitForQuiet: async () => quiet,
+  };
+}
+
+function fakeSession(call = async () => ({ code: "0000" })) {
+  const session = { calls: 0, logouts: 0 };
+  session.call = async (resource, rqData) => {
+    session.calls += 1;
+    return call(resource, rqData);
+  };
+  session.logout = async () => {
+    session.logouts += 1;
+    return { code: "0000" };
+  };
+  return session;
+}
+
+test("queryAfterLogin aborts without querying when the page never settles, and still logs out", async () => {
+  const session = fakeSession();
+  const lines = [];
+  await assert.rejects(
+    queryAfterLogin(
+      fakeLoggedInWatcher(false),
+      session,
+      {
+        depositWaitSeconds: 0,
+      },
+      { log: (line) => lines.push(line) },
+    ),
+    (error) =>
+      error instanceof CtbcWebImportError && /3 分鐘/.test(error.message),
+  );
+  assert.equal(session.calls, 0);
+  assert.equal(session.logouts, 1);
+  assert.ok(lines.some((line) => line.includes("不用再點任何地方")));
+});
+
+test("queryAfterLogin queries right after login by default and logs out once", async () => {
+  const { call } = fakeBank();
+  const session = fakeSession(call);
+  const result = await queryAfterLogin(
+    fakeLoggedInWatcher(true),
+    session,
+    { depositWaitSeconds: 0 },
+    { log: () => {} },
+  );
+  assert.equal(result.payloads.creditCards.code, "0000");
+  assert.ok(session.calls > 0);
+  assert.equal(session.logouts, 1);
+});
+
+test("queryAfterLogin logs out when a query fails", async () => {
+  const session = fakeSession(async () => ({ code: "9992" }));
+  await assert.rejects(
+    queryAfterLogin(
+      fakeLoggedInWatcher(true),
+      session,
+      {
+        depositWaitSeconds: 0,
+      },
+      { log: () => {} },
+    ),
+    /登入已失效/,
+  );
+  assert.equal(session.logouts, 1);
+});
+
+test("queryAfterLogin returns null when interrupted and shares the signal handler's logout", async () => {
+  let sent = 0;
+  let pending = null;
+  const session = {
+    call: async () => ({ code: "0000" }),
+    // 與 PageApiSession 相同：重複呼叫共用同一次登出請求。
+    logout() {
+      pending ??= Promise.resolve().then(() => {
+        sent += 1;
+        return { code: "0000" };
+      });
+      return pending;
+    },
+  };
+  let aborting = false;
+  const watcher = {
+    ...fakeLoggedInWatcher(true),
+    waitForQuiet: async () => {
+      // 訊號處理先登出，等待函式再看到中斷。
+      aborting = true;
+      await session.logout();
+      return false;
+    },
+  };
+  const result = await queryAfterLogin(
+    watcher,
+    session,
+    { depositWaitSeconds: 0 },
+    { isAborting: () => aborting, log: () => {} },
+  );
+  assert.equal(result, null);
+  assert.equal(sent, 1);
 });

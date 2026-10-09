@@ -20,7 +20,7 @@
   const status = createQuery(ctbcWebImportQuery(() => api));
   let error = $state("");
   const RUNNING_HINT =
-    "mini 上已開好中信網銀視窗：請在 30 分鐘內登入，到信用卡「帳單」切到要補明細的月份（需要存款明細再點存款帳戶「交易明細」），看到明細後停手 15 秒，工具會自動匯入信用卡帳單、未出帳與即時消費。";
+    "mini 上已開好中信網銀視窗：請在 30 分鐘內登入。登入後不用再點任何地方，工具會自動匯入信用卡帳單、未出帳與即時消費；完成前請勿操作視窗，完成會發 TG 通知。";
 
   const start = createMutation({
     mutationFn: () =>
