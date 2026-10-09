@@ -385,12 +385,34 @@ function fakeBank({
   return { call, calls };
 }
 
+test("collectCtbcPayloads skips deposit details the user did not open, without a warning", async () => {
+  const lines = [];
+  const { call, calls } = fakeBank();
+  const result = await collectCtbcPayloads(call, {
+    log: (line) => lines.push(line),
+  });
+  assert.equal(result.depositTransactionsUnavailable, false);
+  assert.deepEqual(result.payloads.depositTransactions, {
+    rsData: { detailList: [] },
+  });
+  assert.ok(
+    !calls.some((entry) =>
+      [RESOURCES.depositInit, RESOURCES.depositTransactions].includes(
+        entry.resource,
+      ),
+    ),
+  );
+  assert.equal(result.payloads.creditCards.code, "0000");
+  assert.ok(lines.some((line) => line.includes("只更新存款餘額")));
+});
+
 test("collectCtbcPayloads marks deposit transactions unavailable when every strategy fails", async () => {
   const lines = [];
   const { call, calls } = fakeBank();
   const result = await collectCtbcPayloads(call, {
     log: (line) => lines.push(line),
     now: new Date("2026-09-26T04:00:00.000Z"),
+    alwaysReplayDeposits: true,
   });
 
   assert.equal(result.depositTransactionsUnavailable, true);
@@ -450,6 +472,7 @@ test("collectCtbcPayloads uses the first working strategy and tags source accoun
 
   const result = await collectCtbcPayloads(call, {
     now: new Date("2026-09-26T04:00:00.000Z"),
+    alwaysReplayDeposits: true,
   });
 
   assert.equal(result.depositTransactionsUnavailable, false);
@@ -592,9 +615,10 @@ test("collectCtbcPayloads skips every replay once the page showed deposits", asy
   });
   assert.equal(withBalance.depositTransactionsUnavailable, true);
 
-  // 全部帳戶都沒取得時，即使餘額都是 0 也要警告。
+  // 使用者點開過存款明細、但全部帳戶都沒取得時，即使餘額都是 0 也要警告。
   const nothing = await collectCtbcPayloads(
     fakeBank({ balances: ["0", "NT$ 0"] }).call,
+    { observedDepositQuery: () => ({ accountId: ACCOUNT_A, type: "m0" }) },
   );
   assert.equal(nothing.depositTransactionsUnavailable, true);
 });

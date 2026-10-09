@@ -36,14 +36,7 @@ export const DEFAULT_LOGIN_TIMEOUT_MINUTES = 10;
 export const DEFAULT_DEPOSIT_WAIT_SECONDS = 0;
 /** 網銀回這些代碼表示登入已失效（閒置被登出，或同時操作網銀造成 token 失效）。 */
 const SESSION_LOST_CODES = new Set(["9992", "9994"]);
-/** 錯誤訊息用的查詢名稱（資源路徑會被遮蔽規則擋掉，使用者看不懂）。 */
-const RESOURCE_LABELS = {
-  "/twrbc-deposit/qu001/010": "存款總覽",
-  "/twrbc-card/qu002/010": "信用卡帳單",
-  "/twrbc-card/qu006/010": "未出帳消費",
-  "/twrbc-card/qu006/011": "未出帳消費明細",
-  "/twrbc-card/qu041/010": "即時消費",
-};
+
 const MAX_DEPOSIT_WAIT_SECONDS = 600;
 
 export const EBMW_RESOURCE_PATH =
@@ -83,6 +76,29 @@ const TEMPLATE_HEADER_NAMES = [
 ];
 const DEPOSIT_HISTORY_MONTHS = 3;
 export const STATEMENT_DETAIL_MONTHS = 3;
+
+/**
+ * 錯誤訊息用的查詢名稱。資源路徑（如 `/twrbc-deposit/qu001/010`）會被遮蔽規則當成
+ * token 擋掉，使用者只看到「[redacted]」。
+ */
+const RESOURCE_LABELS = {
+  [RESOURCES.depositOverview]: "存款總覽",
+  [RESOURCES.depositInit]: "存款帳戶",
+  [RESOURCES.depositTransactions]: "存款明細",
+  [RESOURCES.creditCardBills]: "信用卡帳單",
+  [RESOURCES.creditCardMonthBills]: "信用卡帳單月份明細",
+  [RESOURCES.creditCardMonthBillsPage]: "信用卡帳單明細分頁",
+  [RESOURCES.unbilledInit]: "未出帳消費",
+  [RESOURCES.unbilled]: "未出帳消費明細",
+  [RESOURCES.unbilledPage]: "未出帳消費分頁",
+  [RESOURCES.realtime]: "即時消費",
+  [RESOURCES.realtimePage]: "即時消費分頁",
+  [RESOURCES.logout]: "登出",
+};
+
+function resourceLabel(resource) {
+  return RESOURCE_LABELS[resource] ?? "網銀查詢";
+}
 const MAX_PAGES = 20;
 const REQUEST_TIMEOUT_MS = 45_000;
 
@@ -581,6 +597,8 @@ export async function collectCtbcPayloads(call, options = {}) {
   const observedDepositQuery = options.observedDepositQuery ?? (() => null);
   const pageDeposits = options.pageDeposits ?? (() => []);
   const pageCardBills = options.pageCardBills ?? (() => []);
+  /** 沒有頁面存款明細時也重送（只供測試查詢策略；實測重送一律 H404）。 */
+  const alwaysReplayDeposits = options.alwaysReplayDeposits === true;
 
   const request = async (resource, rqData, countOf) => {
     const response = await call(resource, rqData);
@@ -595,7 +613,7 @@ export async function collectCtbcPayloads(call, options = {}) {
       throw new CtbcWebImportError(
         SESSION_LOST_CODES.has(code)
           ? `中信網銀登入已失效（code=${code}），可能是登入後閒置太久被自動登出，或同時在操作網銀；未匯入任何資料。請重新匯入，登入後不要操作視窗。`
-          : `中信網銀查詢「${RESOURCE_LABELS[resource] ?? "必要資料"}」失敗（code=${code}），未匯入任何資料。`,
+          : `中信網銀查詢「${resourceLabel(resource)}」失敗（code=${code}），未匯入任何資料。`,
       );
     }
     return response;
@@ -609,7 +627,7 @@ export async function collectCtbcPayloads(call, options = {}) {
   const deposit = await collectDepositTransactions(
     request,
     extractDepositAccounts(depositOverview),
-    { now, observedDepositQuery, pageDeposits, log },
+    { now, observedDepositQuery, pageDeposits, alwaysReplayDeposits, log },
   );
   const creditCardOverview = await required(RESOURCES.creditCardBills, {});
   const statements = await collectStatementDetails(
@@ -833,7 +851,7 @@ function pick(value, keys) {
 async function collectDepositTransactions(
   request,
   accounts,
-  { now, observedDepositQuery, pageDeposits, log },
+  { now, observedDepositQuery, pageDeposits, alwaysReplayDeposits, log },
 ) {
   const transactions = [];
   let workingStrategy = null;
@@ -849,6 +867,13 @@ async function collectDepositTransactions(
       accounts.map((account) => account.accountId),
       { anyAccount: true },
     ).length > 0;
+  // 使用者這次沒在網銀點開存款明細：不重送注定 H404 的查詢（每個帳戶十幾個請求，排在
+  // 信用卡查詢之前，徒增時間與風控風險），只更新餘額，也不帶「部分資料未取得」警告。
+  if (!pageSeen && observedDepositQuery() == null && !alwaysReplayDeposits) {
+    if (accounts.length > 0)
+      log("存款明細：這次沒有在網銀點開存款明細，只更新存款餘額。");
+    return { transactions: [], unavailable: false, strategy: null };
+  }
 
   for (const { accountId, balance } of accounts) {
     const firstInit = await request(RESOURCES.depositInit, { accountId });
@@ -1707,12 +1732,14 @@ class PageApiSession {
       REQUEST_TIMEOUT_MS + 15_000,
     );
     if (evaluated.exceptionDetails) {
-      throw new CtbcWebImportError(`${resource} 頁面內請求失敗。`);
+      throw new CtbcWebImportError(
+        `「${resourceLabel(resource)}」頁面內請求失敗。`,
+      );
     }
     const result = evaluated.result?.value;
     if (!isRecord(result) || result.status !== 200) {
       throw new CtbcWebImportError(
-        `${resource} 請求失敗（HTTP ${isRecord(result) ? Number(result.status) || 0 : 0}）。`,
+        `「${resourceLabel(resource)}」請求失敗（HTTP ${isRecord(result) ? Number(result.status) || 0 : 0}）。`,
       );
     }
     // 回應 token 已由 Network.responseReceived 依抵達順序記錄；這裡只在沒有追蹤到任何
@@ -1731,7 +1758,7 @@ class PageApiSession {
       // Fall through.
     }
     throw new CtbcWebImportError(
-      `${resource} 回應不是預期格式（可能已登出或被安全機制阻擋），未匯入任何資料。`,
+      `「${resourceLabel(resource)}」回應不是預期格式（可能已登出或被安全機制阻擋），未匯入任何資料。`,
     );
   }
 }
@@ -2070,7 +2097,7 @@ async function run(argv) {
     await watcher.waitForTemplate(options.loginTimeoutMinutes * 60_000);
     if (aborting) return 130;
     session = new PageApiSession(browser, watcher);
-    if (options.depositWaitSeconds === 0) {
+    if (options.depositWaitSeconds === 0 && !watcher.observedDetailPage) {
       console.log(
         "已偵測到登入。頁面靜止 5 秒後自動開始查詢，不用再點任何地方；完成前請勿操作該視窗。",
       );
@@ -2119,7 +2146,12 @@ async function run(argv) {
     }
     const quiet = await watcher.waitForQuiet(quietMs, 180_000, () => aborting);
     if (aborting) return 130;
-    if (!quiet && !aborting) console.log("頁面持續有請求，仍開始查詢。");
+    if (!quiet) {
+      // 頁面一直有請求時同時查詢會輪替 x-auth-token，實測整批 9994；寧可中止請使用者重來。
+      throw new CtbcWebImportError(
+        "網銀頁面 3 分鐘內一直有操作，工具無法開始查詢（同時查詢會讓網銀判定登入失效）；未匯入任何資料。請重新匯入，登入後不要操作視窗。",
+      );
+    }
     console.log("開始唯讀查詢；完成前請勿操作該視窗。");
 
     let result;
