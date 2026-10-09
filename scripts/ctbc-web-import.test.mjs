@@ -69,7 +69,7 @@ test("parseArgs applies defaults and validates options", () => {
     loginUrl: "https://www.ctbcbank.com/twrbc/",
     loginTimeoutMinutes: 10,
     profileDir: undefined,
-    depositWaitSeconds: 600,
+    depositWaitSeconds: 0,
     dryRun: false,
     help: false,
     accessClientId: undefined,
@@ -690,11 +690,27 @@ test("describeEnvelopeDiff reports field names without values", () => {
   }
 });
 
+test("collectCtbcPayloads explains an expired login instead of printing the resource path", async () => {
+  for (const code of ["9992", "9994"]) {
+    const error = await collectCtbcPayloads(async () => ({ code })).catch(
+      (cause) => cause,
+    );
+    assert.ok(error instanceof CtbcWebImportError);
+    assert.match(error.message, /登入已失效/);
+    assert.equal(redactMessage(error.message), error.message);
+  }
+  const other = await collectCtbcPayloads(async () => ({ code: "E001" })).catch(
+    (cause) => cause,
+  );
+  assert.match(other.message, /「存款總覽」失敗（code=E001）/);
+  assert.equal(redactMessage(other.message), other.message);
+});
+
 test("collectCtbcPayloads stops without importing when a required resource fails", async () => {
   const { call } = fakeBank({ failResource: RESOURCES.creditCardBills });
   await assert.rejects(collectCtbcPayloads(call), (error) => {
     assert.ok(error instanceof CtbcWebImportError);
-    assert.match(error.message, /\/twrbc-card\/qu002\/010.*code=9991/);
+    assert.match(error.message, /「信用卡帳單」失敗（code=9991）/);
     assert.ok(!error.message.includes("未提供"));
     assert.ok(!error.message.includes(ACCOUNT_A));
     return true;

@@ -28,7 +28,22 @@ export const DEFAULT_WORKER_URL = "http://localhost:8797";
 export const DEFAULT_DEBUG_PORT = 9333;
 export const DEFAULT_LOGIN_URL = "https://www.ctbcbank.com/twrbc/";
 export const DEFAULT_LOGIN_TIMEOUT_MINUTES = 10;
-export const DEFAULT_DEPOSIT_WAIT_SECONDS = 600;
+/**
+ * 登入後預設不等使用者點明細頁，頁面靜止就開始查詢。實測（2026-10）等待期間網銀閒置太久
+ * 會被自動登出，之後查詢一律 9992、整次匯入失敗；信用卡最新一期、未出帳與即時消費工具
+ * 自己就查得到。補舊帳單月份或存款明細時才用 `--deposit-wait` 指定等待秒數。
+ */
+export const DEFAULT_DEPOSIT_WAIT_SECONDS = 0;
+/** 網銀回這些代碼表示登入已失效（閒置被登出，或同時操作網銀造成 token 失效）。 */
+const SESSION_LOST_CODES = new Set(["9992", "9994"]);
+/** 錯誤訊息用的查詢名稱（資源路徑會被遮蔽規則擋掉，使用者看不懂）。 */
+const RESOURCE_LABELS = {
+  "/twrbc-deposit/qu001/010": "存款總覽",
+  "/twrbc-card/qu002/010": "信用卡帳單",
+  "/twrbc-card/qu006/010": "未出帳消費",
+  "/twrbc-card/qu006/011": "未出帳消費明細",
+  "/twrbc-card/qu041/010": "即時消費",
+};
 const MAX_DEPOSIT_WAIT_SECONDS = 600;
 
 export const EBMW_RESOURCE_PATH =
@@ -192,9 +207,10 @@ export const USAGE = `用法：node scripts/ctbc-web-import.mjs [選項]
   --timeout <分鐘>    等待登入的時間（預設 ${DEFAULT_LOGIN_TIMEOUT_MINUTES}）
   --profile <目錄>    使用固定的 Chrome profile（絕對路徑），結束後保留，可在其中安裝
                       密碼管理器；未指定時使用暫存 profile 並於結束時刪除
-  --deposit-wait <秒> 登入後等使用者在網銀點開明細（信用卡帳單月份或存款交易明細）
-                      的秒數；看到明細才開始查詢，逾時照常繼續
-                      （預設 ${DEFAULT_DEPOSIT_WAIT_SECONDS}，0 表示不等待）
+  --deposit-wait <秒> 補舊帳單月份或存款明細時才用：登入後等使用者在網銀點開明細
+                      （信用卡帳單月份或存款交易明細）的秒數，看到明細才開始查詢，
+                      逾時照常繼續。網銀閒置約 10 分鐘會自動登出，建議 300 以內
+                      （預設 ${DEFAULT_DEPOSIT_WAIT_SECONDS}：登入後頁面靜止就開始查詢）
   --dry-run           只查詢並顯示筆數，不送到 Worker
 
 環境變數 CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET：Worker 受 Cloudflare Access
@@ -575,8 +591,11 @@ export async function collectCtbcPayloads(call, options = {}) {
   const required = async (resource, rqData, countOf) => {
     const response = await request(resource, rqData, countOf);
     if (!isResourceSuccess(response)) {
+      const code = responseCode(response);
       throw new CtbcWebImportError(
-        `${resource} 查詢失敗（code=${responseCode(response)}），未匯入任何資料。`,
+        SESSION_LOST_CODES.has(code)
+          ? `中信網銀登入已失效（code=${code}），可能是登入後閒置太久被自動登出，或同時在操作網銀；未匯入任何資料。請重新匯入，登入後不要操作視窗。`
+          : `中信網銀查詢「${RESOURCE_LABELS[resource] ?? "必要資料"}」失敗（code=${code}），未匯入任何資料。`,
       );
     }
     return response;
@@ -2051,6 +2070,11 @@ async function run(argv) {
     await watcher.waitForTemplate(options.loginTimeoutMinutes * 60_000);
     if (aborting) return 130;
     session = new PageApiSession(browser, watcher);
+    if (options.depositWaitSeconds === 0) {
+      console.log(
+        "已偵測到登入。頁面靜止 5 秒後自動開始查詢，不用再點任何地方；完成前請勿操作該視窗。",
+      );
+    }
     if (options.depositWaitSeconds > 0 && !watcher.observedDetailPage) {
       console.log(
         `已偵測到登入。請在網銀點開要匯入的明細：信用卡「帳單」切到要補明細的月份，或存款帳戶的交易明細；看到明細後工具才開始查詢（最多等 ${formatSeconds(options.depositWaitSeconds)}，沒點也會繼續）。`,
