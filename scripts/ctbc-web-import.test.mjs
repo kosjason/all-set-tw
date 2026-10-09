@@ -1564,3 +1564,37 @@ test("queryAfterLogin logs out when a query fails", async () => {
   );
   assert.equal(session.logouts, 1);
 });
+
+test("queryAfterLogin returns null when interrupted and shares the signal handler's logout", async () => {
+  let sent = 0;
+  let pending = null;
+  const session = {
+    call: async () => ({ code: "0000" }),
+    // 與 PageApiSession 相同：重複呼叫共用同一次登出請求。
+    logout() {
+      pending ??= Promise.resolve().then(() => {
+        sent += 1;
+        return { code: "0000" };
+      });
+      return pending;
+    },
+  };
+  let aborting = false;
+  const watcher = {
+    ...fakeLoggedInWatcher(true),
+    waitForQuiet: async () => {
+      // 訊號處理先登出，等待函式再看到中斷。
+      aborting = true;
+      await session.logout();
+      return false;
+    },
+  };
+  const result = await queryAfterLogin(
+    watcher,
+    session,
+    { depositWaitSeconds: 0 },
+    { isAborting: () => aborting, log: () => {} },
+  );
+  assert.equal(result, null);
+  assert.equal(sent, 1);
+});
