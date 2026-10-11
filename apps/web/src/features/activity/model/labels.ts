@@ -1,3 +1,4 @@
+import { isCashPaidInvoice } from "@taiwan-fin-hub/shared";
 import type { BankTransactionRow } from "@/data/bank/types";
 import type { InvoiceSummaryRow } from "@/data/invoices/types";
 import {
@@ -105,4 +106,22 @@ export function cashWithdrawalText(item: ActivityItem) {
   if (cash.remaining === 0)
     return `已全部細分為現金支出（${formatCurrency(cash.allocated)}）`;
   return `已細分 ${formatCurrency(cash.allocated)}・未細分 ${formatCurrency(cash.remaining)}`;
+}
+
+/** 視為現金付款、從提款扣的發票（商家規則「這家都付現金」）的說明；其他為 undefined。 */
+export function cashPaidText(item: ActivityItem) {
+  return isCashPaidInvoice(item) ? "這家付現金・從提款扣" : undefined;
+}
+
+/**
+ * 可以設定「這家都付現金」的活動：有商家、沒有併入交易的台幣發票（已配對刷卡的發票
+ * 付款方式已知，不提供）。
+ */
+export function canMarkPaidInCash(item: ActivityItem) {
+  return (
+    item.source === "invoice" &&
+    Boolean(item.merchantKey) &&
+    !item.duplicateOf &&
+    item.currency === "TWD"
+  );
 }

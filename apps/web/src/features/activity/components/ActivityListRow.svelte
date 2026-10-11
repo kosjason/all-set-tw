@@ -50,7 +50,7 @@
     showsRoleInsteadOfCategory,
   } from "../model/roles";
   import { isUncategorizedActivity } from "../model/view-filters";
-  import { cashWithdrawalText } from "../model/labels";
+  import { cashPaidText, cashWithdrawalText } from "../model/labels";
   import {
     activityCategoryDisplay,
     categoryOptionText,
@@ -93,7 +93,9 @@
   );
   const name = $derived(activityDisplayName(item));
   const itemsSummary = $derived(activityItemsSummary(item));
-  const cashWithdrawal = $derived(cashWithdrawalText(item));
+  const cashWithdrawal = $derived(
+    cashWithdrawalText(item) ?? cashPaidText(item),
+  );
   const canChooseRole = $derived(
     Boolean(onRoleChange) &&
       needsReview(item) &&

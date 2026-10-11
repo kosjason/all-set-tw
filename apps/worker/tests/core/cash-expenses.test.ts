@@ -3,6 +3,7 @@ import {
   activitySpendingEntries,
   allocateCashExpenses,
   cashExpenseActivityItem,
+  isCashPaidInvoice,
   isCashWithdrawalPool,
   summarizeActivityMonths,
   type ActivityItem,
@@ -232,5 +233,79 @@ describe("summary with cash expenses", () => {
       {},
     );
     expect(entries.map((entry) => entry.id)).toEqual(["c"]);
+  });
+});
+
+function invoice(
+  id: string,
+  date: string,
+  amount: number,
+  overrides: Partial<ActivityItem> = {},
+): ActivityItem {
+  return {
+    id,
+    source: "invoice",
+    date,
+    title: "虛構早餐店",
+    subtitle: "電子發票",
+    amount,
+    currency: "TWD",
+    amountTwd: amount,
+    category: "餐飲",
+    categoryId: "food",
+    status: "posted",
+    economicRole: "spending",
+    reviewStatus: "auto",
+    duplicateOf: null,
+    investmentEventKind: null,
+    roleReason: "invoice",
+    matchStatus: "unmatched",
+    merchantKey: "ban:12345678",
+    merchantPaidInCash: true,
+    ...overrides,
+  };
+}
+
+describe("cash-paid invoices", () => {
+  it("only treats unmatched TWD spending invoices of cash merchants as cash", () => {
+    expect(isCashPaidInvoice(invoice("i", "2026-09-05", 80))).toBe(true);
+    for (const overrides of [
+      { merchantPaidInCash: false },
+      { merchantPaidInCash: undefined },
+      { matchStatus: "ambiguous" as const },
+      { matchStatus: "awaiting_card" as const },
+      { matchStatus: "matched_card" as const },
+      { duplicateOf: { kind: "bank_transaction" as const, id: "t" } },
+      { economicRole: "advance" as const },
+      { economicRole: "excluded" as const },
+      { currency: "USD" },
+      { source: "card" as const },
+    ])
+      expect(isCashPaidInvoice(invoice("i", "2026-09-05", 80, overrides))).toBe(
+        false,
+      );
+  });
+
+  it("deducts cash-paid invoices from withdrawals together with cash expenses", () => {
+    const items = allocateCashExpenses([
+      withdrawal("w", "2026-09-03", 5000),
+      cash("c", "2026-09-04", 300),
+      invoice("i1", "2026-09-05", 80),
+      invoice("i2", "2026-09-06", 120, { merchantPaidInCash: false }),
+    ]);
+    expect(allocation(items, "w")).toEqual({ allocated: 380, remaining: 4620 });
+    const [summary] = summarizeActivityMonths(items, ["2026-09"], {});
+    // 提款 4,620 + 現金 300 + 現金發票 80 + 其他發票 120。
+    expect(summary!.spending).toBe(5120);
+    expect(summary!.spendingByCategory).toEqual({ misc: 4620, food: 500 });
+  });
+
+  it("counts cash-paid invoices normally when there is no withdrawal to deduct", () => {
+    const [summary] = summarizeActivityMonths(
+      allocateCashExpenses([invoice("i", "2026-09-05", 80)]),
+      ["2026-09"],
+      {},
+    );
+    expect(summary!.spending).toBe(80);
   });
 });

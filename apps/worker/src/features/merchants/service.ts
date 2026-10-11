@@ -52,6 +52,8 @@ export interface MerchantSummary {
     displayName: string | null;
     categoryId: string | null;
     economicRole: EconomicRole | null;
+    /** 這家都付現金：沒配對到交易的發票從提款扣（見 cash-expenses.ts）。 */
+    paidInCash: boolean;
     updatedAt: string;
   } | null;
 }
@@ -62,6 +64,7 @@ function presentAlias(alias: MerchantAliasRow | undefined) {
     displayName: alias.displayName,
     categoryId: alias.categoryId,
     economicRole: alias.economicRole as EconomicRole | null,
+    paidInCash: alias.paidInCash,
     updatedAt: alias.updatedAt,
   };
 }
@@ -181,6 +184,7 @@ export interface MerchantUpdateInput {
   displayName?: string | null;
   categoryId?: string | null;
   economicRole?: EconomicRole | null;
+  paidInCash?: boolean;
 }
 
 /**
@@ -211,6 +215,7 @@ export async function updateMerchant(
       displayName,
       categoryId,
       economicRole: input.economicRole,
+      paidInCash: input.paidInCash,
     },
     new Date().toISOString(),
   );

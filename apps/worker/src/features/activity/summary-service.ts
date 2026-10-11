@@ -31,6 +31,7 @@ import { loadActivityRoleOverrides } from "../activity-roles/service";
 import { listInvoiceTransactionPreferences } from "./repository";
 import { annotateActivityItems } from "../merchants/annotate";
 import { listCashExpensesInRange } from "../cash-expenses/repository";
+import { hasPaidInCashMerchant } from "../merchants/repository";
 import { listClassificationCategories } from "../classification/repository";
 
 function shiftDay(day: string, offset: number) {
@@ -76,8 +77,9 @@ export function syncedCardSuffixes(
  * 讀取月份的活動並推導經濟角色。前後多載入發票配對所需的天數，
  * 讓跨月邊界的配對與歧義判斷看得到所有候選；輸出只保留指定月份。
  *
- * 現金支出會從同月或上個月的提款扣（見 cash-expenses.ts）：下個月有現金支出時，
- * 多載入下個月的活動，最後一個月的提款才扣得到。
+ * 現金支出會從同月或上個月的提款扣（見 cash-expenses.ts）：下個月有現金支出，或有商家
+ * 勾選「這家都付現金」（下個月可能有現金付款的發票）時，多載入下個月的活動，最後一個月的
+ * 提款才扣得到。
  */
 export async function loadRoleActivities(
   db: D1Database,
@@ -87,18 +89,20 @@ export async function loadRoleActivities(
   const first = months[0];
   const last = months.at(-1)!;
   const carryMonth = nextMonth(last);
-  const [accountRows, preferences, rates, cashExpenses] = await Promise.all([
-    listBankAccounts(db),
-    listInvoiceTransactionPreferences(db),
-    getExchangeRates(db),
-    listCashExpensesInRange(db, {
-      from: `${first}-01`,
-      to: `${nextMonth(carryMonth)}-01`,
-    }),
-  ]);
-  const loadsCarryMonth = cashExpenses.some((expense) =>
-    expense.date.startsWith(carryMonth),
-  );
+  const [accountRows, preferences, rates, cashExpenses, paidInCashMerchant] =
+    await Promise.all([
+      listBankAccounts(db),
+      listInvoiceTransactionPreferences(db),
+      getExchangeRates(db),
+      listCashExpensesInRange(db, {
+        from: `${first}-01`,
+        to: `${nextMonth(carryMonth)}-01`,
+      }),
+      hasPaidInCashMerchant(db),
+    ]);
+  const loadsCarryMonth =
+    paidInCashMerchant ||
+    cashExpenses.some((expense) => expense.date.startsWith(carryMonth));
   const loadedLast = loadsCarryMonth ? carryMonth : last;
   const range = {
     from: shiftDay(`${first}-01`, -INVOICE_MATCH_CONTEXT_DAYS),

@@ -13,6 +13,7 @@ export type MerchantAliasRow = {
   displayName: string | null;
   categoryId: string | null;
   economicRole: string | null;
+  paidInCash: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -22,6 +23,7 @@ const aliasColumns = {
   displayName: merchantAliases.displayName,
   categoryId: merchantAliases.categoryId,
   economicRole: merchantAliases.economicRole,
+  paidInCash: merchantAliases.paidInCash,
   createdAt: merchantAliases.createdAt,
   updatedAt: merchantAliases.updatedAt,
 };
@@ -44,6 +46,17 @@ export async function listMerchantAliases(
     .all();
 }
 
+/** 是否有任何商家勾選「這家都付現金」。 */
+export async function hasPaidInCashMerchant(db: D1Database) {
+  const row = await createDrizzle(db)
+    .select({ merchantKey: merchantAliases.merchantKey })
+    .from(merchantAliases)
+    .where(eq(merchantAliases.paidInCash, true))
+    .limit(1)
+    .get();
+  return row != null;
+}
+
 export async function findMerchantAlias(db: D1Database, merchantKey: string) {
   return (
     (await createDrizzle(db)
@@ -59,6 +72,7 @@ export type MerchantAliasInput = {
   displayName?: string | null;
   categoryId?: string | null;
   economicRole?: string | null;
+  paidInCash?: boolean;
 };
 
 /**
@@ -72,11 +86,13 @@ export function merchantAliasUpsertStatement(
   const set: Partial<
     Record<"displayName" | "categoryId" | "economicRole", string | null>
   > & {
+    paidInCash?: boolean;
     updatedAt: string;
   } = { updatedAt: now };
   if (input.displayName !== undefined) set.displayName = input.displayName;
   if (input.categoryId !== undefined) set.categoryId = input.categoryId;
   if (input.economicRole !== undefined) set.economicRole = input.economicRole;
+  if (input.paidInCash !== undefined) set.paidInCash = input.paidInCash;
   return createDrizzle(db)
     .insert(merchantAliases)
     .values({
@@ -84,6 +100,7 @@ export function merchantAliasUpsertStatement(
       displayName: input.displayName ?? null,
       categoryId: input.categoryId ?? null,
       economicRole: input.economicRole ?? null,
+      paidInCash: input.paidInCash ?? false,
       createdAt: now,
       updatedAt: now,
     })

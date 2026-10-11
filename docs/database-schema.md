@@ -11,7 +11,7 @@
 - Tables：39
 - Explicit indexes：47
 - Other objects：0
-- Migrations：70
+- Migrations：71
 
 ## Tables
 
@@ -41,7 +41,7 @@
 | [`invoice_transaction_preferences`](#invoice_transaction_preferences) | 使用者對電子發票與銀行交易是否關聯的決策。 | 5 | 2 | 2 |
 | [`invoices`](#invoices) | 電子發票的抬頭與總額主檔。 | 15 | 0 | 2 |
 | [`manual_assets`](#manual_assets) | 使用者手動登錄、無法由銀行或投資連接器同步的資產。 | 6 | 0 | 0 |
-| [`merchant_aliases`](#merchant_aliases) | 使用者對商家的顯示名稱與商家規則（分類、經濟角色）。 | 6 | 1 | 1 |
+| [`merchant_aliases`](#merchant_aliases) | 使用者對商家的顯示名稱與商家規則（分類、經濟角色）。 | 7 | 1 | 1 |
 | [`net_worth_history`](#net_worth_history) | 按日期保存的淨資產或資產類別歷史數值，用於圖表與歷史查詢。 | 6 | 0 | 2 |
 | [`notification_preferences`](#notification_preferences) | 此單一部署的同步推播偏好設定。 | 5 | 0 | 0 |
 | [`own_accounts`](#own_accounts) | 使用者在「我的其他帳戶」登記、但無法同步的自有帳戶或信用卡。 | 7 | 0 | 0 |
@@ -1371,6 +1371,7 @@ CREATE TABLE "manual_assets" (
 | 4 | `economic_role` | 商家規則的經濟角色；NULL 表示不指定。 | TEXT | YES | — | — | — |
 | 5 | `created_at` | 別名建立的時間。 | TEXT | NO | — | — | — |
 | 6 | `updated_at` | 別名最後更新的時間。 | TEXT | NO | — | — | — |
+| 7 | `paid_in_cash` | 這家都付現金（0／1，0075）：1 時這家沒有配對到刷卡／銀行交易的台幣發票視為現金付款，讀取時從尚未細分的提款扣，不和提款重複計算；發票本身照常計入消費。 | INTEGER | NO | 0 | — | — |
 
 #### Foreign keys
 
@@ -1400,7 +1401,7 @@ CREATE TABLE merchant_aliases (
   ),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
-)
+, paid_in_cash INTEGER NOT NULL DEFAULT 0 CHECK (paid_in_cash IN (0, 1)))
 ```
 
 ### `net_worth_history`
@@ -2139,6 +2140,7 @@ Migration 是 schema 演進的 source of truth；若要了解某欄位的變更�
 - [`0072_ctbc_disable_schedule.sql`](../apps/worker/migrations/0072_ctbc_disable_schedule.sql)
 - [`0073_activity_advances.sql`](../apps/worker/migrations/0073_activity_advances.sql)
 - [`0074_cash_expenses.sql`](../apps/worker/migrations/0074_cash_expenses.sql)
+- [`0075_merchant_paid_in_cash.sql`](../apps/worker/migrations/0075_merchant_paid_in_cash.sql)
 
 ## 程式碼導覽
 

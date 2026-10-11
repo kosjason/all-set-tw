@@ -44,6 +44,7 @@
   import CashExpenseDialog, {
     type CashExpenseDraft,
   } from "./components/CashExpenseDialog.svelte";
+  import { setMerchantPaidInCashMutation } from "@/data/merchants/mutations";
   import {
     createCashExpenseMutation,
     deleteCashExpenseMutation,
@@ -971,6 +972,20 @@
         ? { expense: { id: item.id, ...cashExpenseDraft(item) } }
         : {};
   }
+  // 商家規則「這家都付現金」：成功後重新載入，提款的未細分金額與發票標示一起更新。
+  const paidInCashMutation = createMutation({
+    ...setMerchantPaidInCashMutation(() => api),
+    onSuccess: (_result, { paidInCash }) => {
+      qc.invalidateQueries({ queryKey: queryKeys.bank });
+      showMappingNotice(
+        paidInCash ? "已記住這家付現金，發票改從提款扣" : "已取消這家付現金",
+      );
+    },
+  });
+  function changePaidInCash(item: ActivityItem, paidInCash: boolean) {
+    if (!item.merchantKey) return;
+    $paidInCashMutation.mutate({ merchantKey: item.merchantKey, paidInCash });
+  }
   function submitCash(input: CashExpenseInput) {
     const id = cashDialog?.expense?.id;
     if (id) $cashUpdateMutation.mutate({ id, ...input });
@@ -994,6 +1009,7 @@
     return `${item.source}-${item.id}`;
   }
   function openDetail(item: ActivityItem) {
+    $paidInCashMutation.reset();
     detailKey = activityKey(item);
     window.history.pushState(
       { ...window.history.state, activityDetail: detailKey },
@@ -1346,6 +1362,10 @@
         foreignFee={foreignFeeLabel(detailItem, rawItems)}
         onEditCash={openCashDialog}
         onAddCash={() => openCashDialog()}
+        onPaidInCashChange={changePaidInCash}
+        paidInCashUpdating={$paidInCashMutation.isPending}
+        paidInCashFailed={$paidInCashMutation.isError &&
+          $paidInCashMutation.variables?.merchantKey === detailItem.merchantKey}
       />
     {/if}
     {#if pendingRole}
