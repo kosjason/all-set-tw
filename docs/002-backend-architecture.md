@@ -445,12 +445,13 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
   `loadRoleActivities` 以 `cashExpenseActivityItem` 把現金支出列為 `source = cash` 的活動（一律為已確認的
   消費，`roleReason = cash_expense`，分類即使用者指定的分類，沒有商家、備註與角色 override）。
 - 提款仍先計入消費：`shared/cash-expenses.ts` 的 `isCashWithdrawalPool` 認定銀行帳戶（非信用卡）的台幣
-  提款（文字符合 `CASH_WITHDRAWAL_PATTERN`）、角色為消費、不是重複、分類為「其他」或未分類者為可細分的
+  提款（文字符合 `CASH_WITHDRAWAL_PATTERN`，不含手續費）、角色為消費、不是重複、分類為「其他」或未分類者為可細分的
   提款；使用者把提款歸到具體分類、改成代墊或轉帳時不細分。`allocateCashExpenses` 在讀取時把現金支出
   分配到提款：先扣同月份的提款（由早到晚），不夠再扣上個月剩下的（由晚到早），仍不夠的部分照常計入消費；
   分配不落地。可細分的提款帶 `cashWithdrawal: { allocated, remaining }`，月 summary 與
   `activitySpendingEntries`（本月可花、週回顧）只把 `remaining` 計入消費（全部細分後不再列入消費明細），
-  現金支出依自己的分類計入，因此有提款可扣時月消費總額不變。每月的提款只會被當月與下個月的現金支出扣，
+  現金支出依自己的分類計入：扣同月份的提款時該月消費總額不變；扣到上個月的提款時，上個月的「其他」
+  減少、這個月照常計入（兩個月合計不變，已過去月份的數字會事後變動）。每月的提款只會被當月與下個月的現金支出扣，
   `loadRoleActivities` 在下個月有現金支出時多載入下個月的活動再分配，輸出仍只保留指定月份。
   匯出的活動列出 `source = cash`（帳戶「現金」）並在提款上附 `cashWithdrawal`。全歷史搜尋與
   「銀行／信用卡／發票」原始紀錄分頁不含現金支出。

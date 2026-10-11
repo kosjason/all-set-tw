@@ -907,7 +907,8 @@
   let cashDialog = $state<{
     expense?: CashExpenseDraft & { id: string };
   } | null>(null);
-  const today = taipeiDay(new Date());
+  // 開啟對話框時重新取得，頁面跨過午夜後日期上限仍是今天。
+  let today = $state(taipeiDay(new Date()));
   /** 新增時的預設日期：本月為今天，過去月份為該月最後一天。 */
   const cashDefaultDate = $derived.by(() => {
     if (today.startsWith(selectedMonth)) return today;
@@ -964,6 +965,7 @@
   }
   function openCashDialog(item?: ActivityItem) {
     resetCashMutations();
+    today = taipeiDay(new Date());
     cashDialog =
       item?.source === "cash"
         ? { expense: { id: item.id, ...cashExpenseDraft(item) } }

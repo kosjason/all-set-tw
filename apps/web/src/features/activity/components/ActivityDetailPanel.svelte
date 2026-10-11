@@ -413,7 +413,7 @@
               <p class="text-caption font-semibold text-subtle">現金提款</p>
               <p class="mt-1 font-semibold">{cashWithdrawalText(item)}</p>
               <p class="mt-1 text-caption text-subtle">
-                提款先以「其他」計入消費；記下的現金支出會從這裡扣，改計入實際分類，月消費總額不變。
+                提款先以「其他」計入消費；記下的現金支出會從這裡扣，改計入實際分類。
               </p>
               {#if onAddCash}<Button
                   variant="outline"
@@ -430,7 +430,7 @@
                 {item.cashExpense?.description ?? "沒有說明"}
               </p>
               <p class="mt-1 text-caption text-subtle">
-                先從同月（不夠再扣上個月）尚未細分的提款扣；扣不到的部分才另外計入消費。
+                先從同月（不夠再扣上個月）尚未細分的提款扣；都扣不到時才另外計入消費。
               </p>
               {#if onEditCash}<Button
                   variant="outline"

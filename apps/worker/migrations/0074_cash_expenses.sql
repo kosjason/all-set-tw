@@ -1,6 +1,6 @@
 -- 現金支出：使用者手動記的現金消費（金額、分類、日期、說明）。提款仍先以「其他」計入
--- 消費；現金支出在讀取時從尚未細分的提款扣（同月份優先，再扣上個月），只把提款拆成
--- 實際分類，月消費總額不變。分配不落地，因此沒有連到 bank_transactions 的欄位。
+-- 消費；現金支出在讀取時從尚未細分的提款扣（同月份優先，再扣上個月），把提款拆成
+-- 實際分類。分配不落地，因此沒有連到 bank_transactions 的欄位。
 -- category_id 指向 classification_categories；API 只接受消費分類。
 CREATE TABLE cash_expenses (
   id TEXT NOT NULL PRIMARY KEY,

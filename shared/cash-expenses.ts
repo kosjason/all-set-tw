@@ -4,17 +4,20 @@ import { MISC_CATEGORY_ID, UNCATEGORIZED_CATEGORY_ID } from "./categories";
 
 /**
  * 現金支出（手動記帳）。提款（ATM、無卡提款）仍先以「其他」計入消費，代表錢的
- * 去向未知；使用者記下的現金支出從尚未細分的提款扣，只是把提款拆成實際分類，月消費
- * 總額不變。扣的順序：
- * 1. 先扣同月份的提款（依提款時間由早到晚）。
- * 2. 同月不夠時，再扣上個月還沒細分完的提款（由晚到早，月底領的錢先用）。
+ * 去向未知；使用者記下的現金支出從尚未細分的提款扣，把提款拆成實際分類。扣的順序：
+ * 1. 先扣同月份的提款（依提款時間由早到晚）：該月消費總額不變。
+ * 2. 同月不夠時，再扣上個月還沒細分完的提款（由晚到早，月底領的錢先用）：上個月的
+ *    「其他」減少、這個月照常計入，兩個月合計不變。
  * 3. 仍不夠的部分照常計入消費（例如用更早以前領的錢）。
  *
  * 每月提款只會被當月與下個月的現金支出扣，所以計算某月份時需要載入下個月的
  * 提款與現金支出（見 worker 的 loadRoleActivities）。
  */
 
-/** 現金提領的文字（與分類建議「現金提領」相同）。「提款卡」「提款機」本身不是提款。 */
+/**
+ * 現金提領的文字（與分類建議「現金提領」相同）。「提款卡」「提款機」本身不是提款；
+ * 「跨行提款手續費」等費用由 {@link isCashWithdrawalPool} 另外排除。
+ */
 export const CASH_WITHDRAWAL_PATTERN =
   /無卡提款|atm\s*提款|跨行提款|提款(?!卡|機)/iu;
 
@@ -72,8 +75,8 @@ function normalizedText(value: string) {
 }
 
 /**
- * 可以被現金支出細分的提款：銀行帳戶（非信用卡）的台幣提款，角色為消費、不是重複，
- * 而且分類是「其他」或未分類（去向未知）。使用者已把提款歸到具體分類（例如付房租）、
+ * 可以被現金支出細分的提款：銀行帳戶（非信用卡）的台幣提款（不含手續費），角色為消費、
+ * 不是重複，而且分類是「其他」或未分類（去向未知）。使用者已把提款歸到具體分類（例如付房租）、
  * 改成代墊或轉帳時，代表已經知道錢的用途，不再細分。
  */
 export function isCashWithdrawalPool(
@@ -98,10 +101,12 @@ export function isCashWithdrawalPool(
     categoryId !== UNCATEGORIZED_CATEGORY_ID
   )
     return false;
-  return CASH_WITHDRAWAL_PATTERN.test(
-    normalizedText(`${item.title} ${item.searchText ?? ""}`),
-  );
+  const text = normalizedText(`${item.title} ${item.searchText ?? ""}`);
+  // 提款手續費不是領出來的現金，不能拿來扣現金支出。
+  return CASH_WITHDRAWAL_PATTERN.test(text) && !CASH_WITHDRAWAL_FEE.test(text);
 }
+
+const CASH_WITHDRAWAL_FEE = /手續費|\bfee\b/iu;
 
 function previousMonth(month: string) {
   const [year, value] = month.split("-").map(Number);

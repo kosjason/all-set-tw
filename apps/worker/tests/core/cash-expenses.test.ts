@@ -88,6 +88,8 @@ describe("isCashWithdrawalPool", () => {
       { source: "card" as const },
       { currency: "USD", amountTwd: -150000 },
       { title: "提款卡年費" },
+      { title: "跨行提款手續費" },
+      { title: "ATM 提款 FEE" },
       { amount: 5000, amountTwd: 5000 },
     ])
       expect(
