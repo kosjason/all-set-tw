@@ -41,9 +41,15 @@ export type ActivityNoteWriteResult =
 export interface ActivityExportItem {
   /** YYYY-MM-DD（台北時間）。 */
   date: string;
-  source: "bank" | "card" | "invoice";
+  /** cash：手動記的現金支出。 */
+  source: "bank" | "card" | "invoice" | "cash";
   /** TWD 帶正負號（流出為負）；缺匯率時為 null。 */
   amountTwd: number | null;
+  /**
+   * 提款被現金支出細分的情形（TWD，正數）：allocated 已由現金支出依分類計入，只有
+   * remaining 以這筆提款計入消費。不是可細分的提款時省略。
+   */
+  cashWithdrawal?: { allocated: number; remaining: number };
   /** 非 TWD 時提供原幣金額與幣別。 */
   originalAmount?: number;
   currency: string;
@@ -57,7 +63,7 @@ export interface ActivityExportItem {
   advanceCounterparty: string | null;
   note: string | null;
   itemsPreview: string[];
-  /** 帳戶顯示名稱，例如「玉山銀行 信用卡 …1234」；發票為「電子發票」。 */
+  /** 帳戶顯示名稱，例如「玉山銀行 信用卡 …1234」；發票為「電子發票」，現金支出為「現金」。 */
   account: string;
 }
 

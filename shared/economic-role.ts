@@ -161,6 +161,8 @@ export type EconomicRoleReason =
    * 付款只對應到其中一張；其餘暫不計入，待使用者確認。
    */
   | "invoice_repeat"
+  /** 使用者手動記的現金支出。 */
+  | "cash_expense"
   | "trade";
 
 export interface EconomicRoleFields {
@@ -600,6 +602,7 @@ export type SummaryActivity = Pick<
   | "categoryId"
   | "excludedFromCalculation"
   | "matchStatus"
+  | "cashWithdrawal"
 > &
   Partial<
     Pick<EconomicRoleFields, "economicRole" | "reviewStatus" | "duplicateOf">
@@ -627,6 +630,27 @@ function signedAmount(item: SummaryActivity) {
   return item.source === "invoice" ? -Math.abs(item.amount) : item.amount;
 }
 
+/**
+ * 計入收支的金額（帶正負）：可被現金支出細分的提款只計尚未細分的部分（已細分的
+ * 部分由現金支出依分類計入），其餘同 {@link signedAmount}。
+ */
+function countedAmount(item: SummaryActivity) {
+  if (item.cashWithdrawal) return -item.cashWithdrawal.remaining;
+  return signedAmount(item);
+}
+
+/** 計入月 summary 與消費明細的來源；投資交易明細只列示。 */
+function isCountedSource(
+  source: SummaryActivity["source"],
+): source is "bank" | "card" | "invoice" | "cash" {
+  return (
+    source === "bank" ||
+    source === "card" ||
+    source === "invoice" ||
+    source === "cash"
+  );
+}
+
 function toTwd(
   amount: number,
   currency: string,
@@ -642,8 +666,9 @@ function toTwd(
 const round = (value: number) => Math.round(value * 100) / 100 || 0;
 
 /**
- * 依經濟角色彙總月份收支。只計入銀行、信用卡與發票；投資交易明細
- * （集保、券商）只列示，金流以銀行端交割為準，避免雙算。
+ * 依經濟角色彙總月份收支。只計入銀行、信用卡、發票與現金支出；投資交易明細
+ * （集保、券商）只列示，金流以銀行端交割為準，避免雙算。可被現金支出細分的提款
+ * 只計尚未細分的部分（見 cash-expenses.ts）。
  */
 export function summarizeActivityMonths(
   items: SummaryActivity[],
@@ -683,12 +708,7 @@ export function summarizeActivityMonths(
     ]),
   );
   for (const item of items) {
-    if (
-      item.source !== "bank" &&
-      item.source !== "card" &&
-      item.source !== "invoice"
-    )
-      continue;
+    if (!isCountedSource(item.source)) continue;
     const summary = summaries.get(activityDateKey(item).slice(0, 7));
     if (!summary) continue;
     // 不計入：不進任何收支、重複、待確認或去重欄位，也不因缺匯率而標示不完整。
@@ -702,7 +722,7 @@ export function summarizeActivityMonths(
     }
     if (item.source === "invoice")
       addInvoiceDedupeCount(summary.dedupe, invoiceSummaryStatus(item));
-    const signed = signedAmount(item);
+    const signed = countedAmount(item);
     if (signed == null) continue;
     const amount = toTwd(signed, item.currency, rates);
     // 重複項目不計入任何金額，缺匯率也不影響完整性。
@@ -738,6 +758,8 @@ export function summarizeActivityMonths(
         break;
       case "spending": {
         summary.spending -= amount;
+        // 已全部細分成現金支出的提款不留下金額為 0 的分類。
+        if (amount === 0) break;
         const categoryId = item.categoryId ?? UNCATEGORIZED_CATEGORY_ID;
         const topLevel = topLevelCategoryId(categoryId);
         summary.spendingByCategory[topLevel] =
@@ -789,7 +811,7 @@ export function summarizeActivityMonths(
  */
 export interface SpendingEntry {
   id: string;
-  source: "bank" | "card" | "invoice";
+  source: "bank" | "card" | "invoice" | "cash";
   /** 台北日期 YYYY-MM-DD（與月 summary 相同的歸日方式）。 */
   day: string;
   amount: number;
@@ -801,8 +823,8 @@ export interface SpendingEntry {
 
 /**
  * 取出計入消費的活動，口徑與 {@link summarizeActivityMonths} 的 spending 相同：只看銀行、
- * 信用卡與發票；排除「不計入」、重複與缺匯率的項目。逐筆四捨五入到分，加總與月 summary 的
- * spending 可能有分以下的差異。
+ * 信用卡、發票與現金支出；排除「不計入」、重複與缺匯率的項目，提款只取尚未細分的金額。
+ * 逐筆四捨五入到分，加總與月 summary 的 spending 可能有分以下的差異。
  */
 export function activitySpendingEntries(
   items: Array<
@@ -814,17 +836,14 @@ export function activitySpendingEntries(
 ): SpendingEntry[] {
   const entries: SpendingEntry[] = [];
   for (const item of items) {
-    if (
-      item.source !== "bank" &&
-      item.source !== "card" &&
-      item.source !== "invoice"
-    )
-      continue;
+    if (!isCountedSource(item.source)) continue;
     if (item.economicRole === "excluded" || item.duplicateOf) continue;
-    const signed = signedAmount(item);
+    const signed = countedAmount(item);
     if (signed == null) continue;
     const amount = toTwd(signed, item.currency, rates);
     if (amount == null || effectiveRole(item, amount) !== "spending") continue;
+    // 提款已全部細分成現金支出時，不再列出金額為 0 的提款。
+    if (item.cashWithdrawal && amount === 0) continue;
     entries.push({
       id: item.id,
       source: item.source,

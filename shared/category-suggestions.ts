@@ -1,3 +1,4 @@
+import { CASH_WITHDRAWAL_PATTERN } from "./cash-expenses";
 import { meaningfulInvoiceItems, type InvoiceItemLike } from "./merchant";
 
 /**
@@ -201,9 +202,10 @@ export const MERCHANT_KEYWORD_RULES: readonly KeywordRule[] = [
     pattern: /手續費|年費|服務費|遲繳|違約金|循環利息|\bfee\b/u,
     categoryId: "misc",
   },
-  // 其他：現金提領（錢的去向未知）。「提款卡」「提款機」本身不是提款。
+  // 其他：現金提領（錢的去向未知）。「提款卡」「提款機」本身不是提款。記下的現金支出
+  // 會從這類提款扣（見 cash-expenses.ts）。
   {
-    pattern: /無卡提款|atm\s*提款|跨行提款|提款(?!卡|機)/u,
+    pattern: CASH_WITHDRAWAL_PATTERN,
     categoryId: "misc",
   },
 ];

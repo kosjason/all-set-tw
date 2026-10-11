@@ -8,10 +8,10 @@
 
 ## 目錄
 
-- Tables：38
-- Explicit indexes：46
+- Tables：39
+- Explicit indexes：47
 - Other objects：0
-- Migrations：69
+- Migrations：70
 
 ## Tables
 
@@ -25,6 +25,7 @@
 | [`bank_transactions`](#bank_transactions) | 銀行帳戶、信用卡與其他存款型連接器同步回來的交易明細。 | 19 | 3 | 7 |
 | [`budget_merchants`](#budget_merchants) | 使用者對商家是否為固定支出的判斷，供「本月可花」預留尚未扣款的固定支出與排除年繳。 | 6 | 0 | 0 |
 | [`budget_settings`](#budget_settings) | 「本月可花」的設定（單列，id 固定為 default）：每月消費預算、預期月收入與年繳準備金。 | 5 | 0 | 0 |
+| [`cash_expenses`](#cash_expenses) | 使用者手動記的現金支出（金額、分類、日期、說明）。提款仍先以「其他」計入消費，現金支出在讀取時從尚未細分的提款扣，只把提款拆成實際分類。 | 7 | 1 | 1 |
 | [`classification_categories`](#classification_categories) | 消費分類字典（兩層）與收入子類；id 為穩定契約，須與 packages/core 的 categories.ts 一致。 | 7 | 1 | 1 |
 | [`classification_migration_notes`](#classification_migration_notes) | 分類遷移（0055、0067、0069）紀錄：id 有變動的個別覆寫與使用者規則、因撞名改名的自訂分類，以及保留下來的使用者系統規則 pattern，保留原分類名稱與原 pattern 供人工處理。 | 14 | 0 | 0 |
 | [`classification_overrides`](#classification_overrides) | 使用者對單筆目標資料指定的分類覆寫。 | 6 | 1 | 1 |
@@ -462,6 +463,54 @@ CREATE TABLE "budget_settings" (
   monthly_budget REAL CHECK (monthly_budget IS NULL OR monthly_budget >= 0),
   expected_income REAL CHECK (expected_income IS NULL OR expected_income >= 0),
   annual_reserve REAL NOT NULL DEFAULT 0 CHECK (annual_reserve >= 0),
+  updated_at TEXT NOT NULL
+)
+```
+
+### `cash_expenses`
+
+> 用途：使用者手動記的現金支出（金額、分類、日期、說明）。提款仍先以「其他」計入消費，現金支出在讀取時從尚未細分的提款扣，只把提款拆成實際分類。
+> 注意：提款分配不落地：讀取活動時先扣同月份分類為「其他」或未分類的提款，不夠再扣上個月的提款，仍不夠的部分照常計入消費。刪除現金支出即還原提款的未細分金額。
+
+#### Columns
+
+| 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
+| ---: | --- | --- | --- | :---: | --- | ---: | --- |
+| 1 | `id` | 現金支出 id（UUID）。 | TEXT | NO | — | 1 | — |
+| 2 | `expense_date` | 消費日期（台北日期 YYYY-MM-DD）。 | TEXT | NO | — | — | — |
+| 3 | `amount` | 新台幣整數金額，1–10,000,000（CHECK 限制）。 | INTEGER | NO | — | — | — |
+| 4 | `category_id` | 消費分類，參照 classification_categories.id；API 只接受消費分類（不含收入與未分類）。 | TEXT | NO | — | — | — |
+| 5 | `description` | 說明（例如「夜市」），1–100 字；沒有說明為 NULL，列表顯示「現金支出」。 | TEXT | YES | — | — | — |
+| 6 | `created_at` | 建立時間。 | TEXT | NO | — | — | — |
+| 7 | `updated_at` | 最後更新時間。 | TEXT | NO | — | — | — |
+
+#### Foreign keys
+
+| 欄位 | 參照表 | 參照欄位 | ON UPDATE | ON DELETE |
+| --- | --- | --- | --- | --- |
+| `category_id` | `classification_categories` | `id` | NO ACTION | NO ACTION |
+
+#### Indexes
+
+| Index | Unique | Partial | 欄位 | 定義 |
+| --- | :---: | :---: | --- | --- |
+| `idx_cash_expenses_date` | 否 | 否 | `expense_date`, `created_at` | `CREATE INDEX idx_cash_expenses_date ON cash_expenses (expense_date, created_at)` |
+
+#### DDL
+
+```sql
+CREATE TABLE cash_expenses (
+  id TEXT NOT NULL PRIMARY KEY,
+  expense_date TEXT NOT NULL CHECK (
+    expense_date GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]'
+  ),
+  amount INTEGER NOT NULL CHECK (amount BETWEEN 1 AND 10000000),
+  category_id TEXT NOT NULL REFERENCES classification_categories (id),
+  description TEXT CHECK (
+    description IS NULL
+    OR (description = trim(description) AND length(description) BETWEEN 1 AND 100)
+  ),
+  created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 )
 ```
@@ -2086,6 +2135,7 @@ Migration 是 schema 演進的 source of truth；若要了解某欄位的變更�
 - [`0071_budget_monthly_limit.sql`](../apps/worker/migrations/0071_budget_monthly_limit.sql)
 - [`0072_ctbc_disable_schedule.sql`](../apps/worker/migrations/0072_ctbc_disable_schedule.sql)
 - [`0073_activity_advances.sql`](../apps/worker/migrations/0073_activity_advances.sql)
+- [`0074_cash_expenses.sql`](../apps/worker/migrations/0074_cash_expenses.sql)
 
 ## 程式碼導覽
 

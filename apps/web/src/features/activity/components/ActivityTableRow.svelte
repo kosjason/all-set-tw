@@ -51,7 +51,10 @@
   import ActivityRoleSelect from "./ActivityRoleSelect.svelte";
   import SearchHighlight from "./SearchHighlight.svelte";
   import { activityDisplayAmount } from "../model/chart";
-  import { activityInvoiceDifference } from "../model/labels";
+  import {
+    activityInvoiceDifference,
+    cashWithdrawalText,
+  } from "../model/labels";
   import {
     activityAccountLines,
     activityRoleTarget,
@@ -98,6 +101,7 @@
   );
   const name = $derived(activityDisplayName(item));
   const itemsSummary = $derived(activityItemsSummary(item));
+  const cashWithdrawal = $derived(cashWithdrawalText(item));
   const searchHit = $derived(
     searching &&
       Boolean(query) &&
@@ -156,6 +160,12 @@
         data-foreign-fee
       >
         {foreignFee}
+      </p>{/if}
+    {#if cashWithdrawal}<p
+        class="mt-0.5 truncate text-caption text-subtle"
+        data-cash-withdrawal
+      >
+        {cashWithdrawal}
       </p>{/if}
     <ActivityCounterparty {item} class="mt-0.5" />
     {#if canChooseRole && onRoleChange}

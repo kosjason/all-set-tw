@@ -170,6 +170,8 @@ export function activityRoleReasonLabel(
       return "依分類規則指定的角色";
     case "trade":
       return "投資交易明細，只列示，金流以銀行交割為準";
+    case "cash_expense":
+      return "你記的現金支出";
   }
 }
 

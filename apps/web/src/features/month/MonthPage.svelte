@@ -12,7 +12,14 @@
   import AdvancesCard from "./components/AdvancesCard.svelte";
   import { advancesQuery } from "@/data/advances/queries";
   import WeeklyReview from "./components/WeeklyReview.svelte";
-  import { ChevronLeft, ChevronRight, CreditCard, Inbox } from "@lucide/svelte";
+  import {
+    ChevronLeft,
+    ChevronRight,
+    CreditCard,
+    Inbox,
+    Plus,
+  } from "@lucide/svelte";
+  import Button from "@/shared/ui/Button.svelte";
   import { currentActivityMonthKey } from "@taiwan-fin-hub/shared";
   import { createQuery, keepPreviousData } from "@tanstack/svelte-query";
   import { toStore } from "svelte/store";
@@ -221,15 +228,26 @@
           onclick={() => (selectedMonth = currentMonth)}>回到本月</button
         >{/if}
     </div>
-    <p class="text-caption text-subtle" data-testid="month-updated-at">
-      {#if $jobs.isPending}
-        讀取更新時間…
-      {:else if updatedAt}
-        資料更新於 {formatDateTime(updatedAt)}
-      {:else}
-        尚無同步紀錄
-      {/if}
-    </p>
+    <div class="flex min-w-0 flex-wrap items-center gap-3">
+      <p class="text-caption text-subtle" data-testid="month-updated-at">
+        {#if $jobs.isPending}
+          讀取更新時間…
+        {:else if updatedAt}
+          資料更新於 {formatDateTime(updatedAt)}
+        {:else}
+          尚無同步紀錄
+        {/if}
+      </p>
+      <!-- 快捷記現金：到交易頁開啟「記一筆現金支出」（現金支出從提款扣，見交易頁）。 -->
+      <Button
+        size="sm"
+        variant="outline"
+        class="h-9"
+        data-testid="month-cash-expense-add"
+        onclick={() => openTransactions({ add: "cash" })}
+        ><Plus class="size-4" />記一筆現金</Button
+      >
+    </div>
   </div>
 
   {#if banner}

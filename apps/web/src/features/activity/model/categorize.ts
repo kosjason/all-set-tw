@@ -23,9 +23,12 @@ export function categorizeTarget(
   return ref ? { targetKind: ref.kind, targetId: ref.id } : own;
 }
 
-/** 可以改分類的活動（見 {@link categorizeTarget}）。 */
+/**
+ * 可以改分類的活動（見 {@link categorizeTarget}）。現金支出也可以，但由頁面改寫現金
+ * 支出本身（`PUT /api/cash-expenses/:id`），不走 categorize API。
+ */
 export function canCategorize(item: ActivityItem) {
-  return categorizeTarget(item) != null;
+  return item.source === "cash" || categorizeTarget(item) != null;
 }
 
 /** 改一筆的 categorize body；applyToMerchant 時一併記住商家（寫入商家規則）。 */

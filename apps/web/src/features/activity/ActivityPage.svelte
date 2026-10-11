@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     CATEGORY_DEFINITIONS,
+    taipeiDay,
     type EconomicRole,
   } from "@taiwan-fin-hub/shared";
   import { onMount, tick } from "svelte";
@@ -12,7 +13,7 @@
     keepPreviousData,
     useQueryClient,
   } from "@tanstack/svelte-query";
-  import { Check } from "@lucide/svelte";
+  import { Check, Plus } from "@lucide/svelte";
   import Button from "@/shared/ui/Button.svelte";
   import EmptyState from "@/shared/ui/EmptyState.svelte";
   import {
@@ -40,6 +41,15 @@
   import CalculationUpdateDialog from "./components/CalculationUpdateDialog.svelte";
   import MerchantCategoryPrompt from "./components/MerchantCategoryPrompt.svelte";
   import RoleReasonDialog from "./components/RoleReasonDialog.svelte";
+  import CashExpenseDialog, {
+    type CashExpenseDraft,
+  } from "./components/CashExpenseDialog.svelte";
+  import {
+    createCashExpenseMutation,
+    deleteCashExpenseMutation,
+    updateCashExpenseMutation,
+    type CashExpenseInput,
+  } from "@/data/cash-expenses/mutations";
   import {
     categorizeActivitiesMutation,
     deleteActivityNoteMutation,
@@ -50,7 +60,7 @@
     merchantPromptText,
     merchantSiblingCount,
   } from "./model/categorize";
-  import { ApiRequestError } from "@/shared/api/client";
+  import { ApiRequestError, messageFromError } from "@/shared/api/client";
   import type { ApiClient } from "@/shared/api/client";
   import { queryKeys } from "@/shared/api/query-keys";
   import { exchangeRatesQuery } from "@/data/assets/queries";
@@ -882,7 +892,87 @@
   function changeCategory(item: ActivityItem, categoryId: string) {
     if (!categoryId || categoryId === item.categoryId) return;
     dismissMerchantPrompt();
+    // 現金支出沒有商家規則，直接改寫這筆現金支出。
+    if (item.source === "cash") {
+      $cashCategoryMutation.mutate({
+        id: item.id,
+        ...cashExpenseDraft(item),
+        categoryId,
+      });
+      return;
+    }
     $categoryMutation.mutate({ item, categoryId });
+  }
+  // 現金支出：新增、編輯、刪除後重新載入活動與 summary（key 都以 "bank" 開頭）。
+  let cashDialog = $state<{
+    expense?: CashExpenseDraft & { id: string };
+  } | null>(null);
+  const today = taipeiDay(new Date());
+  /** 新增時的預設日期：本月為今天，過去月份為該月最後一天。 */
+  const cashDefaultDate = $derived.by(() => {
+    if (today.startsWith(selectedMonth)) return today;
+    const [year, month] = selectedMonth.split("-").map(Number);
+    const last = new Date(Date.UTC(year!, month!, 0))
+      .toISOString()
+      .slice(0, 10);
+    return last < today ? last : today;
+  });
+  function cashExpenseDraft(item: ActivityItem): CashExpenseDraft {
+    return {
+      date: activityDateKey(item),
+      amount: Math.abs(item.amount ?? 0),
+      categoryId: item.categoryId ?? "",
+      description: item.cashExpense?.description ?? null,
+    };
+  }
+  function cashSaved(message: string) {
+    qc.invalidateQueries({ queryKey: queryKeys.bank });
+    cashDialog = null;
+    showMappingNotice(message);
+  }
+  const createCashOptions = createCashExpenseMutation(() => api);
+  const updateCashOptions = updateCashExpenseMutation(() => api);
+  const deleteCashOptions = deleteCashExpenseMutation(() => api);
+  const cashCreateMutation = createMutation({
+    ...createCashOptions,
+    onSuccess: () => cashSaved("已記下現金支出"),
+  });
+  const cashUpdateMutation = createMutation({
+    ...updateCashOptions,
+    onSuccess: () => cashSaved("已更新現金支出"),
+  });
+  const cashCategoryMutation = createMutation({
+    ...updateCashOptions,
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.bank }),
+  });
+  const cashDeleteMutation = createMutation({
+    ...deleteCashOptions,
+    onSuccess: () => {
+      closeDetail();
+      cashSaved("已刪除現金支出");
+    },
+  });
+  const cashError = $derived(
+    [$cashCreateMutation, $cashUpdateMutation, $cashDeleteMutation]
+      .map((mutation) => mutation.error)
+      .find(Boolean),
+  );
+  function resetCashMutations() {
+    $cashCreateMutation.reset();
+    $cashUpdateMutation.reset();
+    $cashDeleteMutation.reset();
+  }
+  function openCashDialog(item?: ActivityItem) {
+    resetCashMutations();
+    cashDialog =
+      item?.source === "cash"
+        ? { expense: { id: item.id, ...cashExpenseDraft(item) } }
+        : {};
+  }
+  function submitCash(input: CashExpenseInput) {
+    const id = cashDialog?.expense?.id;
+    if (id) $cashUpdateMutation.mutate({ id, ...input });
+    else $cashCreateMutation.mutate(input);
   }
   function showNeedsReview() {
     setView({ review: true });
@@ -915,14 +1005,20 @@
         item.source === "invoice" &&
         (item.id === target.id || item.invoiceId === target.id)
       );
-    if (target.source === "investment")
-      return item.source === "investment" && item.id === target.id;
+    if (target.source === "investment" || target.source === "cash")
+      return item.source === target.source && item.id === target.id;
     // bank:<id> 也涵蓋信用卡交易（同為 bank_transactions）。
     return (
       (item.source === "bank" || item.source === "card") &&
       (item.id === target.id || item.transactionId === target.id)
     );
   }
+  // 本月頁的「記一筆現金」：開啟對話框後清除參數，關閉後不會再被網址打開。
+  $effect(() => {
+    if (!view.addCash) return;
+    openCashDialog();
+    view = { ...view, addCash: false };
+  });
   $effect(() => {
     const target = view.activity;
     if (!target) return;
@@ -1053,11 +1149,21 @@
   >
     <div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
       <TransactionTabs value={view.tab} onChange={(tab) => setView({ tab })} />
-      {#if navigate}<button
-          type="button"
-          class="text-sm font-semibold text-steel hover:text-steel/80"
-          onclick={() => navigate?.("transaction-rules")}>自動整理 →</button
-        >{/if}
+      <div class="flex items-center gap-3">
+        <Button
+          size="sm"
+          variant="outline"
+          class="h-9"
+          data-testid="cash-expense-add"
+          onclick={() => openCashDialog()}
+          ><Plus class="size-4" />記一筆現金</Button
+        >
+        {#if navigate}<button
+            type="button"
+            class="text-sm font-semibold text-steel hover:text-steel/80"
+            onclick={() => navigate?.("transaction-rules")}>自動整理 →</button
+          >{/if}
+      </div>
     </div>
     {#if searching}
       <ActivitySearchHeader
@@ -1131,7 +1237,7 @@
                 : ""}</span
             >{/if}
         </div>
-        {#if $categoryMutation.isError}<p
+        {#if $categoryMutation.isError || $cashCategoryMutation.isError}<p
             role="alert"
             class="pb-2 text-sm font-medium text-coral"
           >
@@ -1236,6 +1342,8 @@
           ($roleMutation.isError || $roleResetMutation.isError)}
         onNoteSave={saveNote}
         foreignFee={foreignFeeLabel(detailItem, rawItems)}
+        onEditCash={openCashDialog}
+        onAddCash={() => openCashDialog()}
       />
     {/if}
     {#if pendingRole}
@@ -1252,6 +1360,23 @@
         failed={$roleMutation.isError}
         onCancel={() => (pendingRole = null)}
         onSubmit={submitRoleReason}
+      />
+    {/if}
+    {#if cashDialog}
+      <CashExpenseDialog
+        expense={cashDialog.expense}
+        {categoryOptions}
+        defaultDate={cashDefaultDate}
+        maxDate={today}
+        submitting={$cashCreateMutation.isPending ||
+          $cashUpdateMutation.isPending}
+        deleting={$cashDeleteMutation.isPending}
+        errorMessage={cashError ? messageFromError(cashError) : ""}
+        onCancel={() => (cashDialog = null)}
+        onSubmit={submitCash}
+        onDelete={() =>
+          cashDialog?.expense &&
+          $cashDeleteMutation.mutate(cashDialog.expense.id)}
       />
     {/if}
     {#if merchantPrompt}

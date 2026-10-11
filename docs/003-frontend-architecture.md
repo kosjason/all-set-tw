@@ -149,6 +149,9 @@ npm run verify:web
 列上與明細以「代墊 · 對象」標示，明細不再顯示對它無效的「排除統計計算」開關；收件匣的快速選單不提供
 這兩個角色。只有外幣待收時，卡片大字改列外幣（不換匯）。
 
+本月頁月份切換右側有「記一筆現金」快捷按鈕：跳到交易頁並帶 `add=cash`，交易頁開啟記帳對話框後
+清除參數（本月頁不直接 import 交易頁的元件）。
+
 可花設定為子頁 `features/month/BudgetPage`（`#/month/budget`，上層為本月）：
 
 - 每月消費預算（提示過去每月約花多少）、預期月收入（選填，留白為推算，用來預覽照預算可存下多少）、
@@ -273,6 +276,17 @@ summary」），前端不自行加總：
 商家？」，N 為目前月份同 `merchantKey`、非重複且不是使用者個別覆寫（`categorySource = user`）的筆數
 （`merchantSiblingCount`）；N 為 0 時改問是否記住商家。「套用並記住」再呼叫一次 categorize 帶
 `applyToMerchant: true`（寫入商家規則，回溯套用到該商家所有活動），「只改這筆」關閉詢問。
+
+## 現金支出
+
+交易頁分頁列右側的「記一筆現金」開啟 `components/CashExpenseDialog`（手機為底部 sheet）：金額（自動聚焦，
+接受千分位與全形數字，只收 1–1,000 萬的整數）、單層消費分類（與分類選單相同）、日期（本月預設今天，
+過去月份預設該月最後一天，不能晚於今天）與選填說明。寫入走 `data/cash-expenses/mutations.ts`
+（`POST`／`PUT`／`DELETE /api/cash-expenses`），成功後失效 `bank` 開頭的 query。現金支出在總帳列為
+「現金」來源；列上與明細的分類選單可直接改分類（`canCategorize` 對現金支出為 true，頁面改寫現金支出本身，
+不走 categorize API、也不詢問商家規則），明細的「編輯或刪除」重新開啟對話框，刪除前再確認一次。
+可細分的提款在列上與明細顯示「已細分 NT$X・未細分 NT$Y」（`cashWithdrawalText`），明細另有
+「記一筆現金支出」按鈕。`activity=cash:<id>` 可直接開啟現金支出的明細（週回顧連結）。
 
 ## 活動備註
 

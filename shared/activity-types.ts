@@ -30,7 +30,8 @@ export type CategorySource = (typeof CATEGORY_SOURCES)[number];
 
 export interface ActivityItem {
   id: string;
-  source: "bank" | "card" | "investment" | "invoice";
+  /** cash：使用者手動記的現金支出（見 cash-expenses.ts）。 */
+  source: "bank" | "card" | "investment" | "invoice" | "cash";
   date: string;
   /** Only true when the selected source value contains a reliable timestamp. */
   dateHasTime?: boolean;
@@ -127,6 +128,21 @@ export interface ActivityItem {
   matchScore?: number | null;
   /** 刷卡／銀行交易已合併的發票 id；沒有為 null。 */
   matchedInvoiceId?: string | null;
+  /**
+   * 可被現金支出細分的提款（見 cash-expenses.ts）：已細分與尚未細分的金額。
+   * 月 summary 只把 remaining 計入消費。
+   */
+  cashWithdrawal?: CashWithdrawalAllocation;
+  /** 現金支出（source = cash）的原始欄位，供編輯。 */
+  cashExpense?: { description: string | null };
+}
+
+/** 提款被現金支出細分的情形（新台幣，正數）。 */
+export interface CashWithdrawalAllocation {
+  /** 已由現金支出細分到各分類的金額。 */
+  allocated: number;
+  /** 尚未細分、仍以這筆提款計入消費的金額。 */
+  remaining: number;
 }
 
 /**

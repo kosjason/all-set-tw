@@ -6,6 +6,7 @@ import {
   activityInvoiceTwd,
   activitySourceLabel,
   bankTransactionMerchant,
+  cashWithdrawalText,
   foreignFeeLabel,
   invoiceAmountText,
   invoiceTransactionDifference,
@@ -127,5 +128,30 @@ describe("foreign-currency invoices", () => {
     );
     expect(foreignFeeLabel(fee, [fee])).toBe("國外交易服務費");
     expect(foreignFeeLabel(purchase, [purchase])).toBeUndefined();
+  });
+});
+
+describe("cash withdrawals", () => {
+  it("labels cash expenses and describes how much of a withdrawal is split", () => {
+    expect(activitySourceLabel({ ...item, source: "cash" })).toBe("現金");
+    expect(cashWithdrawalText(item)).toBeUndefined();
+    expect(
+      cashWithdrawalText({
+        ...item,
+        cashWithdrawal: { allocated: 0, remaining: 5000 },
+      }),
+    ).toBe("現金未細分 NT$5,000");
+    expect(
+      cashWithdrawalText({
+        ...item,
+        cashWithdrawal: { allocated: 300, remaining: 4700 },
+      }),
+    ).toBe("已細分 NT$300・未細分 NT$4,700");
+    expect(
+      cashWithdrawalText({
+        ...item,
+        cashWithdrawal: { allocated: 5000, remaining: 0 },
+      }),
+    ).toBe("已全部細分為現金支出（NT$5,000）");
   });
 });

@@ -438,6 +438,22 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
   `carryRoleOverrideAndNoteStatements` 搬移：兩邊都有角色時以 `updated_at` 較新者為準、備註不同時
   合併；中信刪除已入帳那筆前，也把其他 override 指向它的 `duplicate_of` 改指保留的那筆。
   共用合併以不分大小寫比對兩邊的對象。
+- 現金支出（`cash_expenses`，0074；`features/cash-expenses`：`POST /api/cash-expenses`、
+  `PUT`／`DELETE /api/cash-expenses/:id`）是使用者手動記的現金消費：台北日期（不晚於今天）、
+  1–1,000 萬的整數新台幣、消費分類（系統頂層消費分類或已存在的 `user:*`，收入與未分類回 400
+  `INVALID_CATEGORY`）與選填說明（NFKC、合併空白，1–100 字）。錯誤訊息直接顯示在記帳對話框，因此用中文。
+  `loadRoleActivities` 以 `cashExpenseActivityItem` 把現金支出列為 `source = cash` 的活動（一律為已確認的
+  消費，`roleReason = cash_expense`，分類即使用者指定的分類，沒有商家、備註與角色 override）。
+- 提款仍先計入消費：`shared/cash-expenses.ts` 的 `isCashWithdrawalPool` 認定銀行帳戶（非信用卡）的台幣
+  提款（文字符合 `CASH_WITHDRAWAL_PATTERN`）、角色為消費、不是重複、分類為「其他」或未分類者為可細分的
+  提款；使用者把提款歸到具體分類、改成代墊或轉帳時不細分。`allocateCashExpenses` 在讀取時把現金支出
+  分配到提款：先扣同月份的提款（由早到晚），不夠再扣上個月剩下的（由晚到早），仍不夠的部分照常計入消費；
+  分配不落地。可細分的提款帶 `cashWithdrawal: { allocated, remaining }`，月 summary 與
+  `activitySpendingEntries`（本月可花、週回顧）只把 `remaining` 計入消費（全部細分後不再列入消費明細），
+  現金支出依自己的分類計入，因此有提款可扣時月消費總額不變。每月的提款只會被當月與下個月的現金支出扣，
+  `loadRoleActivities` 在下個月有現金支出時多載入下個月的活動再分配，輸出仍只保留指定月份。
+  匯出的活動列出 `source = cash`（帳戶「現金」）並在提款上附 `cashWithdrawal`。全歷史搜尋與
+  「銀行／信用卡／發票」原始紀錄分頁不含現金支出。
 - `reviewStatus`：`auto`／`confirmed`（使用者 override、個別計算設定、發票配對決策）／
   `needs_review`。與角色正交。
 - `duplicateOf`：`{ kind: "bank_transaction" | "invoice", id }` 或 `null`；重複的活動仍列出，
@@ -740,7 +756,8 @@ summary 的 `spendingByCategory` 以套用後的分類計算。
 cama、85度C → `food`（排除餐具、餐桌、餐椅、餐券、飯店、電鍋／電子鍋、鍋具、麵粉）；全家、7-ELEVEN、萊爾富、OK
 等超商依品項判斷，判斷不出時為 `food`。付款平台排在所有品牌之前：Apple.com/bill、App Store、Google Play、
 TradingView、Trend Micro／趨勢科技 → `tech`；LINE禮物 → `misc`（人情）。Steam 等遊戲平台 → `entertainment`。
-無卡提款、ATM 提款、跨行提款與「提款」（不含提款卡、提款機）→ `misc`（現金提領，錢的去向未知）。
+無卡提款、ATM 提款、跨行提款與「提款」（不含提款卡、提款機）→ `misc`（現金提領，錢的去向未知；
+使用者記的現金支出會從這類提款扣，見「經濟角色」的現金支出）。
 
 活動搜尋（`GET /api/activity/search?q=`）比對原始文字、商家別名（別名對應的統編與名稱）、發票品項
 名稱，並支援金額語法：`125`（金額等於或文字包含）、`>1000`、`>=`、`<`、`<=`、`=`、`100-200`，

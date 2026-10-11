@@ -108,6 +108,16 @@ describe("transactions url state", () => {
     ).toEqual({ source: "invoice", id: "inv-1" });
   });
 
+  it("opens the cash expense dialog from add=cash and cash deep links", () => {
+    const parsed = parseActivityHash("#/transactions?month=2026-09&add=cash");
+    expect(parsed?.addCash).toBe(true);
+    expect(activityHash(parsed!, "2026-09")).toBe("#/transactions?add=cash");
+    expect(parseActivityHash("#/transactions?add=other")?.addCash).toBe(false);
+    expect(
+      parseActivityHash("#/transactions?activity=cash:c-1")?.activity,
+    ).toEqual({ source: "cash", id: "c-1" });
+  });
+
   it("writes the needs-review toggle as review=1", () => {
     const hash = activityHash({ ...defaultActivityViewState(), review: true });
     expect(hash).toBe("#/transactions?review=1");
