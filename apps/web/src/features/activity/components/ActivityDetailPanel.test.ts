@@ -136,10 +136,27 @@ describe("activity detail panel · paid in cash", () => {
     expect(dialog).toHaveTextContent(
       "勾選後，這家沒配到刷卡的發票都視為現金付款",
     );
-    await fireEvent.click(
-      screen.getByRole("checkbox", { name: "設定 虛構早餐店 都付現金" }),
-    );
+    const checkbox = screen.getByRole("checkbox", {
+      name: "設定 虛構早餐店 都付現金",
+    }) as HTMLInputElement;
+    await fireEvent.click(checkbox);
     expect(onPaidInCashChange).toHaveBeenCalledWith(breakfast, true);
+    // 勾選框維持伺服器的設定，重新載入後才改變（失敗時不會停在點過的狀態）。
+    expect(checkbox.checked).toBe(false);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("shows a failure next to the toggle", () => {
+    renderPanel({
+      item: breakfast,
+      invoice: undefined,
+      invoiceDetail: undefined,
+      onPaidInCashChange: vi.fn(),
+      paidInCashFailed: true,
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "無法更新「這家都付現金」",
+    );
   });
 
   it("explains when a marked invoice is deducted from withdrawals", () => {

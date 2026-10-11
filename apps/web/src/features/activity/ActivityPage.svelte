@@ -1009,6 +1009,7 @@
     return `${item.source}-${item.id}`;
   }
   function openDetail(item: ActivityItem) {
+    $paidInCashMutation.reset();
     detailKey = activityKey(item);
     window.history.pushState(
       { ...window.history.state, activityDetail: detailKey },
@@ -1363,7 +1364,8 @@
         onAddCash={() => openCashDialog()}
         onPaidInCashChange={changePaidInCash}
         paidInCashUpdating={$paidInCashMutation.isPending}
-        paidInCashFailed={$paidInCashMutation.isError}
+        paidInCashFailed={$paidInCashMutation.isError &&
+          $paidInCashMutation.variables?.merchantKey === detailItem.merchantKey}
       />
     {/if}
     {#if pendingRole}

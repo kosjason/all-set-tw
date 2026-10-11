@@ -17,7 +17,8 @@
   - onEditCash：編輯現金支出（只對現金支出顯示）。
   - onAddCash：從可細分的提款記一筆現金支出（只對這類提款顯示）。
   - onPaidInCashChange／paidInCashUpdating／paidInCashFailed：切換商家規則「這家都付現金」
-    （只對沒併入交易的台幣發票顯示）／更新中／失敗。
+    （只對沒併入交易的台幣發票顯示）／更新中／這個商家的更新失敗。勾選框一律顯示伺服器的
+    設定，成功後重新載入才改變。
   外幣發票的總額與品項以原幣顯示，總額另附台幣換算（`invoiceAmountText`）。
 -->
 <script module lang="ts">
@@ -549,18 +550,19 @@
                 aria-label={`${item.merchantPaidInCash ? "取消" : "設定"} ${name} 都付現金`}
                 checked={item.merchantPaidInCash === true}
                 disabled={paidInCashUpdating}
-                onchange={(event: Event) =>
-                  onPaidInCashChange(
-                    item,
-                    (event.currentTarget as HTMLInputElement).checked,
-                  )}
+                onchange={(event: Event) => {
+                  // 勾選框先還原成目前的設定，等重新載入後才反映；失敗時不會停在點過的狀態。
+                  (event.currentTarget as HTMLInputElement).checked =
+                    item.merchantPaidInCash === true;
+                  onPaidInCashChange(item, !item.merchantPaidInCash);
+                }}
               />
-            </label>{/if}{#if paidInCashFailed}<p
-              role="alert"
-              class="pb-3 text-sm text-coral"
-            >
-              無法更新「這家都付現金」，請稍後再試。
-            </p>{/if}
+            </label>{#if paidInCashFailed}<p
+                role="alert"
+                class="pb-3 text-sm text-coral"
+              >
+                無法更新「這家都付現金」，請稍後再試。
+              </p>{/if}{/if}
 
           <!-- 代墊／收回代墊已明確不計入收支，舊的排除設定對它沒有作用，不顯示。 -->
           {#if item.transactionId && item.economicRole !== "advance" && item.economicRole !== "reimbursement"}<label
