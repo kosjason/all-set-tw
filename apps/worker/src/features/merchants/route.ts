@@ -27,6 +27,7 @@ const updateMerchantSchema = z
     displayName: z.string().trim().max(60).nullable().optional(),
     categoryId: z.string().min(1).max(64).nullable().optional(),
     economicRole: z.enum(RULE_ECONOMIC_ROLES).nullable().optional(),
+    paidInCash: z.boolean().optional(),
   })
   .strict()
   .refine((body) => Object.keys(body).length > 0);

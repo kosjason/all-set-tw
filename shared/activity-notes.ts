@@ -50,6 +50,8 @@ export interface ActivityExportItem {
    * remaining 以這筆提款計入消費。不是可細分的提款時省略。
    */
   cashWithdrawal?: { allocated: number; remaining: number };
+  /** 發票視為現金付款（商家規則「這家都付現金」），金額從提款扣；其他省略。 */
+  paidInCash?: true;
   /** 非 TWD 時提供原幣金額與幣別。 */
   originalAmount?: number;
   currency: string;

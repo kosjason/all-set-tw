@@ -12,6 +12,10 @@ import { MISC_CATEGORY_ID, UNCATEGORIZED_CATEGORY_ID } from "./categories";
  *
  * 每月提款只會被當月與下個月的現金支出扣，所以計算某月份時需要載入下個月的
  * 提款與現金支出（見 worker 的 loadRoleActivities）。
+ *
+ * 商家規則勾選「這家都付現金」時，這家沒有配對到刷卡／銀行交易的台幣發票也視為
+ * 現金支出（{@link isCashPaidInvoice}）：發票照常依分類計入消費，並和手記的現金支出
+ * 一樣從提款扣，避免同一筆現金在提款與發票各算一次。
  */
 
 /**
@@ -108,6 +112,44 @@ export function isCashWithdrawalPool(
 
 const CASH_WITHDRAWAL_FEE = /手續費|\bfee\b/iu;
 
+/**
+ * 視為現金付款、要從提款扣的發票：商家規則勾選「這家都付現金」，沒有配對到交易
+ * （`matchStatus = unmatched`，含使用者選「分開記錄」），角色為消費、不是重複的台幣發票。
+ * 等待刷卡入帳、有歧義、已配對或使用者改成其他角色的發票不算。
+ */
+export function isCashPaidInvoice(
+  item: Pick<
+    ActivityItem,
+    | "source"
+    | "merchantPaidInCash"
+    | "matchStatus"
+    | "economicRole"
+    | "duplicateOf"
+    | "currency"
+    | "amount"
+  >,
+) {
+  return (
+    item.source === "invoice" &&
+    item.merchantPaidInCash === true &&
+    item.matchStatus === "unmatched" &&
+    item.economicRole === "spending" &&
+    !item.duplicateOf &&
+    item.currency === "TWD" &&
+    item.amount != null &&
+    item.amount > 0
+  );
+}
+
+/** 從提款扣的金額（新台幣，正數）：手記的現金支出與視為現金付款的發票；其他為 0。 */
+function cashNeed(item: ActivityItem) {
+  if (item.source === "cash")
+    return item.economicRole === "spending" && item.amount != null
+      ? Math.abs(item.amount)
+      : 0;
+  return isCashPaidInvoice(item) ? Math.abs(item.amount!) : 0;
+}
+
 function previousMonth(month: string) {
   const [year, value] = month.split("-").map(Number);
   return value === 1
@@ -141,7 +183,8 @@ function take(entries: PoolEntry[], need: number) {
 }
 
 /**
- * 把現金支出分配到提款，回傳加上 `cashWithdrawal` 的活動（其他活動原樣回傳）。
+ * 把現金支出（含視為現金付款的發票）分配到提款，回傳加上 `cashWithdrawal` 的活動
+ * （其他活動原樣回傳）。
  * 傳入的活動必須涵蓋連續的月份，並一併傳入最後一個月的下個月（至少其中的現金支出
  * 與提款），最後一個月的提款才會被下個月的現金支出扣到；跳過月份會讓同一月份在
  * 不同呼叫中算出不同結果。
@@ -153,9 +196,9 @@ export function allocateCashExpenses<T extends ActivityItem>(items: T[]): T[] {
     const dateKey = activityDateKey(item);
     const month = dateKey.slice(0, 7);
     if (!month) continue;
-    if (item.source === "cash") {
-      if (item.economicRole !== "spending" || item.amount == null) continue;
-      needs.set(month, (needs.get(month) ?? 0) + Math.abs(item.amount));
+    if (item.source === "cash" || item.source === "invoice") {
+      const need = cashNeed(item);
+      if (need > 0) needs.set(month, (needs.get(month) ?? 0) + need);
       continue;
     }
     if (!isCashWithdrawalPool(item)) continue;

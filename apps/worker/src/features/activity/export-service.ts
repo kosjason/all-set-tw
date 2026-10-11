@@ -1,6 +1,7 @@
 import {
   activityDateKey,
   categoryLabel,
+  isCashPaidInvoice,
   summarizeActivityMonths,
   UNCATEGORIZED_CATEGORY_ID,
   type ActivityExportItem,
@@ -81,6 +82,7 @@ export function toActivityExportItem(
     account: accountLabel(item),
   };
   if (item.cashWithdrawal) exported.cashWithdrawal = item.cashWithdrawal;
+  if (isCashPaidInvoice(item)) exported.paidInCash = true;
   if (item.currency !== "TWD" && item.amount != null)
     exported.originalAmount =
       item.source === "invoice" ? -Math.abs(item.amount) : item.amount;

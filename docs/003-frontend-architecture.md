@@ -286,7 +286,12 @@ summary」），前端不自行加總：
 「現金」來源；列上與明細的分類選單可直接改分類（`canCategorize` 對現金支出為 true，頁面改寫現金支出本身，
 不走 categorize API、也不詢問商家規則），明細的「編輯或刪除」重新開啟對話框，刪除前再確認一次。
 可細分的提款在列上與明細顯示「已細分 NT$X・未細分 NT$Y」（`cashWithdrawalText`），明細另有
-「記一筆現金支出」按鈕。`activity=cash:<id>` 可直接開啟現金支出的明細（週回顧連結）。
+「記一筆現金支出」按鈕。
+
+沒有併入交易、有商家的台幣發票，明細「活動設定」有「這家都付現金」勾選框（`canMarkPaidInCash`）：
+呼叫 `data/merchants/mutations.ts` 的 `setMerchantPaidInCashMutation`（`PUT /api/merchants/:key`，只帶
+`paidInCash`），成功後失效 `bank` 開頭的 query。從提款扣的發票在列上顯示「這家付現金・從提款扣」
+（`cashPaidText`）；已勾選但待確認或等待刷卡的發票，明細說明暫不從提款扣。`activity=cash:<id>` 可直接開啟現金支出的明細（週回顧連結）。
 
 ## 活動備註
 

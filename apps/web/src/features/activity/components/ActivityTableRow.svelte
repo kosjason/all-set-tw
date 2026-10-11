@@ -53,6 +53,7 @@
   import { activityDisplayAmount } from "../model/chart";
   import {
     activityInvoiceDifference,
+    cashPaidText,
     cashWithdrawalText,
   } from "../model/labels";
   import {
@@ -101,7 +102,9 @@
   );
   const name = $derived(activityDisplayName(item));
   const itemsSummary = $derived(activityItemsSummary(item));
-  const cashWithdrawal = $derived(cashWithdrawalText(item));
+  const cashWithdrawal = $derived(
+    cashWithdrawalText(item) ?? cashPaidText(item),
+  );
   const searchHit = $derived(
     searching &&
       Boolean(query) &&

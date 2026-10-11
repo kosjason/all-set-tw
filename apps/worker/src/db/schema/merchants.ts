@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   sqliteTable,
   text,
+  integer,
   primaryKey,
   index,
   foreignKey,
@@ -11,7 +12,7 @@ import { classificationCategories } from "./classification";
 
 // SQL migrations remain authoritative for schema shape and constraints.
 
-/** 使用者對商家的顯示名稱與商家規則（分類、經濟角色）。 */
+/** 使用者對商家的顯示名稱與商家規則（分類、經濟角色、是否都付現金）。 */
 export const merchantAliases = sqliteTable(
   "merchant_aliases",
   {
@@ -21,6 +22,10 @@ export const merchantAliases = sqliteTable(
     economicRole: text("economic_role"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
+    /** 0075：這家都付現金（沒配對到交易的發票從提款扣）。 */
+    paidInCash: integer("paid_in_cash", { mode: "boolean" })
+      .notNull()
+      .default(sql`0`),
   },
   (table) => [
     primaryKey({ columns: [table.merchantKey] }),
@@ -47,5 +52,6 @@ export const merchantAliases = sqliteTable(
     OR economic_role IN ('spending', 'income', 'own_transfer', 'investment', 'card_payment')
   `,
     ),
+    check("merchant_aliases_check_4", sql`paid_in_cash IN (0, 1)`),
   ],
 );

@@ -277,6 +277,13 @@ export async function annotateActivityItems(
       .map((key) => (key ? aliasByKey.get(key) : undefined))
       .find((candidate) => candidate?.displayName);
     if (displayAlias?.displayName) item.displayName = displayAlias.displayName;
+    // 「這家都付現金」只看發票自己的商家（是否從提款扣見 isCashPaidInvoice）。
+    if (
+      item.source === "invoice" &&
+      primaryKey &&
+      aliasByKey.get(primaryKey)?.paidInCash
+    )
+      item.merchantPaidInCash = true;
 
     const lines = item.invoiceId
       ? (itemsByInvoice.get(item.invoiceId) ?? [])

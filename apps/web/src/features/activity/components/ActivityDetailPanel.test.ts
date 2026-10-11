@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen } from "@testing-library/svelte";
 import { describe, expect, it, vi } from "vitest";
 import type { InvoiceRow } from "@/data/invoices/types";
 import ActivityDetailPanel, {
@@ -108,5 +108,59 @@ describe("activity detail panel · foreign invoices", () => {
     expect(dialog).toHaveTextContent(
       "屬於 Claude 的國外交易服務費，分類沿用該筆消費",
     );
+  });
+});
+
+describe("activity detail panel · paid in cash", () => {
+  const breakfast: ActivityItem = {
+    ...usdInvoice,
+    id: "inv-cash",
+    invoiceId: "inv-cash",
+    title: "虛構早餐店",
+    amount: 85,
+    currency: "TWD",
+    amountTwd: 85,
+    merchantKey: "ban:12345678",
+    matchStatus: "unmatched",
+  };
+
+  it("offers the merchant toggle on unmatched TWD invoices", async () => {
+    const onPaidInCashChange = vi.fn();
+    const dialog = renderPanel({
+      item: breakfast,
+      invoice: undefined,
+      invoiceDetail: undefined,
+      onPaidInCashChange,
+    });
+    expect(dialog).toHaveTextContent("這家都付現金");
+    expect(dialog).toHaveTextContent(
+      "勾選後，這家沒配到刷卡的發票都視為現金付款",
+    );
+    await fireEvent.click(
+      screen.getByRole("checkbox", { name: "設定 虛構早餐店 都付現金" }),
+    );
+    expect(onPaidInCashChange).toHaveBeenCalledWith(breakfast, true);
+  });
+
+  it("explains when a marked invoice is deducted from withdrawals", () => {
+    const dialog = renderPanel({
+      item: { ...breakfast, merchantPaidInCash: true },
+      invoice: undefined,
+      invoiceDetail: undefined,
+      onPaidInCashChange: vi.fn(),
+    });
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: "取消 虛構早餐店 都付現金",
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+    expect(dialog).toHaveTextContent("這張發票視為現金付款，從提款扣");
+  });
+
+  it("hides the toggle for foreign or merged invoices", () => {
+    renderPanel({ onPaidInCashChange: vi.fn() });
+    expect(screen.queryByText("這家都付現金")).toBeNull();
   });
 });

@@ -16,6 +16,8 @@
   - foreignFee：國外交易服務費的說明（「屬於 ○○ 的國外交易服務費」）；不是服務費時省略。
   - onEditCash：編輯現金支出（只對現金支出顯示）。
   - onAddCash：從可細分的提款記一筆現金支出（只對這類提款顯示）。
+  - onPaidInCashChange／paidInCashUpdating／paidInCashFailed：切換商家規則「這家都付現金」
+    （只對沒併入交易的台幣發票顯示）／更新中／失敗。
   外幣發票的總額與品項以原幣顯示，總額另附台幣換算（`invoiceAmountText`）。
 -->
 <script module lang="ts">
@@ -51,6 +53,9 @@
     foreignFee?: string;
     onEditCash?: (item: ActivityItem) => void;
     onAddCash?: () => void;
+    onPaidInCashChange?: (item: ActivityItem, paidInCash: boolean) => void;
+    paidInCashUpdating?: boolean;
+    paidInCashFailed?: boolean;
   }
 </script>
 
@@ -77,8 +82,10 @@
     invoiceAmountText,
     activitySourceLabel,
     bankTransactionMerchant,
+    canMarkPaidInCash,
     cashWithdrawalText,
   } from "../model/labels";
+  import { isCashPaidInvoice } from "@taiwan-fin-hub/shared";
   import { formatActivityDate } from "../model/list";
   import { canCategorize } from "../model/categorize";
   import {
@@ -127,6 +134,9 @@
     foreignFee,
     onEditCash,
     onAddCash,
+    onPaidInCashChange,
+    paidInCashUpdating = false,
+    paidInCashFailed = false,
   }: ActivityDetailPanelProps = $props();
   const invoiceCurrency = $derived(invoice?.currency ?? "TWD");
   const amount = $derived(activityDisplayAmount(item));
@@ -519,6 +529,38 @@
                 >{categoryOptionText(category)}</Badge
               >{/if}
           </div>
+
+          {#if onPaidInCashChange && canMarkPaidInCash(item)}<label
+              class="flex cursor-pointer items-center justify-between gap-4 py-4"
+            >
+              <span>
+                <span class="block font-semibold">這家都付現金</span>
+                <span
+                  class="mt-1 block text-caption text-subtle"
+                  data-paid-in-cash-hint
+                  >{!item.merchantPaidInCash
+                    ? "勾選後，這家沒配到刷卡的發票都視為現金付款，從提款扣，不和提款重複計算"
+                    : isCashPaidInvoice(item)
+                      ? "這張發票視為現金付款，從提款扣，不和提款重複計算"
+                      : "這張發票待確認或等待刷卡入帳，暫時不從提款扣"}</span
+                >
+              </span>
+              <Checkbox
+                aria-label={`${item.merchantPaidInCash ? "取消" : "設定"} ${name} 都付現金`}
+                checked={item.merchantPaidInCash === true}
+                disabled={paidInCashUpdating}
+                onchange={(event: Event) =>
+                  onPaidInCashChange(
+                    item,
+                    (event.currentTarget as HTMLInputElement).checked,
+                  )}
+              />
+            </label>{/if}{#if paidInCashFailed}<p
+              role="alert"
+              class="pb-3 text-sm text-coral"
+            >
+              無法更新「這家都付現金」，請稍後再試。
+            </p>{/if}
 
           <!-- 代墊／收回代墊已明確不計入收支，舊的排除設定對它沒有作用，不顯示。 -->
           {#if item.transactionId && item.economicRole !== "advance" && item.economicRole !== "reimbursement"}<label

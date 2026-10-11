@@ -26,6 +26,8 @@ export interface MerchantAlias {
   categoryId: string | null;
   /** 商家規則的角色（回溯套用）。 */
   economicRole: EconomicRole | null;
+  /** 這家都付現金：沒配對到交易的發票從提款扣。 */
+  paidInCash: boolean;
   updatedAt: string;
 }
 
@@ -34,6 +36,7 @@ export interface MerchantUpdateRequest {
   displayName?: string | null;
   categoryId?: string | null;
   economicRole?: EconomicRole | null;
+  paidInCash?: boolean;
 }
 
 export interface MerchantUpdateResponse {

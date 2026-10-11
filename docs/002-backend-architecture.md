@@ -452,9 +452,16 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
   `activitySpendingEntries`（本月可花、週回顧）只把 `remaining` 計入消費（全部細分後不再列入消費明細），
   現金支出依自己的分類計入：扣同月份的提款時該月消費總額不變；扣到上個月的提款時，上個月的「其他」
   減少、這個月照常計入（兩個月合計不變，已過去月份的數字會事後變動）。每月的提款只會被當月與下個月的現金支出扣，
-  `loadRoleActivities` 在下個月有現金支出時多載入下個月的活動再分配，輸出仍只保留指定月份。
+  `loadRoleActivities` 在下個月有現金支出、或有任何商家勾選「這家都付現金」時多載入下個月的活動再分配，
+  輸出仍只保留指定月份。
   匯出的活動列出 `source = cash`（帳戶「現金」）並在提款上附 `cashWithdrawal`。全歷史搜尋與
   「銀行／信用卡／發票」原始紀錄分頁不含現金支出。
+- 商家規則「這家都付現金」（`merchant_aliases.paid_in_cash`，0075；`PUT /api/merchants/:merchantKey`
+  帶 `paidInCash`，其他規則欄位保留）：annotate 在該商家的發票上標 `merchantPaidInCash`；
+  `isCashPaidInvoice` 認定沒有配對到交易（`matchStatus = unmatched`，含使用者選分開記錄）、角色為消費、
+  不是重複的台幣發票視為現金付款，在 `allocateCashExpenses` 中與手記的現金支出一樣從提款扣。
+  發票本身照常依分類計入消費，因此同一筆現金不會在提款與發票各算一次。等待刷卡、有歧義或已配對的
+  發票不扣；匯出的這類發票帶 `paidInCash: true`。
 - `reviewStatus`：`auto`／`confirmed`（使用者 override、個別計算設定、發票配對決策）／
   `needs_review`。與角色正交。
 - `duplicateOf`：`{ kind: "bank_transaction" | "invoice", id }` 或 `null`；重複的活動仍列出，

@@ -135,6 +135,11 @@ export interface ActivityItem {
   cashWithdrawal?: CashWithdrawalAllocation;
   /** 現金支出（source = cash）的原始欄位，供編輯。 */
   cashExpense?: { description: string | null };
+  /**
+   * 發票的商家規則勾選了「這家都付現金」（見 cash-expenses.ts 的 isCashPaidInvoice）。
+   * 只有發票項目會帶。
+   */
+  merchantPaidInCash?: boolean;
 }
 
 /** 提款被現金支出細分的情形（新台幣，正數）。 */

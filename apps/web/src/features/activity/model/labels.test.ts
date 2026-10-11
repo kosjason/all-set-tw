@@ -6,6 +6,8 @@ import {
   activityInvoiceTwd,
   activitySourceLabel,
   bankTransactionMerchant,
+  canMarkPaidInCash,
+  cashPaidText,
   cashWithdrawalText,
   foreignFeeLabel,
   invoiceAmountText,
@@ -153,5 +155,41 @@ describe("cash withdrawals", () => {
         cashWithdrawal: { allocated: 5000, remaining: 0 },
       }),
     ).toBe("已全部細分為現金支出（NT$5,000）");
+  });
+});
+
+describe("cash-paid invoices", () => {
+  const cashInvoice: ActivityItem = {
+    ...item,
+    source: "invoice",
+    amount: 85,
+    merchantKey: "ban:12345678",
+    merchantPaidInCash: true,
+    matchStatus: "unmatched",
+    economicRole: "spending",
+    duplicateOf: null,
+  };
+
+  it("labels invoices deducted from withdrawals", () => {
+    expect(cashPaidText(cashInvoice)).toBe("這家付現金・從提款扣");
+    expect(
+      cashPaidText({ ...cashInvoice, matchStatus: "ambiguous" }),
+    ).toBeUndefined();
+    expect(cashPaidText(item)).toBeUndefined();
+  });
+
+  it("only offers the toggle on unmerged TWD invoices with a merchant", () => {
+    expect(canMarkPaidInCash(cashInvoice)).toBe(true);
+    expect(canMarkPaidInCash({ ...cashInvoice, merchantKey: undefined })).toBe(
+      false,
+    );
+    expect(
+      canMarkPaidInCash({
+        ...cashInvoice,
+        duplicateOf: { kind: "bank_transaction", id: "t" },
+      }),
+    ).toBe(false);
+    expect(canMarkPaidInCash({ ...cashInvoice, currency: "USD" })).toBe(false);
+    expect(canMarkPaidInCash({ ...cashInvoice, source: "card" })).toBe(false);
   });
 });
