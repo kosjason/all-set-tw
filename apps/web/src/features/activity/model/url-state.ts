@@ -19,7 +19,7 @@ export type ActivityRoleFilter = "all" | EconomicRole;
 
 /** `activity=<source>:<id>`：由收件匣、信用卡頁連到的單筆活動（開啟明細）。 */
 export interface ActivityTarget {
-  source: "bank" | "card" | "invoice" | "investment";
+  source: "bank" | "card" | "invoice" | "investment" | "cash";
   id: string;
 }
 
@@ -46,6 +46,8 @@ export interface ActivityViewState {
   card: string;
   /** 要直接開啟明細的活動；開啟後由頁面清除。 */
   activity: ActivityTarget | null;
+  /** `add=cash`：直接開啟「記一筆現金支出」（本月頁的快捷按鈕）；開啟後由頁面清除。 */
+  addCash: boolean;
   sort: ActivitySortMode;
   /** 搜尋模式的時間範圍。 */
   time: ActivitySearchTime;
@@ -74,6 +76,7 @@ const ACTIVITY_SOURCES: readonly ActivityTarget["source"][] = [
   "card",
   "invoice",
   "investment",
+  "cash",
 ];
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -91,6 +94,7 @@ export function defaultActivityViewState(): ActivityViewState {
     review: false,
     card: "",
     activity: null,
+    addCash: false,
     sort: DEFAULT_ACTIVITY_SORT,
     time: "all",
     from: "",
@@ -183,6 +187,7 @@ export function parseActivityHash(hash: string): ActivityViewState | null {
     review: params.get("review") === "1",
     card: CARD_PATTERN.test(card) ? card : "",
     activity: parseActivityTarget(params.get("activity")),
+    addCash: params.get("add") === "cash",
     sort: isActivitySortMode(sort) ? sort : DEFAULT_ACTIVITY_SORT,
     time: oneOf(params.get("time"), TIMES, "all"),
     from: DATE_PATTERN.test(from) ? from : "",
@@ -213,6 +218,7 @@ export function activityHash(
   if (state.card) params.set("card", state.card);
   if (state.activity)
     params.set("activity", `${state.activity.source}:${state.activity.id}`);
+  if (state.addCash) params.set("add", "cash");
   if (state.sort !== DEFAULT_ACTIVITY_SORT) params.set("sort", state.sort);
   if (query && state.time !== "all") {
     params.set("time", state.time);

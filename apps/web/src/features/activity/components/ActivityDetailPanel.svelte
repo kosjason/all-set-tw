@@ -14,6 +14,8 @@
   - roleUpdating／roleFailed：角色更新進行中／失敗。
   - onNoteSave：儲存備註（空字串刪除）；頁面依 noteTarget 決定寫到交易或發票。
   - foreignFee：國外交易服務費的說明（「屬於 ○○ 的國外交易服務費」）；不是服務費時省略。
+  - onEditCash：編輯現金支出（只對現金支出顯示）。
+  - onAddCash：從可細分的提款記一筆現金支出（只對這類提款顯示）。
   外幣發票的總額與品項以原幣顯示，總額另附台幣換算（`invoiceAmountText`）。
 -->
 <script module lang="ts">
@@ -47,6 +49,8 @@
     roleFailed?: boolean;
     onNoteSave: (item: ActivityItem, note: string) => Promise<unknown>;
     foreignFee?: string;
+    onEditCash?: (item: ActivityItem) => void;
+    onAddCash?: () => void;
   }
 </script>
 
@@ -73,6 +77,7 @@
     invoiceAmountText,
     activitySourceLabel,
     bankTransactionMerchant,
+    cashWithdrawalText,
   } from "../model/labels";
   import { formatActivityDate } from "../model/list";
   import { canCategorize } from "../model/categorize";
@@ -120,6 +125,8 @@
     roleFailed = false,
     onNoteSave,
     foreignFee,
+    onEditCash,
+    onAddCash,
   }: ActivityDetailPanelProps = $props();
   const invoiceCurrency = $derived(invoice?.currency ?? "TWD");
   const amount = $derived(activityDisplayAmount(item));
@@ -399,7 +406,40 @@
                 仍會列入當月支出；你可以在下方手動配對。
               </p>
             </div>{/if}
-          {#if !transaction && !invoice}<div class="rounded-xl bg-paper p-4">
+          {#if item.cashWithdrawal}<div
+              class="rounded-xl bg-paper p-4"
+              data-cash-withdrawal-detail
+            >
+              <p class="text-caption font-semibold text-subtle">現金提款</p>
+              <p class="mt-1 font-semibold">{cashWithdrawalText(item)}</p>
+              <p class="mt-1 text-caption text-subtle">
+                提款先以「其他」計入消費；記下的現金支出會從這裡扣，改計入實際分類。
+              </p>
+              {#if onAddCash}<Button
+                  variant="outline"
+                  class="mt-3 h-11"
+                  onclick={onAddCash}>記一筆現金支出</Button
+                >{/if}
+            </div>{/if}
+          {#if item.source === "cash"}<div
+              class="rounded-xl bg-paper p-4"
+              data-cash-expense-detail
+            >
+              <p class="text-caption font-semibold text-subtle">現金支出</p>
+              <p class="mt-1 break-words font-semibold">
+                {item.cashExpense?.description ?? "沒有說明"}
+              </p>
+              <p class="mt-1 text-caption text-subtle">
+                先從同月（不夠再扣上個月）尚未細分的提款扣；都扣不到時才另外計入消費。
+              </p>
+              {#if onEditCash}<Button
+                  variant="outline"
+                  class="mt-3 h-11"
+                  onclick={() => onEditCash(item)}>編輯或刪除</Button
+                >{/if}
+            </div>{:else if !transaction && !invoice}<div
+              class="rounded-xl bg-paper p-4"
+            >
               <p class="text-caption font-semibold text-subtle">來源說明</p>
               <p class="mt-1 break-words font-semibold">
                 {item.subtitle || item.title}

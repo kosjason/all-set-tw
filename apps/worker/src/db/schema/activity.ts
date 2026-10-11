@@ -2,10 +2,13 @@ import { sql } from "drizzle-orm";
 import {
   sqliteTable,
   text,
+  integer,
   primaryKey,
   check,
   index,
+  foreignKey,
 } from "drizzle-orm/sqlite-core";
+import { classificationCategories } from "./classification";
 
 // SQL migrations remain authoritative for schema shape and constraints.
 
@@ -88,5 +91,47 @@ export const activityNotes = sqliteTable(
       sql`target_kind IN ('bank_transaction', 'invoice')`,
     ),
     check("activity_notes_check_2", sql`length(note) BETWEEN 1 AND 1000`),
+  ],
+);
+
+/** 使用者手動記的現金支出（0074）；分配到提款在讀取時計算，不落地。 */
+export const cashExpenses = sqliteTable(
+  "cash_expenses",
+  {
+    id: text("id").notNull(),
+    expenseDate: text("expense_date").notNull(),
+    amount: integer("amount").notNull(),
+    categoryId: text("category_id").notNull(),
+    description: text("description"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    index("idx_cash_expenses_date").on(table.expenseDate, table.createdAt),
+    foreignKey({
+      columns: [table.categoryId],
+      foreignColumns: [classificationCategories.id],
+    }),
+    check(
+      "cash_expenses_check_1",
+      sql`
+    expense_date GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]'
+    AND expense_date IS date(expense_date)
+  `,
+    ),
+    check(
+      "cash_expenses_check_2",
+      sql`
+    typeof(amount) = 'integer' AND amount BETWEEN 1 AND 10000000
+  `,
+    ),
+    check(
+      "cash_expenses_check_3",
+      sql`
+    description IS NULL
+    OR (description = trim(description) AND length(description) BETWEEN 1 AND 100)
+  `,
+    ),
   ],
 );

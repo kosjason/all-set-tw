@@ -1,7 +1,11 @@
 import {
   activityDateKey,
+  allocateCashExpenses,
   applyEconomicRoleOverride,
   buildActivityItems,
+  cashExpenseActivityItem,
+  categoryLabel,
+  compareActivityItems,
   deduplicateBankTransactions,
   economicRoleOverrideKey,
   INVOICE_MATCH_CONTEXT_DAYS,
@@ -11,6 +15,7 @@ import {
   taipeiDay,
   type ActivityItem,
   type ActivitySourceRecord,
+  type CashExpense,
   type ActivitySummaryIncompleteReason,
   type EconomicRoleFields,
   type EconomicRoleOverride,
@@ -25,6 +30,8 @@ import { getExchangeRates } from "../exchange-rates/service";
 import { loadActivityRoleOverrides } from "../activity-roles/service";
 import { listInvoiceTransactionPreferences } from "./repository";
 import { annotateActivityItems } from "../merchants/annotate";
+import { listCashExpensesInRange } from "../cash-expenses/repository";
+import { listClassificationCategories } from "../classification/repository";
 
 function shiftDay(day: string, offset: number) {
   const date = new Date(`${day}T00:00:00.000Z`);
@@ -68,6 +75,9 @@ export function syncedCardSuffixes(
 /**
  * 讀取月份的活動並推導經濟角色。前後多載入發票配對所需的天數，
  * 讓跨月邊界的配對與歧義判斷看得到所有候選；輸出只保留指定月份。
+ *
+ * 現金支出會從同月或上個月的提款扣（見 cash-expenses.ts）：下個月有現金支出時，
+ * 多載入下個月的活動，最後一個月的提款才扣得到。
  */
 export async function loadRoleActivities(
   db: D1Database,
@@ -76,15 +86,24 @@ export async function loadRoleActivities(
 ) {
   const first = months[0];
   const last = months.at(-1)!;
-  const range = {
-    from: shiftDay(`${first}-01`, -INVOICE_MATCH_CONTEXT_DAYS),
-    to: shiftDay(`${nextMonth(last)}-01`, INVOICE_MATCH_CONTEXT_DAYS),
-  };
-  const [accountRows, preferences, rates] = await Promise.all([
+  const carryMonth = nextMonth(last);
+  const [accountRows, preferences, rates, cashExpenses] = await Promise.all([
     listBankAccounts(db),
     listInvoiceTransactionPreferences(db),
     getExchangeRates(db),
+    listCashExpensesInRange(db, {
+      from: `${first}-01`,
+      to: `${nextMonth(carryMonth)}-01`,
+    }),
   ]);
+  const loadsCarryMonth = cashExpenses.some((expense) =>
+    expense.date.startsWith(carryMonth),
+  );
+  const loadedLast = loadsCarryMonth ? carryMonth : last;
+  const range = {
+    from: shiftDay(`${first}-01`, -INVOICE_MATCH_CONTEXT_DAYS),
+    to: shiftDay(`${nextMonth(loadedLast)}-01`, INVOICE_MATCH_CONTEXT_DAYS),
+  };
   const [bank, invoices, trades] = await Promise.all([
     loadBankRange(db, range, undefined, accountRows),
     getInvoicesRange(db, range),
@@ -148,6 +167,9 @@ export async function loadRoleActivities(
     ]),
   );
   const monthSet = new Set(months);
+  const itemMonths = new Set(
+    loadsCarryMonth ? [...months, carryMonth] : months,
+  );
   const built = buildActivityItems(
     carryInvoiceAdvancesToTransactions(transactions, invoiceRoles),
     invoices,
@@ -158,12 +180,15 @@ export async function loadRoleActivities(
       roles: { invoices: invoiceRoles, invoiceMatches: statuses },
       exchangeRates,
     },
-  ).filter((item) => monthSet.has(activityDateKey(item).slice(0, 7)));
+  ).filter((item) => itemMonths.has(activityDateKey(item).slice(0, 7)));
   // 商家名稱、品項、新分類（含已配對發票的分類與商家規則）與分類建議。
-  const items = await annotateActivityItems(db, built, {
-    transactions,
-    invoices,
-  });
+  const [annotated, cashItems] = await Promise.all([
+    annotateActivityItems(db, built, { transactions, invoices }),
+    cashExpenseItems(db, cashExpenses, itemMonths),
+  ]);
+  const items = allocateCashExpenses(
+    [...annotated, ...cashItems].sort(compareActivityItems),
+  ).filter((item) => monthSet.has(activityDateKey(item).slice(0, 7)));
   return {
     items,
     transactions,
@@ -172,6 +197,29 @@ export async function loadRoleActivities(
     dataIssues: [...dataIssues],
     rates: exchangeRates,
   };
+}
+
+/** 現金支出的活動項目；分類名稱以資料庫為準（含使用者自訂分類）。 */
+async function cashExpenseItems(
+  db: D1Database,
+  expenses: CashExpense[],
+  months: ReadonlySet<string>,
+): Promise<ActivityItem[]> {
+  const included = expenses.filter((expense) =>
+    months.has(expense.date.slice(0, 7)),
+  );
+  if (!included.length) return [];
+  const labels = new Map(
+    (await listClassificationCategories(db)).map((row) => [row.id, row.label]),
+  );
+  return included.map((expense) =>
+    cashExpenseActivityItem(
+      expense,
+      labels.get(expense.categoryId) ??
+        categoryLabel(expense.categoryId) ??
+        expense.categoryId,
+    ),
+  );
 }
 
 /** 指定月份（遞增）的活動與推導角色，不含投資交易明細；供收件匣等彙整使用。 */
@@ -225,7 +273,8 @@ export async function getActivitySources(
     invoice: 0,
   };
   for (const item of items)
-    if (item.source !== "investment") sourceCounts[item.source] += 1;
+    if (item.source !== "investment" && item.source !== "cash")
+      sourceCounts[item.source] += 1;
   const records: ActivitySourceRecord[] = items
     .filter((item) => item.source === source)
     .map((item) => {

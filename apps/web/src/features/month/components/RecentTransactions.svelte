@@ -33,6 +33,7 @@
     card: "信用卡",
     investment: "投資",
     invoice: "發票",
+    cash: "現金",
   } as const;
 </script>
 

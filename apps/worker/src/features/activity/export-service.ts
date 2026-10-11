@@ -28,6 +28,7 @@ export function maskLongDigits(text: string) {
 
 function accountLabel(item: ActivityItem) {
   if (item.source === "invoice") return "電子發票";
+  if (item.source === "cash") return "現金";
   const parts = [item.institutionName, item.accountName]
     .map((part) => part?.trim())
     .filter((part): part is string => Boolean(part));
@@ -79,6 +80,7 @@ export function toActivityExportItem(
     itemsPreview: (item.itemsPreview ?? []).map(maskLongDigits),
     account: accountLabel(item),
   };
+  if (item.cashWithdrawal) exported.cashWithdrawal = item.cashWithdrawal;
   if (item.currency !== "TWD" && item.amount != null)
     exported.originalAmount =
       item.source === "invoice" ? -Math.abs(item.amount) : item.amount;
@@ -87,7 +89,8 @@ export function toActivityExportItem(
 
 /**
  * 給 LLM 分析用的月份活動與每月 summary。已配對發票的重複項目不另列（金額以交易為準，
- * 品項已併入交易的 itemsPreview）；投資交易明細不列（金流以銀行交割為準）。
+ * 品項已併入交易的 itemsPreview）；投資交易明細不列（金流以銀行交割為準）。現金支出
+ * 列為 source = cash，被細分的提款附 cashWithdrawal（只有 remaining 計入消費）。
  */
 export async function exportActivity(
   db: D1Database,

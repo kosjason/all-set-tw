@@ -43,6 +43,7 @@ export function activitySourceLabel(item: ActivityItem) {
     card: "信用卡",
     investment: "投資",
     invoice: "發票",
+    cash: "現金",
   }[item.source];
   return item.source !== "invoice" && item.invoiceId ? `${label}＋發票` : label;
 }
@@ -90,4 +91,18 @@ export function foreignFeeLabel(
   );
   const name = parent ? parent.displayName?.trim() || parent.title : "";
   return name ? `屬於 ${name} 的國外交易服務費` : "國外交易服務費";
+}
+
+/**
+ * 提款被現金支出細分的情形（列上與明細共用）；不是可細分的提款時為 undefined。
+ * 例如「已細分 NT$3,000・未細分 NT$2,000」。
+ */
+export function cashWithdrawalText(item: ActivityItem) {
+  const cash = item.cashWithdrawal;
+  if (!cash) return undefined;
+  if (cash.allocated === 0)
+    return `現金未細分 ${formatCurrency(cash.remaining)}`;
+  if (cash.remaining === 0)
+    return `已全部細分為現金支出（${formatCurrency(cash.allocated)}）`;
+  return `已細分 ${formatCurrency(cash.allocated)}・未細分 ${formatCurrency(cash.remaining)}`;
 }
