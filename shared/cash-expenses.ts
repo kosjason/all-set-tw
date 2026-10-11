@@ -142,7 +142,9 @@ function take(entries: PoolEntry[], need: number) {
 
 /**
  * 把現金支出分配到提款，回傳加上 `cashWithdrawal` 的活動（其他活動原樣回傳）。
- * 呼叫端要一併傳入下個月份的活動，最後一個月的提款才會被下個月的現金支出扣到。
+ * 傳入的活動必須涵蓋連續的月份，並一併傳入最後一個月的下個月（至少其中的現金支出
+ * 與提款），最後一個月的提款才會被下個月的現金支出扣到；跳過月份會讓同一月份在
+ * 不同呼叫中算出不同結果。
  */
 export function allocateCashExpenses<T extends ActivityItem>(items: T[]): T[] {
   const pools = new Map<string, PoolEntry[]>();

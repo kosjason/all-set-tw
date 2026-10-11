@@ -171,6 +171,20 @@ describe("cash expenses API", () => {
     );
   });
 
+  it("rejects impossible dates and fractional amounts in the database too", async () => {
+    const insert = (date: string, amount: number) =>
+      harness.binding
+        .prepare(
+          "INSERT INTO cash_expenses (id, expense_date, amount, category_id, created_at, updated_at) VALUES (?1, ?2, ?3, 'food', ?4, ?4)",
+        )
+        .bind(crypto.randomUUID(), date, amount, now)
+        .run();
+    await expect(insert("2026-02-30", 100)).rejects.toThrow(/CHECK/u);
+    await expect(insert("2026-19-39", 100)).rejects.toThrow(/CHECK/u);
+    await expect(insert("2026-09-05", 1.5)).rejects.toThrow(/CHECK/u);
+    await expect(insert("2026-09-05", 0)).rejects.toThrow(/CHECK/u);
+  });
+
   it("splits a withdrawal into categories without changing the monthly total", async () => {
     const before = await month("2026-09");
     expect(before.byId.get("w-sep")?.cashWithdrawal).toEqual({

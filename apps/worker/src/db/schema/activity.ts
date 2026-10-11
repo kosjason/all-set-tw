@@ -117,9 +117,15 @@ export const cashExpenses = sqliteTable(
       "cash_expenses_check_1",
       sql`
     expense_date GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]'
+    AND expense_date IS date(expense_date)
   `,
     ),
-    check("cash_expenses_check_2", sql`amount BETWEEN 1 AND 10000000`),
+    check(
+      "cash_expenses_check_2",
+      sql`
+    typeof(amount) = 'integer' AND amount BETWEEN 1 AND 10000000
+  `,
+    ),
     check(
       "cash_expenses_check_3",
       sql`

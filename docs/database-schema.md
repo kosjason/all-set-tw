@@ -477,8 +477,8 @@ CREATE TABLE "budget_settings" (
 | 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
 | ---: | --- | --- | --- | :---: | --- | ---: | --- |
 | 1 | `id` | 現金支出 id（UUID）。 | TEXT | NO | — | 1 | — |
-| 2 | `expense_date` | 消費日期（台北日期 YYYY-MM-DD）。 | TEXT | NO | — | — | — |
-| 3 | `amount` | 新台幣整數金額，1–10,000,000（CHECK 限制）。 | INTEGER | NO | — | — | — |
+| 2 | `expense_date` | 消費日期（台北日期 YYYY-MM-DD，必須是實際存在的日期；CHECK 限制）。 | TEXT | NO | — | — | — |
+| 3 | `amount` | 新台幣整數金額（儲存型別必須是 integer），1–10,000,000（CHECK 限制）。 | INTEGER | NO | — | — | — |
 | 4 | `category_id` | 消費分類，參照 classification_categories.id；API 只接受消費分類（不含收入與未分類）。 | TEXT | NO | — | — | — |
 | 5 | `description` | 說明（例如「夜市」），1–100 字；沒有說明為 NULL，列表顯示「現金支出」。 | TEXT | YES | — | — | — |
 | 6 | `created_at` | 建立時間。 | TEXT | NO | — | — | — |
@@ -503,8 +503,11 @@ CREATE TABLE cash_expenses (
   id TEXT NOT NULL PRIMARY KEY,
   expense_date TEXT NOT NULL CHECK (
     expense_date GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]'
+    AND expense_date IS date(expense_date)
   ),
-  amount INTEGER NOT NULL CHECK (amount BETWEEN 1 AND 10000000),
+  amount INTEGER NOT NULL CHECK (
+    typeof(amount) = 'integer' AND amount BETWEEN 1 AND 10000000
+  ),
   category_id TEXT NOT NULL REFERENCES classification_categories (id),
   description TEXT CHECK (
     description IS NULL
