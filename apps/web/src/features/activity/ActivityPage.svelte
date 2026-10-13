@@ -1151,7 +1151,17 @@
   function holdNotice() {
     window.clearTimeout(noticeTimer);
   }
-  function releaseNotice() {
+  /** 滑鼠移出且焦點不在提示內（或焦點移出且滑鼠不在提示上）才重新倒數。 */
+  function releaseNotice(event: PointerEvent | FocusEvent) {
+    const notice = event.currentTarget as HTMLElement;
+    const next = event instanceof FocusEvent ? event.relatedTarget : null;
+    if (next instanceof Node && notice.contains(next)) return;
+    if (
+      event.type === "pointerleave" &&
+      notice.contains(document.activeElement)
+    )
+      return;
+    if (event.type === "focusout" && notice.matches(":hover")) return;
     if (mappingNotice) scheduleNoticeClose(3000);
   }
   function invoiceForItem(item: ActivityItem) {

@@ -7,7 +7,7 @@ import type { Env } from "../../../src/platform/env";
 import { createTestD1 } from "../../helpers/d1";
 
 // 合成資料：虛構的現金支出。台北今天是 2026-10-11，「常用」看含今天的 90 天，
-// 也就是 2026-07-14（含）之後；豆花在 07-13，不列入。
+// 也就是 2026-07-14（含）之後：07-14 的仙草列入，07-13 的豆花不列入。
 
 const rows: Array<[string, number, string, string | null, string]> = [
   // 日期、金額、分類、說明、建立時間
@@ -29,8 +29,9 @@ const rows: Array<[string, number, string, string | null, string]> = [
   ["2026-07-12", 500, "shopping", "夜市", "2026-07-12T04:00:00.000Z"],
   ["2026-07-13", 80, "food", "豆花", "2026-07-13T01:00:00.000Z"],
   ["2026-07-13", 80, "food", "豆花", "2026-07-13T02:00:00.000Z"],
-  // 只記過一次的依最近日期排，最多 8 個（零在第 9 個，被擋掉）。
-  ["2026-07-14", 5, "food", "零", "2026-07-14T01:00:00.000Z"],
+  ["2026-07-14", 70, "food", "仙草", "2026-07-14T01:00:00.000Z"],
+  ["2026-07-14", 70, "food", "仙草", "2026-07-14T02:00:00.000Z"],
+  // 只記過一次的依最近日期排，最多 8 個（一排第 9，被擋掉）。
   ["2026-08-01", 10, "food", "一", "2026-08-01T01:00:00.000Z"],
   ["2026-08-02", 20, "food", "二", "2026-08-02T01:00:00.000Z"],
   ["2026-08-03", 30, "food", "三", "2026-08-03T01:00:00.000Z"],
@@ -78,39 +79,29 @@ describe("frequent cash expenses", () => {
     const { items } = (await response.json()) as {
       items: FrequentCashExpense[];
     };
-    expect(items).toEqual([
-      {
-        description: "鮮奶茶",
-        amount: 35,
-        categoryId: "food",
-        uses: 3,
-        lastDate: "2026-10-09",
-      },
-      {
-        description: "計程車",
-        amount: 200,
-        categoryId: "transport",
-        uses: 2,
-        lastDate: "2026-09-21",
-      },
-      {
-        description: "早餐",
-        amount: 60,
-        categoryId: "food",
-        uses: 1,
-        lastDate: "2026-10-11",
-      },
-      {
-        description: "鮮奶茶",
-        amount: 50,
-        categoryId: "food",
-        uses: 1,
-        lastDate: "2026-10-10",
-      },
-      expect.objectContaining({ description: "四" }),
-      expect.objectContaining({ description: "三" }),
-      expect.objectContaining({ description: "二" }),
-      expect.objectContaining({ description: "一" }),
+    expect(
+      items.map(({ description, amount, uses, lastDate }) => [
+        description,
+        amount,
+        uses,
+        lastDate,
+      ]),
+    ).toEqual([
+      ["鮮奶茶", 35, 3, "2026-10-09"],
+      ["計程車", 200, 2, "2026-09-21"],
+      ["仙草", 70, 2, "2026-07-14"],
+      ["早餐", 60, 1, "2026-10-11"],
+      ["鮮奶茶", 50, 1, "2026-10-10"],
+      ["四", 40, 1, "2026-08-04"],
+      ["三", 30, 1, "2026-08-03"],
+      ["二", 20, 1, "2026-08-02"],
     ]);
+    expect(items[0]).toEqual({
+      description: "鮮奶茶",
+      amount: 35,
+      categoryId: "food",
+      uses: 3,
+      lastDate: "2026-10-09",
+    });
   });
 });
