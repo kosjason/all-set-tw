@@ -1007,10 +1007,15 @@
     if (!item.merchantKey) return;
     $paidInCashMutation.mutate({ merchantKey: item.merchantKey, paidInCash });
   }
+  // 同步鎖：mutation 的 isPending 在下一個 tick 才更新，連點「常用」或儲存不會送出兩筆。
+  let cashSubmitLocked = false;
   function submitCash(input: CashExpenseInput) {
+    if (cashSubmitLocked) return;
+    cashSubmitLocked = true;
+    const unlock = { onSettled: () => (cashSubmitLocked = false) };
     const id = cashDialog?.expense?.id;
-    if (id) $cashUpdateMutation.mutate({ id, ...input });
-    else $cashCreateMutation.mutate(input);
+    if (id) $cashUpdateMutation.mutate({ id, ...input }, unlock);
+    else $cashCreateMutation.mutate(input, unlock);
   }
   function showNeedsReview() {
     setView({ review: true });
@@ -1055,7 +1060,12 @@
   // 本月頁的「記一筆現金」：等「常用」讀完（成功或失敗）再開啟，對話框才知道要不要自動
   // 聚焦金額；開啟後清除參數，關閉後不會再被網址打開。
   $effect(() => {
-    if (!view.addCash || $frequentCash.isPending) return;
+    // 離線時查詢會暫停（fetchStatus = paused），不等它，直接開啟。
+    if (
+      !view.addCash ||
+      ($frequentCash.isPending && $frequentCash.fetchStatus === "fetching")
+    )
+      return;
     openCashDialog();
     view = { ...view, addCash: false };
   });
@@ -1125,15 +1135,24 @@
     qc.invalidateQueries({ queryKey: queryKeys.invoiceTransactionMappings });
     qc.invalidateQueries({ queryKey: queryKeys.bank });
   }
+  let noticeTimer: number | undefined;
+  function scheduleNoticeClose(delay: number) {
+    window.clearTimeout(noticeTimer);
+    const notice = mappingNotice;
+    noticeTimer = window.setTimeout(() => {
+      if (mappingNotice === notice) mappingNotice = null;
+    }, delay);
+  }
   function showMappingNotice(message: string, undo?: () => void) {
-    const notice = { message, undo };
-    mappingNotice = notice;
-    window.setTimeout(
-      () => {
-        if (mappingNotice === notice) mappingNotice = null;
-      },
-      undo ? 6000 : 3500,
-    );
+    mappingNotice = { message, undo };
+    scheduleNoticeClose(undo ? 6000 : 3500);
+  }
+  // 滑鼠移入或鍵盤聚焦提示時暫停倒數，「復原」不會在按之前消失。
+  function holdNotice() {
+    window.clearTimeout(noticeTimer);
+  }
+  function releaseNotice() {
+    if (mappingNotice) scheduleNoticeClose(3000);
   }
   function invoiceForItem(item: ActivityItem) {
     return loadedInvoice(item.invoiceId);
@@ -1478,7 +1497,12 @@
       />
     {/if}
     {#if mappingNotice}<div
+        role="status"
         aria-live="polite"
+        onpointerenter={holdNotice}
+        onpointerleave={releaseNotice}
+        onfocusin={holdNotice}
+        onfocusout={releaseNotice}
         class="fixed left-1/2 top-20 z-[85] flex w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-3 rounded-xl bg-ink px-4 py-3 text-sm font-semibold text-white shadow-xl"
       >
         <Check class="size-5 shrink-0 text-lime-300" /><span

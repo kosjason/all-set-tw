@@ -33,7 +33,7 @@ export const CASH_EXPENSE_AMOUNT_MAX = 10_000_000;
 export const CASH_EXPENSE_DEFAULT_TITLE = "現金支出";
 /** 「常用」最多列幾個。 */
 export const FREQUENT_CASH_EXPENSE_LIMIT = 8;
-/** 「常用」只看最近幾天記過的現金支出，很久沒記的一次性消費會自然消失。 */
+/** 「常用」只看最近幾天（含今天的台北日期）記過的現金支出，很久沒記的一次性消費會自然消失。 */
 export const FREQUENT_CASH_EXPENSE_DAYS = 90;
 
 /**

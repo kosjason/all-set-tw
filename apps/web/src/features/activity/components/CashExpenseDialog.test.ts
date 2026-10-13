@@ -137,7 +137,10 @@ describe("CashExpenseDialog", () => {
         },
       });
       expect(screen.getByText("點一下直接記")).toBeTruthy();
-      // 有常用時不自動聚焦金額（手機不會先跳出鍵盤）。
+      // 有常用時不自動聚焦金額（手機不會先跳出鍵盤），焦點在對話框標題。
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { name: "記一筆現金支出" }),
+      );
       expect(document.activeElement).not.toBe(
         screen.getByLabelText("或輸入金額"),
       );

@@ -68,12 +68,15 @@
   let description = $state(initial?.description ?? "");
   let confirmingDelete = $state(false);
   let amountField = $state<HTMLInputElement>();
-  // 開啟時已有「常用」就不自動聚焦金額，手機不會一打開就跳出鍵盤擋住常用。
+  let titleField = $state<HTMLHeadingElement>();
+  // 開啟時已有「常用」就不自動聚焦金額（手機不會一打開就跳出鍵盤擋住常用），改聚焦標題，
+  // 讓焦點進到對話框裡。
   const focusAmount = untrack(
     () => Boolean(expense) || !onQuickAdd || frequent.length === 0,
   );
   $effect(() => {
     if (focusAmount) amountField?.focus();
+    else titleField?.focus();
   });
 
   // 只接受整數元；允許輸入千分位逗號與全形數字。
@@ -141,7 +144,12 @@
     onsubmit={submit}
     data-testid="cash-expense-dialog"
   >
-    <h2 id="cash-expense-title" class="text-lg font-semibold">
+    <h2
+      id="cash-expense-title"
+      bind:this={titleField}
+      tabindex="-1"
+      class="text-lg font-semibold focus:outline-none"
+    >
       {expense ? "編輯現金支出" : "記一筆現金支出"}
     </h2>
     <p class="mt-1 text-sm text-subtle">

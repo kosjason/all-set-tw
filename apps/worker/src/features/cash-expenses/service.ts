@@ -125,8 +125,9 @@ export async function getFrequentCashExpenses(
   db: D1Database,
   now = new Date(),
 ) {
+  // 含今天共 90 個台北日期。
   const since = new Date(`${taipeiDay(now)}T00:00:00.000Z`);
-  since.setUTCDate(since.getUTCDate() - FREQUENT_CASH_EXPENSE_DAYS);
+  since.setUTCDate(since.getUTCDate() - (FREQUENT_CASH_EXPENSE_DAYS - 1));
   return {
     items: await listFrequentCashExpenses(
       db,
