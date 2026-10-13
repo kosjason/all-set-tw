@@ -1,6 +1,8 @@
 import {
   CASH_EXPENSE_AMOUNT_MAX,
   CASH_EXPENSE_DESCRIPTION_MAX,
+  FREQUENT_CASH_EXPENSE_DAYS,
+  FREQUENT_CASH_EXPENSE_LIMIT,
   isIncomeCategoryId,
   isUncategorizedCategoryId,
   SPENDING_TOP_LEVEL_CATEGORY_IDS,
@@ -12,6 +14,7 @@ import {
   deleteCashExpense,
   findCashExpense,
   insertCashExpense,
+  listFrequentCashExpenses,
   updateCashExpense,
 } from "./repository";
 
@@ -115,4 +118,21 @@ export async function editCashExpense(
 
 export async function removeCashExpense(db: D1Database, id: string) {
   if (!(await deleteCashExpense(db, id))) throw new CashExpenseNotFoundError();
+}
+
+/** 記帳對話框的「常用」：最近 {@link FREQUENT_CASH_EXPENSE_DAYS} 天（台北日期）記過的現金支出。 */
+export async function getFrequentCashExpenses(
+  db: D1Database,
+  now = new Date(),
+) {
+  // 含今天共 90 個台北日期。
+  const since = new Date(`${taipeiDay(now)}T00:00:00.000Z`);
+  since.setUTCDate(since.getUTCDate() - (FREQUENT_CASH_EXPENSE_DAYS - 1));
+  return {
+    items: await listFrequentCashExpenses(
+      db,
+      since.toISOString().slice(0, 10),
+      FREQUENT_CASH_EXPENSE_LIMIT,
+    ),
+  };
 }

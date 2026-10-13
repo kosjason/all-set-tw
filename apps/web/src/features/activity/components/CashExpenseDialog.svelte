@@ -7,8 +7,11 @@
   - defaultDate：新增時預設日期；maxDate：最晚可選的日期（台北今天）。
   - submitting／deleting：送出／刪除中；errorMessage：失敗訊息。
   - onCancel：關閉；onSubmit：送出正規化後的輸入；onDelete：編輯時刪除這筆。
+  - frequent／onQuickAdd：新增時在金額上方列出「常用」（最近記過的說明＋金額＋分類），
+    點一下即以目前選的日期直接記一筆，不必再填表。
 -->
 <script module lang="ts">
+  import type { FrequentCashExpense } from "@taiwan-fin-hub/shared";
   import type { ActivityCategoryOption } from "@/data/activity/categories";
 
   export interface CashExpenseDraft {
@@ -29,6 +32,8 @@
     onCancel: () => void;
     onSubmit: (input: CashExpenseDraft) => void;
     onDelete?: () => void;
+    frequent?: readonly FrequentCashExpense[];
+    onQuickAdd?: (input: CashExpenseDraft) => void;
   }
 </script>
 
@@ -39,6 +44,7 @@
     CASH_EXPENSE_DESCRIPTION_MAX,
   } from "@taiwan-fin-hub/shared";
   import Button from "@/shared/ui/Button.svelte";
+  import { formatCurrency } from "@/shared/format/financial";
 
   let {
     expense,
@@ -51,6 +57,8 @@
     onCancel,
     onSubmit,
     onDelete,
+    frequent = [],
+    onQuickAdd,
   }: CashExpenseDialogProps = $props();
 
   const initial = untrack(() => expense);
@@ -60,7 +68,16 @@
   let description = $state(initial?.description ?? "");
   let confirmingDelete = $state(false);
   let amountField = $state<HTMLInputElement>();
-  $effect(() => amountField?.focus());
+  let titleField = $state<HTMLHeadingElement>();
+  // 開啟時已有「常用」就不自動聚焦金額（手機不會一打開就跳出鍵盤擋住常用），改聚焦標題，
+  // 讓焦點進到對話框裡。
+  const focusAmount = untrack(
+    () => Boolean(expense) || !onQuickAdd || frequent.length === 0,
+  );
+  $effect(() => {
+    if (focusAmount) amountField?.focus();
+    else titleField?.focus();
+  });
 
   // 只接受整數元；允許輸入千分位逗號與全形數字。
   const amount = $derived.by(() => {
@@ -87,6 +104,28 @@
     });
   }
 
+  const showFrequent = $derived(
+    !expense && Boolean(onQuickAdd) && frequent.length > 0,
+  );
+  /** 選的日期不是今天時，「常用」標題提示會記在哪一天（例如 9/30）。 */
+  const quickDateHint = $derived(
+    date && date !== maxDate
+      ? `記在 ${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`
+      : "",
+  );
+  function categoryEmoji(id: string) {
+    return categoryOptions.find((option) => option.id === id)?.emoji ?? "";
+  }
+  function quickAdd(preset: FrequentCashExpense) {
+    if (busy || dateInvalid) return;
+    onQuickAdd?.({
+      date,
+      amount: preset.amount,
+      categoryId: preset.categoryId,
+      description: preset.description,
+    });
+  }
+
   function keydown(event: KeyboardEvent) {
     if (event.key === "Escape" && !busy) onCancel();
   }
@@ -105,15 +144,50 @@
     onsubmit={submit}
     data-testid="cash-expense-dialog"
   >
-    <h2 id="cash-expense-title" class="text-lg font-semibold">
+    <h2
+      id="cash-expense-title"
+      bind:this={titleField}
+      tabindex="-1"
+      class="text-lg font-semibold focus:outline-none"
+    >
       {expense ? "編輯現金支出" : "記一筆現金支出"}
     </h2>
     <p class="mt-1 text-sm text-subtle">
       先從這個月（不夠再扣上個月）還沒細分的提款扣，把提款拆成實際分類；沒有提款可扣時才另外計入消費。
     </p>
 
+    {#if showFrequent}
+      <section class="mt-4" aria-labelledby="cash-expense-frequent-title">
+        <h3 id="cash-expense-frequent-title" class="text-sm font-semibold">
+          常用<span class="ml-2 font-normal text-subtle"
+            >點一下直接記{quickDateHint ? `（${quickDateHint}）` : ""}</span
+          >
+        </h3>
+        <div
+          class="mt-2 flex flex-wrap gap-2"
+          data-testid="cash-expense-frequent"
+        >
+          {#each frequent as preset (`${preset.description}\u0000${preset.amount}\u0000${preset.categoryId}`)}
+            <button
+              type="button"
+              class="flex min-h-11 items-center gap-1.5 rounded-full border border-ink/15 bg-paper px-3 text-sm font-medium transition hover:border-ink/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steel disabled:opacity-50"
+              aria-label={`記一筆 ${preset.description} ${formatCurrency(preset.amount)}`}
+              disabled={busy || dateInvalid}
+              onclick={() => quickAdd(preset)}
+              >{#if categoryEmoji(preset.categoryId)}<span aria-hidden="true"
+                  >{categoryEmoji(preset.categoryId)}</span
+                >{/if}<span class="max-w-40 truncate">{preset.description}</span
+              ><span class="tabular-nums text-subtle"
+                >{formatCurrency(preset.amount)}</span
+              ></button
+            >
+          {/each}
+        </div>
+      </section>
+    {/if}
+
     <label class="mt-4 block text-sm font-semibold" for="cash-expense-amount"
-      >金額</label
+      >{showFrequent ? "或輸入金額" : "金額"}</label
     >
     <div class="relative mt-2">
       <span

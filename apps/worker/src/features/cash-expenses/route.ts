@@ -15,6 +15,7 @@ import {
   CashExpenseInvalidError,
   CashExpenseNotFoundError,
   editCashExpense,
+  getFrequentCashExpenses,
   removeCashExpense,
 } from "./service";
 
@@ -54,7 +55,11 @@ export const cashExpenseRoutes = honoFactory.createApp();
 registerCashExpenseRoutes(cashExpenseRoutes);
 
 function registerCashExpenseRoutes(api: Hono<AppBindings>) {
-  // 現金支出列在活動（/activity/items、summary）中；這裡只負責寫入。
+  // 現金支出列在活動（/activity/items、summary）中；這裡負責寫入與記帳對話框的「常用」。
+  api.get("/cash-expenses/frequent", async (c) =>
+    c.json(await getFrequentCashExpenses(c.env.DB)),
+  );
+
   api.post(
     "/cash-expenses",
     zValidator(

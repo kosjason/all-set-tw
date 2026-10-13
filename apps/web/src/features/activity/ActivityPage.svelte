@@ -51,6 +51,7 @@
     updateCashExpenseMutation,
     type CashExpenseInput,
   } from "@/data/cash-expenses/mutations";
+  import { frequentCashExpensesQuery } from "@/data/cash-expenses/queries";
   import {
     categorizeActivitiesMutation,
     deleteActivityNoteMutation,
@@ -133,7 +134,7 @@
     TRANSACTION_TAB_LABELS,
     type ActivityFilterChipKey,
   } from "./model/view-filters";
-  import { rateMap } from "@/shared/format/financial";
+  import { formatCurrency, rateMap } from "@/shared/format/financial";
   import { recentMonthRange, recentMonthKeys } from "@/shared/date-range";
   let { api, navigate }: { api: ApiClient; navigate?: Navigate } = $props();
   const initialSelectedMonth = currentActivityMonthKey();
@@ -377,7 +378,12 @@
     transactionId?: string;
     amountTwd?: number | null;
   } | null>(null);
-  let mappingNotice = $state("");
+  // 畫面上方的短暫提示；undo 存在時多一個「復原」按鈕（例如剛記下的現金支出）。
+  // 用 raw：計時器以同一個物件判斷提示是否已被新的取代（$state 會包成 proxy）。
+  let mappingNotice = $state.raw<{
+    message: string;
+    undo?: () => void;
+  } | null>(null);
   let detailKey = $state<string | null>(null);
   // 分類選單：單層的 8 個消費分類（emoji＋名稱）與自訂分類；分類 API 還沒回來或
   // 失敗時直接用 shared/ 的分類。
@@ -927,17 +933,30 @@
       description: item.cashExpense?.description ?? null,
     };
   }
-  function cashSaved(message: string) {
+  function cashSaved(message: string, undo?: () => void) {
     qc.invalidateQueries({ queryKey: queryKeys.bank });
     cashDialog = null;
-    showMappingNotice(message);
+    showMappingNotice(message, undo);
   }
   const createCashOptions = createCashExpenseMutation(() => api);
   const updateCashOptions = updateCashExpenseMutation(() => api);
   const deleteCashOptions = deleteCashExpenseMutation(() => api);
+  // 新增（含點「常用」）後的提示附「復原」，點錯可以馬上刪掉。
   const cashCreateMutation = createMutation({
     ...createCashOptions,
-    onSuccess: () => cashSaved("已記下現金支出"),
+    onSuccess: (created) =>
+      cashSaved(
+        `已記下${created.description ? ` ${created.description}` : "現金支出"} ${formatCurrency(created.amount)}`,
+        () => $cashUndoMutation.mutate(created.id),
+      ),
+  });
+  const cashUndoMutation = createMutation({
+    ...deleteCashOptions,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.bank });
+      showMappingNotice("已復原");
+    },
+    onError: () => showMappingNotice("無法復原，請到列表刪除這筆"),
   });
   const cashUpdateMutation = createMutation({
     ...updateCashOptions,
@@ -954,6 +973,8 @@
       cashSaved("已刪除現金支出");
     },
   });
+  // 「常用」在頁面載入時先讀好，開啟對話框時就能決定要不要自動聚焦金額。
+  const frequentCash = createQuery(frequentCashExpensesQuery(() => api));
   const cashError = $derived(
     [$cashCreateMutation, $cashUpdateMutation, $cashDeleteMutation]
       .map((mutation) => mutation.error)
@@ -986,10 +1007,15 @@
     if (!item.merchantKey) return;
     $paidInCashMutation.mutate({ merchantKey: item.merchantKey, paidInCash });
   }
+  // 同步鎖：mutation 的 isPending 在下一個 tick 才更新，連點「常用」或儲存不會送出兩筆。
+  let cashSubmitLocked = false;
   function submitCash(input: CashExpenseInput) {
+    if (cashSubmitLocked) return;
+    cashSubmitLocked = true;
+    const unlock = { onSettled: () => (cashSubmitLocked = false) };
     const id = cashDialog?.expense?.id;
-    if (id) $cashUpdateMutation.mutate({ id, ...input });
-    else $cashCreateMutation.mutate(input);
+    if (id) $cashUpdateMutation.mutate({ id, ...input }, unlock);
+    else $cashCreateMutation.mutate(input, unlock);
   }
   function showNeedsReview() {
     setView({ review: true });
@@ -1031,9 +1057,15 @@
       (item.id === target.id || item.transactionId === target.id)
     );
   }
-  // 本月頁的「記一筆現金」：開啟對話框後清除參數，關閉後不會再被網址打開。
+  // 本月頁的「記一筆現金」：等「常用」讀完（成功或失敗）再開啟，對話框才知道要不要自動
+  // 聚焦金額；開啟後清除參數，關閉後不會再被網址打開。
   $effect(() => {
-    if (!view.addCash) return;
+    // 離線時查詢會暫停（fetchStatus = paused），不等它，直接開啟。
+    if (
+      !view.addCash ||
+      ($frequentCash.isPending && $frequentCash.fetchStatus === "fetching")
+    )
+      return;
     openCashDialog();
     view = { ...view, addCash: false };
   });
@@ -1103,11 +1135,34 @@
     qc.invalidateQueries({ queryKey: queryKeys.invoiceTransactionMappings });
     qc.invalidateQueries({ queryKey: queryKeys.bank });
   }
-  function showMappingNotice(message: string) {
-    mappingNotice = message;
-    window.setTimeout(() => {
-      if (mappingNotice === message) mappingNotice = "";
-    }, 3500);
+  let noticeTimer: number | undefined;
+  function scheduleNoticeClose(delay: number) {
+    window.clearTimeout(noticeTimer);
+    const notice = mappingNotice;
+    noticeTimer = window.setTimeout(() => {
+      if (mappingNotice === notice) mappingNotice = null;
+    }, delay);
+  }
+  function showMappingNotice(message: string, undo?: () => void) {
+    mappingNotice = { message, undo };
+    scheduleNoticeClose(undo ? 6000 : 3500);
+  }
+  // 滑鼠移入或鍵盤聚焦提示時暫停倒數，「復原」不會在按之前消失。
+  function holdNotice() {
+    window.clearTimeout(noticeTimer);
+  }
+  /** 滑鼠移出且焦點不在提示內（或焦點移出且滑鼠不在提示上）才重新倒數。 */
+  function releaseNotice(event: PointerEvent | FocusEvent) {
+    const notice = event.currentTarget as HTMLElement;
+    const next = event instanceof FocusEvent ? event.relatedTarget : null;
+    if (next instanceof Node && notice.contains(next)) return;
+    if (
+      event.type === "pointerleave" &&
+      notice.contains(document.activeElement)
+    )
+      return;
+    if (event.type === "focusout" && notice.matches(":hover")) return;
+    if (mappingNotice) scheduleNoticeClose(3000);
   }
   function invoiceForItem(item: ActivityItem) {
     return loadedInvoice(item.invoiceId);
@@ -1399,6 +1454,8 @@
         onDelete={() =>
           cashDialog?.expense &&
           $cashDeleteMutation.mutate(cashDialog.expense.id)}
+        frequent={$frequentCash.data?.items ?? []}
+        onQuickAdd={submitCash}
       />
     {/if}
     {#if merchantPrompt}
@@ -1450,10 +1507,26 @@
       />
     {/if}
     {#if mappingNotice}<div
+        role="status"
         aria-live="polite"
+        onpointerenter={holdNotice}
+        onpointerleave={releaseNotice}
+        onfocusin={holdNotice}
+        onfocusout={releaseNotice}
         class="fixed left-1/2 top-20 z-[85] flex w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-3 rounded-xl bg-ink px-4 py-3 text-sm font-semibold text-white shadow-xl"
       >
-        <Check class="size-5 shrink-0 text-lime-300" />{mappingNotice}
+        <Check class="size-5 shrink-0 text-lime-300" /><span
+          class="min-w-0 flex-1">{mappingNotice.message}</span
+        >{#if mappingNotice.undo}<button
+            type="button"
+            class="min-h-9 shrink-0 rounded-lg px-2 font-semibold text-lime-300 hover:bg-white/10"
+            disabled={$cashUndoMutation.isPending}
+            onclick={() => {
+              const undo = mappingNotice?.undo;
+              mappingNotice = null;
+              undo?.();
+            }}>復原</button
+          >{/if}
       </div>{/if}
   </div>
 {/if}

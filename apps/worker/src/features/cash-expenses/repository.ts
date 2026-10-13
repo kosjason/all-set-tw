@@ -1,5 +1,5 @@
-import { and, asc, eq, gte, lt } from "drizzle-orm";
-import type { CashExpense } from "@taiwan-fin-hub/shared";
+import { and, asc, desc, eq, gte, isNotNull, lt, max, sql } from "drizzle-orm";
+import type { CashExpense, FrequentCashExpense } from "@taiwan-fin-hub/shared";
 import { cashExpenses, createDrizzle } from "../../db";
 
 const columns = {
@@ -79,4 +79,48 @@ export async function deleteCashExpense(db: D1Database, id: string) {
     .where(eq(cashExpenses.id, id))
     .run();
   return result.meta.changes > 0;
+}
+
+/**
+ * 日期不早於 since、有說明的現金支出，依說明、金額與分類合併：記過越多次越前面，
+ * 同次數時最近記的在前。
+ */
+export async function listFrequentCashExpenses(
+  db: D1Database,
+  since: string,
+  limit: number,
+): Promise<FrequentCashExpense[]> {
+  const uses = sql<number>`count(*)`.mapWith(Number);
+  const lastDate = max(cashExpenses.expenseDate);
+  const lastCreated = max(cashExpenses.createdAt);
+  const rows = await createDrizzle(db)
+    .select({
+      description: cashExpenses.description,
+      amount: cashExpenses.amount,
+      categoryId: cashExpenses.categoryId,
+      uses,
+      lastDate,
+    })
+    .from(cashExpenses)
+    .where(
+      and(
+        isNotNull(cashExpenses.description),
+        gte(cashExpenses.expenseDate, since),
+      ),
+    )
+    .groupBy(
+      cashExpenses.description,
+      cashExpenses.amount,
+      cashExpenses.categoryId,
+    )
+    .orderBy(desc(uses), desc(lastDate), desc(lastCreated))
+    .limit(limit)
+    .all();
+  return rows.map((row) => ({
+    description: row.description!,
+    amount: row.amount,
+    categoryId: row.categoryId,
+    uses: row.uses,
+    lastDate: row.lastDate!,
+  }));
 }
