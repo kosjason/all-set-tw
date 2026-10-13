@@ -293,6 +293,12 @@ summary」），前端不自行加總：
 `paidInCash`），成功後失效 `bank` 開頭的 query。從提款扣的發票在列上顯示「這家付現金・從提款扣」
 （`cashPaidText`）；已勾選但待確認或等待刷卡的發票，明細說明暫不從提款扣。`activity=cash:<id>` 可直接開啟現金支出的明細（週回顧連結）。
 
+新增時對話框在金額上方列出「常用」（`data/cash-expenses/queries.ts` 的 `frequentCashExpensesQuery`，
+交易頁載入時先讀，key 以 `bank` 開頭）：每個按鈕是「分類 emoji＋說明＋金額」，點一下就以對話框目前的
+日期直接新增（日期不是今天時標題提示「記在 M/D」），不必再填表。有常用時金額欄改叫「或輸入金額」，
+開啟時不自動聚焦（手機不先跳出鍵盤）；本月頁的 `add=cash` 等常用讀完才開啟對話框。新增成功後畫面上方的
+提示附「復原」（6 秒內，刪除剛記的那筆），點錯可以馬上撤回。
+
 ## 活動備註
 
 明細抽屜在標題區塊下方有「備註」（`features/activity/components/ActivityNoteField`）：多行輸入、最多 1000 字

@@ -442,6 +442,8 @@ promotion 後更新授權配對，中信刪除副本前處理 matched reference�
   `PUT`／`DELETE /api/cash-expenses/:id`）是使用者手動記的現金消費：台北日期（不晚於今天）、
   1–1,000 萬的整數新台幣、消費分類（系統頂層消費分類或已存在的 `user:*`，收入與未分類回 400
   `INVALID_CATEGORY`）與選填說明（NFKC、合併空白，1–100 字）。錯誤訊息直接顯示在記帳對話框，因此用中文。
+  `GET /api/cash-expenses/frequent` 是記帳對話框的「常用」：最近 90 天（台北日期）有說明的現金支出，
+  依說明、金額與分類合併，記過越多次越前面、同次數時最近的在前，最多 8 個（`FrequentCashExpense`）。
   `loadRoleActivities` 以 `cashExpenseActivityItem` 把現金支出列為 `source = cash` 的活動（一律為已確認的
   消費，`roleReason = cash_expense`，分類即使用者指定的分類，沒有商家、備註與角色 override）。
 - 提款仍先計入消費：`shared/cash-expenses.ts` 的 `isCashWithdrawalPool` 認定銀行帳戶（非信用卡）的台幣

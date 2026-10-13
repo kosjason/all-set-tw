@@ -31,6 +31,24 @@ export const CASH_EXPENSE_DESCRIPTION_MAX = 100;
 export const CASH_EXPENSE_AMOUNT_MAX = 10_000_000;
 /** 沒有說明時的列表標題。 */
 export const CASH_EXPENSE_DEFAULT_TITLE = "現金支出";
+/** 「常用」最多列幾個。 */
+export const FREQUENT_CASH_EXPENSE_LIMIT = 8;
+/** 「常用」只看最近幾天記過的現金支出，很久沒記的一次性消費會自然消失。 */
+export const FREQUENT_CASH_EXPENSE_DAYS = 90;
+
+/**
+ * 記帳對話框的「常用」：最近記過、有說明的現金支出，依說明、金額與分類合併，
+ * 點一下即以同樣內容再記一筆。
+ */
+export interface FrequentCashExpense {
+  description: string;
+  amount: number;
+  categoryId: string;
+  /** 期間內記過幾次。 */
+  uses: number;
+  /** 最近一次的消費日期（YYYY-MM-DD）。 */
+  lastDate: string;
+}
 
 export interface CashExpense {
   id: string;
