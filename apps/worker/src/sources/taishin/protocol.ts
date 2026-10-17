@@ -302,13 +302,47 @@ export function taishinCardText(value: unknown) {
     );
 }
 
-function cardAmount(value: unknown) {
+/**
+ * 金額欄位的「形狀」，只用於錯誤訊息：數字一律改成 9、英文字母改成 A、其他文字改成
+ * 「字」，保留符號與空白，最多 24 字，不會帶出金額或商家名稱。
+ */
+export function taishinValueShape(value: unknown) {
+  const text = stringValue(value).replace(/<[^>]*>/g, "");
+  const shape = [...text]
+    .map((char) =>
+      /\d/u.test(char)
+        ? "9"
+        : /[A-Za-z]/u.test(char)
+          ? "A"
+          : /[\p{L}\p{N}]/u.test(char)
+            ? "字"
+            : char,
+    )
+    .join("");
+  return shape.length > 24 ? `${shape.slice(0, 24)}…` : shape;
+}
+
+/** 金額欄位所在的位置（清單、欄位與該列欄數），格式改變時寫進錯誤訊息方便排查。 */
+interface CardAmountSource {
+  list: string;
+  column?: number;
+  columns?: number;
+}
+
+function cardAmount(value: unknown, source: CardAmountSource) {
   const text = stringValue(value)
     .replace(/<[^>]*>/g, "")
     .replaceAll(",", "")
     .trim();
-  if (!/^(?:[+-]?\d+(?:\.\d+)?|\(\d+(?:\.\d+)?\))$/.test(text))
-    throw new Error("台新信用卡交易金額格式已改變。");
+  if (!/^(?:[+-]?\d+(?:\.\d+)?|\(\d+(?:\.\d+)?\))$/.test(text)) {
+    const where =
+      source.column == null
+        ? source.list
+        : `${source.list}第 ${source.column + 1} 欄，共 ${source.columns} 欄`;
+    throw new Error(
+      `台新信用卡交易金額格式已改變（${where}：「${taishinValueShape(value)}」）。`,
+    );
+  }
   const number = optionalNumber(text);
   if (number == null) throw new Error("台新信用卡交易金額無效。");
   return number;
@@ -333,7 +367,11 @@ function realtimeTransactions(payload: unknown): TransactionCandidate[] {
       // RB0708 displays row[6]. Keep row[2] for the existing v2 identity.
       const identityDescription = taishinCardText(row[2]) || "台新信用卡交易";
       const description = taishinCardText(row[6]) || identityDescription;
-      const rawAmount = cardAmount(row[3]);
+      const rawAmount = cardAmount(row[3], {
+        list: "即時消費",
+        column: 3,
+        columns: row.length,
+      });
       const country = taishinCardText(row[4]);
       if (!transactionDate) throw new Error("台新即時消費日期無效。");
       if (rawAmount === 0) continue;
@@ -387,6 +425,7 @@ function unbilledData(payload: unknown): {
     throw new Error("台新未出帳消費回應缺少完整清單。");
   const candidates: TransactionCandidate[] = [];
   let hasRows = false;
+  let hasTwdRows = false;
   for (const [key, group] of Object.entries(value.unpostedTx)) {
     if (!isRecord(group)) throw new Error("台新未出帳消費幣別清單格式已改變。");
     if (group.ErrMsg) {
@@ -404,7 +443,10 @@ function unbilledData(payload: unknown): {
     if (!currency || !parsed.success)
       throw new Error("台新未出帳消費格式已改變。");
     for (const card of parsed.data) {
-      if (card.txlist.length > 0) hasRows = true;
+      if (card.txlist.length > 0) {
+        hasRows = true;
+        if (currency === "TWD") hasTwdRows = true;
+      }
       const cardLast4 = last4(card.cardname) ?? "unknown";
       for (const row of card.txlist) {
         const transactionDate = normalizeDate(row[0]);
@@ -420,7 +462,14 @@ function unbilledData(payload: unknown): {
         )
           throw new Error("台新未出帳消費幣別與分組不符。");
         const description = taishinCardText(row[2]) || "台新信用卡交易";
-        const amount = signedAmount(cardAmount(row[3]), description);
+        const amount = signedAmount(
+          cardAmount(row[3], {
+            list: "未出帳消費",
+            column: 3,
+            columns: row.length,
+          }),
+          description,
+        );
         if (amount === 0) continue;
         const matchKey = transactionMatchKey(
           currency,
@@ -452,16 +501,24 @@ function unbilledData(payload: unknown): {
       }
     }
   }
-  if (value.showRB0712_SUBTOTAL == null && hasRows)
+  const subtotal = value.showRB0712_SUBTOTAL;
+  if (subtotal == null && hasRows)
     throw new Error("台新未出帳消費回應缺少新臺幣總額。");
+  // 2026-10 起，沒有新臺幣未出帳消費時台新把總額欄填成「(CRXTIKE004)無消費資料」
+  // （以前是不給這個欄位）。只有新臺幣明細也是空的才視為 0，否則是回應前後矛盾。
+  const noTwdConsumption =
+    subtotal != null &&
+    isTaishinNoConsumption(stringValue(subtotal).replace(/<[^>]*>/g, ""));
+  if (noTwdConsumption && hasTwdRows)
+    throw new Error("台新未出帳消費有新臺幣明細，總額卻顯示無消費資料。");
   // The bank's TWD subtotal includes refunds and excludes payments. Summing
   // transaction rows would deduct payments twice and mix unconverted currencies.
   return {
     transactions: candidates,
     totalAmount:
-      value.showRB0712_SUBTOTAL == null
+      subtotal == null || noTwdConsumption
         ? 0
-        : cardAmount(value.showRB0712_SUBTOTAL),
+        : cardAmount(subtotal, { list: "未出帳新臺幣總額" }),
   };
 }
 
