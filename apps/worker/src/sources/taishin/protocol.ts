@@ -425,7 +425,8 @@ function unbilledData(payload: unknown): {
     throw new Error("台新未出帳消費回應缺少完整清單。");
   const candidates: TransactionCandidate[] = [];
   let hasRows = false;
-  let hasTwdRows = false;
+  // 會計入新臺幣總額的明細：新臺幣、金額不為 0、不是繳款（總額含退款、不含繳款）。
+  let hasTwdSubtotalRows = false;
   for (const [key, group] of Object.entries(value.unpostedTx)) {
     if (!isRecord(group)) throw new Error("台新未出帳消費幣別清單格式已改變。");
     if (group.ErrMsg) {
@@ -443,10 +444,7 @@ function unbilledData(payload: unknown): {
     if (!currency || !parsed.success)
       throw new Error("台新未出帳消費格式已改變。");
     for (const card of parsed.data) {
-      if (card.txlist.length > 0) {
-        hasRows = true;
-        if (currency === "TWD") hasTwdRows = true;
-      }
+      if (card.txlist.length > 0) hasRows = true;
       const cardLast4 = last4(card.cardname) ?? "unknown";
       for (const row of card.txlist) {
         const transactionDate = normalizeDate(row[0]);
@@ -471,6 +469,8 @@ function unbilledData(payload: unknown): {
           description,
         );
         if (amount === 0) continue;
+        if (currency === "TWD" && !isTaishinPayment(description))
+          hasTwdSubtotalRows = true;
         const matchKey = transactionMatchKey(
           currency,
           transactionDate,
@@ -505,11 +505,12 @@ function unbilledData(payload: unknown): {
   if (subtotal == null && hasRows)
     throw new Error("台新未出帳消費回應缺少新臺幣總額。");
   // 2026-10 起，沒有新臺幣未出帳消費時台新把總額欄填成「(CRXTIKE004)無消費資料」
-  // （以前是不給這個欄位）。只有新臺幣明細也是空的才視為 0，否則是回應前後矛盾。
+  // （以前是不給這個欄位）。沒有會計入總額的新臺幣明細（只有繳款或外幣）才視為 0，
+  // 否則是回應前後矛盾。
   const noTwdConsumption =
     subtotal != null &&
     isTaishinNoConsumption(stringValue(subtotal).replace(/<[^>]*>/g, ""));
-  if (noTwdConsumption && hasTwdRows)
+  if (noTwdConsumption && hasTwdSubtotalRows)
     throw new Error("台新未出帳消費有新臺幣明細，總額卻顯示無消費資料。");
   // The bank's TWD subtotal includes refunds and excludes payments. Summing
   // transaction rows would deduct payments twice and mix unconverted currencies.
@@ -688,6 +689,11 @@ function transactionMatchKey(
 
 function transactionIdentityKey(matchKey: string, description: string) {
   return [matchKey, normalizeMerchantName(description) || "unknown"].join(":");
+}
+
+/** 繳款列（不計入未出帳新臺幣總額）。 */
+function isTaishinPayment(description: string) {
+  return /繳款|自動轉帳扣繳|payment/i.test(description);
 }
 
 function signedAmount(rawAmount: number, description: string) {

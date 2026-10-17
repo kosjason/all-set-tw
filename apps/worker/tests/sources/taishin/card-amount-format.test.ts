@@ -72,16 +72,18 @@ function payloads(realtimeAmount: string, unbilled?: unknown) {
 
 const NO_CONSUMPTION = "(CRXTIKE004)無消費資料";
 
-function unbilledWith(twdRows: unknown[][], subtotal: unknown) {
+function unbilledWith(
+  twdRows: unknown[][],
+  subtotal: unknown,
+  usdRows: unknown[][] = [],
+) {
+  const group = (rows: unknown[][]) =>
+    rows.length
+      ? { data: [{ cardname: "測試卡 (卡號末四碼:3108)", txlist: rows }] }
+      : { ErrMsg: NO_CONSUMPTION };
   return {
     value: {
-      unpostedTx: {
-        "001TWD": twdRows.length
-          ? {
-              data: [{ cardname: "測試卡 (卡號末四碼:3108)", txlist: twdRows }],
-            }
-          : { ErrMsg: NO_CONSUMPTION },
-      },
+      unpostedTx: { "001TWD": group(twdRows), "002USD": group(usdRows) },
       showRB0712_SUBTOTAL: subtotal,
     },
     error: null,
@@ -151,5 +153,67 @@ describe("taishin card amount format errors", () => {
       balance: -10410,
       raw: { unbilledAmount: 350 },
     });
+  });
+
+  it("accepts a no-consumption subtotal when TWD rows are only payments", () => {
+    const result = parseTaishinCreditCardData(
+      payloads(
+        "350",
+        unbilledWith(
+          [
+            [
+              "2026/10/16",
+              "2026/10/16",
+              "繳款-謝謝",
+              "-10060",
+              "",
+              "TW",
+              "",
+              "",
+            ],
+          ],
+          NO_CONSUMPTION,
+        ),
+      ),
+      new Date("2026-10-17T00:00:00.000Z"),
+    );
+    expect(result.bankBalanceSnapshots[0]).toMatchObject({
+      raw: { unbilledAmount: 0 },
+    });
+    // 繳款列仍會匯入，供繳卡費配對。
+    expect(
+      result.bankTransactions.find(
+        ({ description }) => description === "繳款-謝謝",
+      )?.amount,
+    ).toBe(10060);
+  });
+
+  it("accepts a no-consumption TWD subtotal when only foreign rows exist", () => {
+    const result = parseTaishinCreditCardData(
+      payloads(
+        "350",
+        unbilledWith([], NO_CONSUMPTION, [
+          [
+            "2026/10/16",
+            "2026/10/17",
+            "TEST STORE",
+            "12.5",
+            "",
+            "US",
+            "",
+            "USD",
+          ],
+        ]),
+      ),
+      new Date("2026-10-17T00:00:00.000Z"),
+    );
+    expect(result.bankBalanceSnapshots[0]).toMatchObject({
+      balance: -10060,
+      raw: { unbilledAmount: 0 },
+    });
+    expect(
+      result.bankTransactions.find(({ currency }) => currency === "USD")
+        ?.amount,
+    ).toBe(-12.5);
   });
 });
