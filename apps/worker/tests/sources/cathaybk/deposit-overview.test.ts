@@ -1,5 +1,84 @@
-import { describe, expect, it, vi } from "vitest";
-import { openCathayDepositOverview } from "../../../src/sources/cathaybk/connector";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  CATHAY_DEPOSITS_NOT_LOADED_WARNING,
+  cathayDepositOverviewComplete,
+  openCathayDepositOverview,
+  scrapeDeposits,
+} from "../../../src/sources/cathaybk/connector";
+
+// 合成資料：虛構帳號與金額。
+
+/** 假的帳號按鈕：所在列的文字為 rowText（null 表示這一列還沒畫出來）。 */
+function accountButton(acctNo: string, rowText: string | null) {
+  const row =
+    rowText == null ? null : { innerText: rowText, parentElement: null };
+  return {
+    textContent: acctNo,
+    parentElement: row ? { innerText: acctNo, parentElement: row } : null,
+  };
+}
+
+function setButtons(buttons: unknown[]) {
+  vi.stubGlobal("document", { querySelectorAll: () => buttons });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+  delete (globalThis as { __cathayDepositOverview?: unknown })
+    .__cathayDepositOverview;
+});
+
+describe("cathayDepositOverviewComplete", () => {
+  it("waits until every account row has an amount and the count is stable", () => {
+    vi.useFakeTimers({ now: 0 });
+    setButtons([
+      accountButton("123456789012", "活期存款 123456789012 $12,345"),
+    ]);
+    // 第一次看到完整的帳戶時開始計時，連續 1.5 秒沒有變化才算完成。
+    expect(cathayDepositOverviewComplete()).toBe(false);
+    vi.setSystemTime(1_000);
+    expect(cathayDepositOverviewComplete()).toBe(false);
+    // 第二個帳戶晚一點才出現：重新計時，不能只讀到第一個。
+    setButtons([
+      accountButton("123456789012", "活期存款 123456789012 $12,345"),
+      accountButton("987654321098", "綜存 987654321098 $500"),
+    ]);
+    vi.setSystemTime(1_600);
+    expect(cathayDepositOverviewComplete()).toBe(false);
+    vi.setSystemTime(3_200);
+    expect(cathayDepositOverviewComplete()).toBe(true);
+  });
+
+  it("is not complete while an amount is still loading", () => {
+    vi.useFakeTimers({ now: 0 });
+    setButtons([
+      accountButton("123456789012", "活期存款 123456789012 $12,345"),
+      // 列已出現、金額還沒載入（只有 $）：不能讀成 0。
+      accountButton("987654321098", "綜存 987654321098 $"),
+    ]);
+    expect(cathayDepositOverviewComplete()).toBe(false);
+    vi.setSystemTime(5_000);
+    expect(cathayDepositOverviewComplete()).toBe(false);
+  });
+
+  it("ignores number buttons without an amount row, like the scraper", () => {
+    vi.useFakeTimers({ now: 0 });
+    // 沒有金額列的按鈕本來就不會被讀取；不能因此永遠等不到完成、每天略過存款。
+    setButtons([
+      accountButton("123456789012", "活期存款 123456789012 $12,345"),
+      accountButton("5555666677778888", null),
+    ]);
+    expect(cathayDepositOverviewComplete()).toBe(false);
+    vi.setSystemTime(1_500);
+    expect(cathayDepositOverviewComplete()).toBe(true);
+  });
+
+  it("is not complete without any account button", () => {
+    setButtons([{ textContent: "登出", parentElement: null }]);
+    expect(cathayDepositOverviewComplete()).toBe(false);
+  });
+});
 
 // 合成的假頁面：只模擬 goto、網址與兩種等待的結果。
 function fakePage(options: {
@@ -12,6 +91,7 @@ function fakePage(options: {
   return {
     goto: vi.fn().mockResolvedValue(null),
     url: vi.fn(() => current),
+    evaluate: vi.fn(),
     waitForFunction: vi.fn(() =>
       options.accountsReady === false
         ? Promise.reject(new Error("Waiting failed: 30000ms exceeded"))
@@ -20,7 +100,7 @@ function fakePage(options: {
     waitForNetworkIdle: vi.fn(() => {
       if (options.urlAfterWait) current = options.urlAfterWait;
       return options.networkIdle === false
-        ? Promise.reject(new Error("Timeout of 10000 ms exceeded"))
+        ? Promise.reject(new Error("Timeout of 5000 ms exceeded"))
         : Promise.resolve();
     }),
   };
@@ -37,9 +117,10 @@ describe("openCathayDepositOverview", () => {
       expect.stringContaining("cathaybk.com.tw"),
       { waitUntil: "domcontentloaded", timeout: 60000 },
     );
-    expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), {
-      timeout: 30000,
-    });
+    expect(page.waitForFunction).toHaveBeenCalledWith(
+      cathayDepositOverviewComplete,
+      { timeout: 30000, polling: 250 },
+    );
   });
 
   it("continues when background connections never go idle", async () => {
@@ -51,7 +132,7 @@ describe("openCathayDepositOverview", () => {
     });
   });
 
-  it("leaves missing account buttons to the caller, as before", async () => {
+  it("reports an overview that never finished loading", async () => {
     const page = fakePage({ accountsReady: false });
     await expect(openCathayDepositOverview(page as never)).resolves.toEqual({
       accountsReady: false,
@@ -60,20 +141,28 @@ describe("openCathayDepositOverview", () => {
   });
 
   it("still detects a forced logout, before or after waiting", async () => {
+    const logout =
+      "https://www.cathaybk.com.tw/OnlineBanking/Logout/SystemError";
     await expect(
-      openCathayDepositOverview(
-        fakePage({
-          url: "https://www.cathaybk.com.tw/OnlineBanking/Logout/SystemError",
-        }) as never,
-      ),
+      openCathayDepositOverview(fakePage({ url: logout }) as never),
     ).rejects.toThrow("Cathay Bank forced logout");
     await expect(
-      openCathayDepositOverview(
-        fakePage({
-          urlAfterWait:
-            "https://www.cathaybk.com.tw/OnlineBanking/Logout/SystemError",
-        }) as never,
-      ),
+      openCathayDepositOverview(fakePage({ urlAfterWait: logout }) as never),
     ).rejects.toThrow("Cathay Bank forced logout");
+  });
+});
+
+describe("scrapeDeposits", () => {
+  it("skips deposits with a warning instead of reading a half-loaded page", async () => {
+    const page = fakePage({ accountsReady: false });
+    await expect(scrapeDeposits(page as never, 90)).resolves.toEqual({
+      bankAccounts: [],
+      bankBalanceSnapshots: [],
+      bankTransactions: [],
+      creditCardBills: [],
+      warnings: [CATHAY_DEPOSITS_NOT_LOADED_WARNING],
+    });
+    // 沒有讀 DOM、也沒有點帳號。
+    expect(page.evaluate).not.toHaveBeenCalled();
   });
 });
