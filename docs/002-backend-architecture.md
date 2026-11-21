@@ -1178,6 +1178,12 @@ SYNC_SCHEDULE_UNSUPPORTED`）；migration `0072` 關閉既有的中信排程，�
   `isSameOriginJsonRequest` 拒絕跨站觸發（`403 CROSS_SITE_REQUEST`）：要求
   `Content-Type: application/json`，且 `Sec-Fetch-Site` 不得為跨站。Access cookie 預設
   `SameSite=None`，不能單靠它擋 CSRF。
+- `browser-check.ts`：`POST /api/sync/browser-check` 是同步用瀏覽器的自我檢查：以
+  `launchBrowserWithRetry` 透過 `BROWSER` binding 啟動瀏覽器、開空白頁、關閉工作階段，不連任何
+  銀行；成功回 `{ ok, version, elapsedMs }`，失敗回 `502 BROWSER_CHECK_FAILED`（啟動、開頁或
+  120 秒逾時，或無法確認工作階段已關閉），同樣以 `isSameOriginJsonRequest` 拒絕跨站呼叫。自架主機每天 05:30（排程同步前）
+  由主機上的檢查腳本呼叫：本機 Browser Rendering 的 Chrome 快取被清掉後，同步時的重新下載可能
+  只解壓一半，之後每次同步都在啟動瀏覽器時逾時；腳本先修復 Chrome 檔案，必要時重啟伺服器。
 - `sync-warning.ts`：把 `SyncOutcome.warnings` 合併成寫入 `sync_jobs.last_error` 的單一訊息；
   手動與排程同步成功時都會寫入，沒有警告時清除。
 - 銀行同步寫入快照後以 `net-worth/service.ts` 的 `refreshBankDepositHistory` 先由交易回補
