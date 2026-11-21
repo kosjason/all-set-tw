@@ -1289,7 +1289,7 @@ async function waitForInitialDepositQuery(
 
 /**
  * 存款總覽是否已完整載入（在瀏覽器內執行，必須自成一體、不引用外部變數）。找帳戶列的方式與
- * scrapeDomAccounts 相同：列上有「$」但還沒有數字代表金額還在載入，不能讀成 0；找不到金額列
+ * scrapeDomAccounts 相同：列上任何一個「$」後面還沒有數字，代表金額還在載入，不能讀成 0；找不到金額列
  * 的按鈕本來就不會被讀取，這裡也忽略。至少讀得到一個帳戶，且帳戶數連續 1.5 秒沒有變化才算
  * 完成，避免頁面分批畫出時少讀帳戶。
  */
@@ -1304,8 +1304,9 @@ export function cathayDepositOverviewComplete() {
       if (!el) break;
       const rowText = (el as HTMLElement).innerText?.trim() ?? "";
       if (rowText.includes("$") && rowText.length < 200) {
-        if (/\$[\d,]*\d/.test(rowText)) count++;
-        else loading = true;
+        // 每個 $ 後面都要有數字：餘額與可用餘額在同一列，任何一個還沒載入都不能讀。
+        if (/\$(?![\d,]*\d)/.test(rowText)) loading = true;
+        else count++;
         break;
       }
     }

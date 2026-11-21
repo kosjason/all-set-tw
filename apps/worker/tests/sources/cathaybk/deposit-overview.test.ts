@@ -60,6 +60,28 @@ describe("cathayDepositOverviewComplete", () => {
     expect(cathayDepositOverviewComplete()).toBe(false);
     vi.setSystemTime(5_000);
     expect(cathayDepositOverviewComplete()).toBe(false);
+    // 同一列的餘額與可用餘額只載入了其中一個，也還不能讀。
+    for (const row of [
+      "活期存款 123456789012 $12,345 $",
+      "活期存款 123456789012 $ $12,345",
+    ]) {
+      setButtons([accountButton("123456789012", row)]);
+      vi.setSystemTime(10_000);
+      expect(cathayDepositOverviewComplete()).toBe(false);
+      vi.setSystemTime(20_000);
+      expect(cathayDepositOverviewComplete()).toBe(false);
+    }
+    // 兩個都載入了（含 NT$ 寫法）才開始計時。
+    setButtons([
+      accountButton(
+        "123456789012",
+        "活期存款 123456789012 NT$12,345 NT$12,000",
+      ),
+    ]);
+    vi.setSystemTime(30_000);
+    expect(cathayDepositOverviewComplete()).toBe(false);
+    vi.setSystemTime(31_500);
+    expect(cathayDepositOverviewComplete()).toBe(true);
   });
 
   it("ignores number buttons without an amount row, like the scraper", () => {
