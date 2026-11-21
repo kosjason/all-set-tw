@@ -1287,6 +1287,91 @@ async function waitForInitialDepositQuery(
   };
 }
 
+/**
+ * 存款總覽是否已完整載入（在瀏覽器內執行，必須自成一體、不引用外部變數）。找帳戶列的方式與
+ * scrapeDomAccounts 相同：列上任何一個「$」後面還沒有數字，代表金額還在載入，不能讀成 0；找不到金額列
+ * 的按鈕本來就不會被讀取，這裡也忽略。至少讀得到一個帳戶，且帳戶數連續 1.5 秒沒有變化才算
+ * 完成，避免頁面分批畫出時少讀帳戶。
+ */
+export function cathayDepositOverviewComplete() {
+  let count = 0;
+  let loading = false;
+  for (const button of Array.from(document.querySelectorAll("button"))) {
+    if (!/^\d{10,}$/.test(button.textContent?.trim() ?? "")) continue;
+    let el: Element | null = button;
+    for (let i = 0; i < 10; i++) {
+      el = el?.parentElement ?? null;
+      if (!el) break;
+      const rowText = (el as HTMLElement).innerText?.trim() ?? "";
+      if (rowText.includes("$") && rowText.length < 200) {
+        // 每個 $ 後面都要有數字：餘額與可用餘額在同一列，任何一個還沒載入都不能讀。
+        if (/\$(?![\d,]*\d)/.test(rowText)) loading = true;
+        else count++;
+        break;
+      }
+    }
+  }
+  const state = globalThis as unknown as {
+    __cathayDepositOverview?: { count: number; since: number };
+  };
+  if (count === 0 || loading) {
+    state.__cathayDepositOverview = undefined;
+    return false;
+  }
+  const now = Date.now();
+  const seen = state.__cathayDepositOverview;
+  if (!seen || seen.count !== count) {
+    state.__cathayDepositOverview = { count, since: now };
+    return false;
+  }
+  return now - seen.since >= 1500;
+}
+
+/**
+ * 開存款總覽頁。這頁偶爾有背景連線一直不停（2026-10 起約五天一次），等 networkidle2 會在
+ * 60 秒逾時讓整次同步失敗；改成 DOM 載入完成後等總覽完整載入（{@link cathayDepositOverviewComplete}，
+ * 最多 30 秒），網路靜止只盡量等（等不到不算失敗）。沒有在時限內完整載入時回傳
+ * accountsReady = false，由呼叫端略過存款，不讀半載入的頁面。
+ */
+export async function openCathayDepositOverview(
+  page: Pick<Page, "goto" | "url" | "waitForFunction" | "waitForNetworkIdle">,
+) {
+  const started = Date.now();
+  await page.goto(DEPOSIT_OVERVIEW_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  });
+  assertCathayNotLoggedOut(page);
+  const accountsReady = await page
+    .waitForFunction(cathayDepositOverviewComplete, {
+      timeout: 30000,
+      polling: 250,
+    })
+    .then(
+      () => true,
+      () => false,
+    );
+  const networkIdle = await page
+    .waitForNetworkIdle({ idleTime: 500, concurrency: 2, timeout: 5000 })
+    .then(
+      () => true,
+      () => false,
+    );
+  assertCathayNotLoggedOut(page);
+  console.log(
+    JSON.stringify({
+      event: "cathaybk_deposit_overview",
+      accountsReady,
+      networkIdle,
+      elapsedMs: Date.now() - started,
+    }),
+  );
+  return { accountsReady, networkIdle };
+}
+
+export const CATHAY_DEPOSITS_NOT_LOADED_WARNING =
+  "國泰存款總覽沒有在時限內完整載入，存款這次沒有更新。";
+
 function assertCathayNotLoggedOut(page: Pick<Page, "url">) {
   if (page.url().toLowerCase().includes("/logout/")) {
     throw new Error("Cathay Bank forced logout on transaction page.");
@@ -1326,7 +1411,7 @@ async function readCathayQueryResponse(
   }
 }
 
-async function scrapeDeposits(
+export async function scrapeDeposits(
   page: Page,
   lookbackDays: number,
 ): Promise<Scraped> {
@@ -1336,23 +1421,19 @@ async function scrapeDeposits(
   const warnings: string[] = [];
   const asOfAt = new Date().toISOString();
 
-  await page.goto(DEPOSIT_OVERVIEW_URL, {
-    waitUntil: "networkidle2",
-    timeout: 60000,
-  });
+  const overview = await openCathayDepositOverview(page);
   console.log("[cathaybk] deposit page opened");
-  assertCathayNotLoggedOut(page);
-
-  // Wait for account number buttons to render
-  await page
-    .waitForFunction(
-      () =>
-        Array.from(document.querySelectorAll("button")).some((b) =>
-          /^\d{10,}$/.test(b.textContent?.trim() ?? ""),
-        ),
-      { timeout: 15000 },
-    )
-    .catch(() => null);
+  // 沒有完整載入就不讀：半載入的頁面可能少帳戶或把金額讀成 0。略過存款、其他照常同步，
+  // 並以警告告知這次存款沒有更新（不會當成沒有存款帳戶）。
+  if (!overview.accountsReady) {
+    return {
+      bankAccounts,
+      bankBalanceSnapshots,
+      bankTransactions,
+      creditCardBills: [],
+      warnings: [CATHAY_DEPOSITS_NOT_LOADED_WARNING],
+    };
+  }
 
   const accounts = await scrapeDomAccounts(page);
   console.log(`[cathaybk] found ${accounts.length} deposit accounts`);
