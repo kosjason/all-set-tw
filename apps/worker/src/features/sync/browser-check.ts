@@ -16,7 +16,7 @@ export const BROWSER_CHECK_TIMEOUT_MS = 120_000;
 export class BrowserCheckError extends Error {
   constructor(
     message: string,
-    readonly stage: "launch" | "page" | "timeout",
+    readonly stage: "launch" | "page" | "close" | "timeout",
   ) {
     super(message);
     this.name = "BrowserCheckError";
@@ -54,7 +54,8 @@ export async function checkSyncBrowser(
       );
     }, timeoutMs);
   });
-  // 逾時後 run 仍可能晚一點才拿到瀏覽器，所以由 run 自己負責關閉。
+  // 逾時後 run 仍可能晚一點才拿到瀏覽器，所以由 run 自己負責關閉。若卡在取得工作階段那一步、
+  // 逾時後才拿到，那個工作階段沒有連上，只能等 keep_alive 到期釋放。
   const run = async (): Promise<BrowserCheckResult> => {
     let browser: Browser | undefined;
     try {
@@ -68,23 +69,29 @@ export async function checkSyncBrowser(
         "launch",
       );
     }
+    let version: string;
     try {
-      const version = await browser.version();
+      version = await browser.version();
       const page = await browser.newPage();
       await page.setContent("<p>ok</p>");
       const text = await page.evaluate(
         () => document.querySelector("p")?.textContent ?? "",
       );
       if (text !== "ok") throw new Error("空白頁內容不符。");
-      return { ok: true, version, elapsedMs: Date.now() - started };
     } catch (error) {
+      await closeBrowserSession(binding, browser);
       throw new BrowserCheckError(
         `瀏覽器開頁失敗：${errorText(error)}`,
         "page",
       );
-    } finally {
-      await closeBrowserSession(binding, browser);
     }
+    // 關不掉的工作階段會占住瀏覽器，不能算健康。
+    if (!(await closeBrowserSession(binding, browser)))
+      throw new BrowserCheckError(
+        "瀏覽器開頁正常，但無法確認工作階段已關閉。",
+        "close",
+      );
+    return { ok: true, version, elapsedMs: Date.now() - started };
   };
   const running = run();
   // 逾時後 run 的失敗不再有人等，避免未處理的 rejection。

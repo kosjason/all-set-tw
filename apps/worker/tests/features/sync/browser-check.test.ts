@@ -70,6 +70,17 @@ describe("checkSyncBrowser", () => {
     });
   });
 
+  it("fails when the session cannot be confirmed closed", async () => {
+    const { browser } = fakeBrowser();
+    launch.mockResolvedValue(browser as never);
+    const env = binding();
+    env.fetch.mockResolvedValue(new Response(null, { status: 500 }));
+    await expect(checkSyncBrowser(env)).rejects.toMatchObject({
+      stage: "close",
+      message: "瀏覽器開頁正常，但無法確認工作階段已關閉。",
+    });
+  });
+
   it("reports a page that does not render and still closes the browser", async () => {
     const { browser } = fakeBrowser("blank");
     launch.mockResolvedValue(browser as never);

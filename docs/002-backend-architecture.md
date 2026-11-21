@@ -1181,7 +1181,7 @@ SYNC_SCHEDULE_UNSUPPORTED`）；migration `0072` 關閉既有的中信排程，�
 - `browser-check.ts`：`POST /api/sync/browser-check` 是同步用瀏覽器的自我檢查：以
   `launchBrowserWithRetry` 透過 `BROWSER` binding 啟動瀏覽器、開空白頁、關閉工作階段，不連任何
   銀行；成功回 `{ ok, version, elapsedMs }`，失敗回 `502 BROWSER_CHECK_FAILED`（啟動、開頁或
-  120 秒逾時），同樣以 `isSameOriginJsonRequest` 拒絕跨站呼叫。自架主機每天 05:50（排程同步前）
+  120 秒逾時，或無法確認工作階段已關閉），同樣以 `isSameOriginJsonRequest` 拒絕跨站呼叫。自架主機每天 05:30（排程同步前）
   由主機上的檢查腳本呼叫：本機 Browser Rendering 的 Chrome 快取被清掉後，同步時的重新下載可能
   只解壓一半，之後每次同步都在啟動瀏覽器時逾時；腳本先修復 Chrome 檔案，必要時重啟伺服器。
 - `sync-warning.ts`：把 `SyncOutcome.warnings` 合併成寫入 `sync_jobs.last_error` 的單一訊息；
