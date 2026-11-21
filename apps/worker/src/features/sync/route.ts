@@ -74,6 +74,7 @@ import {
   type SyncOutcome,
 } from "./types";
 import { withManualSyncLock } from "./manual-sync";
+import { BrowserCheckError, checkSyncBrowser } from "./browser-check";
 import { prepareConnectorChallenge, runConnectorSync } from "./registry";
 import { CtbcImportPayloadError, importCtbcPayloads } from "./ctbc-import";
 import {
@@ -367,6 +368,19 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
         return jsonError("CTBC_WEB_IMPORT_NOT_CONFIGURED", error.message, 404);
       if (error instanceof CtbcWebImportTriggerError)
         return jsonError("CTBC_WEB_IMPORT_UNAVAILABLE", error.message, 502);
+      throw error;
+    }
+  });
+
+  // 同步用瀏覽器的自我檢查（不連銀行）：mini 每天 6 點排程同步前呼叫。
+  api.post("/sync/browser-check", async (c) => {
+    if (!isSameOriginJsonRequest(c.req.raw))
+      return jsonError("CROSS_SITE_REQUEST", "請從本機呼叫瀏覽器檢查。", 403);
+    try {
+      return c.json(await checkSyncBrowser(c.env));
+    } catch (error) {
+      if (error instanceof BrowserCheckError)
+        return jsonError("BROWSER_CHECK_FAILED", error.message, 502);
       throw error;
     }
   });
