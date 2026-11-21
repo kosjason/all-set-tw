@@ -1287,6 +1287,51 @@ async function waitForInitialDepositQuery(
   };
 }
 
+/**
+ * 開存款總覽頁。這頁偶爾有背景連線一直不停（2026-10 起約五天一次），等 networkidle2 會在
+ * 60 秒逾時讓整次同步失敗；改成 DOM 載入完成後等帳號按鈕出現，網路靜止只盡量等（等不到
+ * 不算失敗）。帳號按鈕沒出現時照舊交給後面處理（不會當成失敗）。
+ */
+export async function openCathayDepositOverview(
+  page: Pick<Page, "goto" | "url" | "waitForFunction" | "waitForNetworkIdle">,
+) {
+  const started = Date.now();
+  await page.goto(DEPOSIT_OVERVIEW_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  });
+  assertCathayNotLoggedOut(page);
+  const accountsReady = await page
+    .waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll("button")).some((b) =>
+          /^\d{10,}$/.test(b.textContent?.trim() ?? ""),
+        ),
+      { timeout: 30000 },
+    )
+    .then(
+      () => true,
+      () => false,
+    );
+  // 餘額與帳號在同一列，按鈕出現後再盡量等網路靜止，讓列上的金額也載完。
+  const networkIdle = await page
+    .waitForNetworkIdle({ idleTime: 500, concurrency: 2, timeout: 10000 })
+    .then(
+      () => true,
+      () => false,
+    );
+  assertCathayNotLoggedOut(page);
+  console.log(
+    JSON.stringify({
+      event: "cathaybk_deposit_overview",
+      accountsReady,
+      networkIdle,
+      elapsedMs: Date.now() - started,
+    }),
+  );
+  return { accountsReady, networkIdle };
+}
+
 function assertCathayNotLoggedOut(page: Pick<Page, "url">) {
   if (page.url().toLowerCase().includes("/logout/")) {
     throw new Error("Cathay Bank forced logout on transaction page.");
@@ -1336,23 +1381,8 @@ async function scrapeDeposits(
   const warnings: string[] = [];
   const asOfAt = new Date().toISOString();
 
-  await page.goto(DEPOSIT_OVERVIEW_URL, {
-    waitUntil: "networkidle2",
-    timeout: 60000,
-  });
+  await openCathayDepositOverview(page);
   console.log("[cathaybk] deposit page opened");
-  assertCathayNotLoggedOut(page);
-
-  // Wait for account number buttons to render
-  await page
-    .waitForFunction(
-      () =>
-        Array.from(document.querySelectorAll("button")).some((b) =>
-          /^\d{10,}$/.test(b.textContent?.trim() ?? ""),
-        ),
-      { timeout: 15000 },
-    )
-    .catch(() => null);
 
   const accounts = await scrapeDomAccounts(page);
   console.log(`[cathaybk] found ${accounts.length} deposit accounts`);
