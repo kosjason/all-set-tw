@@ -1329,8 +1329,8 @@ export function cathayDepositOverviewComplete() {
 }
 
 /**
- * 開存款總覽頁。這頁偶爾有背景連線一直不停（2026-10 起約五天一次），等 networkidle2 會在
- * 60 秒逾時讓整次同步失敗；改成 DOM 載入完成後等總覽完整載入（{@link cathayDepositOverviewComplete}，
+ * 開存款總覽頁。這頁偶爾開不起來（2026-10 起約五天一次，連 DOMContentLoaded 都等不到），
+ * 原本整次同步因此失敗。改成開頁逾時也不中止，等總覽完整載入（{@link cathayDepositOverviewComplete}，
  * 最多 30 秒），網路靜止只盡量等（等不到不算失敗）。沒有在時限內完整載入時回傳
  * accountsReady = false，由呼叫端略過存款，不讀半載入的頁面。
  */
@@ -1338,10 +1338,18 @@ export async function openCathayDepositOverview(
   page: Pick<Page, "goto" | "url" | "waitForFunction" | "waitForNetworkIdle">,
 ) {
   const started = Date.now();
-  await page.goto(DEPOSIT_OVERVIEW_URL, {
-    waitUntil: "domcontentloaded",
-    timeout: 60000,
-  });
+  // 這頁偶爾連 DOM 都等不到（正常約 4 秒，2026-11-23、25 仍在 60 秒逾時）。逾時不再讓整次
+  // 同步失敗：照樣檢查頁面是否已完整顯示帳戶，沒有就由呼叫端略過存款並警告，信用卡照常同步。
+  let navigationTimedOut = false;
+  try {
+    await page.goto(DEPOSIT_OVERVIEW_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    });
+  } catch (error) {
+    if (!(error instanceof Error && error.name === "TimeoutError")) throw error;
+    navigationTimedOut = true;
+  }
   assertCathayNotLoggedOut(page);
   const accountsReady = await page
     .waitForFunction(cathayDepositOverviewComplete, {
@@ -1362,12 +1370,13 @@ export async function openCathayDepositOverview(
   console.log(
     JSON.stringify({
       event: "cathaybk_deposit_overview",
+      navigationTimedOut,
       accountsReady,
       networkIdle,
       elapsedMs: Date.now() - started,
     }),
   );
-  return { accountsReady, networkIdle };
+  return { accountsReady, networkIdle, navigationTimedOut };
 }
 
 export const CATHAY_DEPOSITS_NOT_LOADED_WARNING =

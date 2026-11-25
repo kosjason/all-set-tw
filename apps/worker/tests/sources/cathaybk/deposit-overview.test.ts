@@ -108,10 +108,15 @@ function fakePage(options: {
   urlAfterWait?: string;
   accountsReady?: boolean;
   networkIdle?: boolean;
+  gotoError?: Error;
 }) {
   let current = options.url ?? "https://www.cathaybk.com.tw/MyBank/Deposit";
   return {
-    goto: vi.fn().mockResolvedValue(null),
+    goto: vi.fn(() =>
+      options.gotoError
+        ? Promise.reject(options.gotoError)
+        : Promise.resolve(null),
+    ),
     url: vi.fn(() => current),
     evaluate: vi.fn(),
     waitForFunction: vi.fn(() =>
@@ -134,10 +139,11 @@ describe("openCathayDepositOverview", () => {
     await expect(openCathayDepositOverview(page as never)).resolves.toEqual({
       accountsReady: true,
       networkIdle: true,
+      navigationTimedOut: false,
     });
     expect(page.goto).toHaveBeenCalledWith(
       expect.stringContaining("cathaybk.com.tw"),
-      { waitUntil: "domcontentloaded", timeout: 60000 },
+      { waitUntil: "domcontentloaded", timeout: 30000 },
     );
     expect(page.waitForFunction).toHaveBeenCalledWith(
       cathayDepositOverviewComplete,
@@ -151,6 +157,7 @@ describe("openCathayDepositOverview", () => {
     await expect(openCathayDepositOverview(page as never)).resolves.toEqual({
       accountsReady: true,
       networkIdle: false,
+      navigationTimedOut: false,
     });
   });
 
@@ -159,7 +166,41 @@ describe("openCathayDepositOverview", () => {
     await expect(openCathayDepositOverview(page as never)).resolves.toEqual({
       accountsReady: false,
       networkIdle: true,
+      navigationTimedOut: false,
     });
+  });
+
+  it("keeps going when opening the page times out, if the accounts still load", async () => {
+    // 2026-11-23、25：這頁連 DOMContentLoaded 都等不到，以前整次同步失敗。
+    const timeout = Object.assign(
+      new Error("Navigation timeout of 30000 ms exceeded"),
+      {
+        name: "TimeoutError",
+      },
+    );
+    await expect(
+      openCathayDepositOverview(fakePage({ gotoError: timeout }) as never),
+    ).resolves.toEqual({
+      accountsReady: true,
+      networkIdle: true,
+      navigationTimedOut: true,
+    });
+    await expect(
+      openCathayDepositOverview(
+        fakePage({ gotoError: timeout, accountsReady: false }) as never,
+      ),
+    ).resolves.toMatchObject({
+      accountsReady: false,
+      navigationTimedOut: true,
+    });
+  });
+
+  it("still fails on other navigation errors", async () => {
+    await expect(
+      openCathayDepositOverview(
+        fakePage({ gotoError: new Error("net::ERR_ABORTED") }) as never,
+      ),
+    ).rejects.toThrow("net::ERR_ABORTED");
   });
 
   it("still detects a forced logout, before or after waiting", async () => {
@@ -175,6 +216,20 @@ describe("openCathayDepositOverview", () => {
 });
 
 describe("scrapeDeposits", () => {
+  it("skips deposits with a warning when the page never opens", async () => {
+    const timeout = Object.assign(
+      new Error("Navigation timeout of 30000 ms exceeded"),
+      {
+        name: "TimeoutError",
+      },
+    );
+    const page = fakePage({ gotoError: timeout, accountsReady: false });
+    await expect(scrapeDeposits(page as never, 90)).resolves.toMatchObject({
+      bankAccounts: [],
+      warnings: [CATHAY_DEPOSITS_NOT_LOADED_WARNING],
+    });
+  });
+
   it("skips deposits with a warning instead of reading a half-loaded page", async () => {
     const page = fakePage({ accountsReady: false });
     await expect(scrapeDeposits(page as never, 90)).resolves.toEqual({
