@@ -211,3 +211,12 @@ export function parseCathayDepositTransactions(
   }
   return datas.flatMap((data) => data.details);
 }
+
+/**
+ * 國泰存款說明的正規化：合併連續空白並去頭尾。國泰回傳的說明空白格式在不同次查詢之間
+ * 不固定（2026-10 起出現），同一筆交易以原始說明產生的識別碼會不同；識別碼與比對一律
+ * 使用正規化後的說明。
+ */
+export function normalizeCathayDescription(value: string | null | undefined) {
+  return (value ?? "").replace(/\s+/gu, " ").trim();
+}

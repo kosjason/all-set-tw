@@ -9,7 +9,10 @@ import {
 import { decryptJson, encryptJson } from "../../platform/crypto";
 import { configEncryptionKey } from "../../platform/config";
 import { parseCathaybkConfig } from "./protocol";
-import { reconcileCathayCardAccountStatements } from "./repository";
+import {
+  prepareCathayDepositIdentity,
+  reconcileCathayCardAccountStatements,
+} from "./repository";
 import {
   parsePublicConnectorConfig,
   splitConnectorCursorState,
@@ -195,9 +198,12 @@ export async function syncCathaybk(
     );
   }
 
+  // 國泰存款說明的空白格式不固定，依正規化說明對回既有的列，並併掉已經重複保存的舊列。
+  const depositIdentity = await prepareCathayDepositIdentity(env.DB, records);
   const newRecords = await persistStagedSyncWrite(env.DB, {
-    records,
+    records: depositIdentity.records,
     afterPromoteStatements: [
+      ...depositIdentity.mergeStatements,
       ...(bankAccounts.some((account) => account.accountType === "credit")
         ? reconcileCathayCardAccountStatements(env.DB)
         : []),
