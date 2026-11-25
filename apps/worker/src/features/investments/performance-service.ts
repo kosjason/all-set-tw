@@ -264,12 +264,17 @@ export function pricesMonthsToFetch(input: {
     if (previous !== month && due(need.symbol, previous))
       want(need.symbol, previous);
   }
-  return [...wanted.values()].sort((a, b) =>
-    a.month === b.month
-      ? a.symbol.localeCompare(b.symbol)
-      : a.month < b.month
-        ? -1
-        : 1,
+  // 之前失敗過的月份排最後：持續失敗（例如某月回應格式特殊）時不擋住其他月份補抓。
+  const failed = (item: { symbol: string; month: string }) =>
+    monthRows.get(`${item.symbol}:${item.month}`)?.status === "error" ? 1 : 0;
+  return [...wanted.values()].sort(
+    (a, b) =>
+      failed(a) - failed(b) ||
+      (a.month === b.month
+        ? a.symbol.localeCompare(b.symbol)
+        : a.month < b.month
+          ? -1
+          : 1),
   );
 }
 

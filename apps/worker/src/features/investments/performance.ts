@@ -380,8 +380,11 @@ function recordMissingPrice(
 }
 
 /**
- * 同一天的處理順序：每個部位維持依餘額排好的順序；分割轉入要等同帳戶、相關代號的
- * 分割轉出先處理（成本才能移轉），其他部位不受影響。互相等待時依序放行（之後標為配對不到）。
+ * 同一天的處理順序與分割配對。每個部位維持依餘額排好的順序；分割轉入要等同帳戶、相關
+ * 代號（一方是另一方的前綴）的分割轉出先處理才能接手成本，其他部位不受影響。
+ * 配對在這裡決定、計算時照用：可接手的轉出有多筆時優先選股數相同的（臨時代號的轉換，
+ * 例如 0050 → 0050O 股數不變），仍分不出來就不配對（標為配對不到，不猜）。
+ * 互相等待時依序放行。
  */
 export function sameDaySequence(rows: PerformanceTransactionInput[]) {
   const queues = new Map<string, PerformanceTransactionInput[]>();
@@ -393,17 +396,29 @@ export function sameDaySequence(rows: PerformanceTransactionInput[]) {
   }
   const scheduled = new Set<PerformanceTransactionInput>();
   const sequence: PerformanceTransactionInput[] = [];
-  // 已排入、還沒被分割轉入接手的分割轉出（與計算時的分割池一致）。
+  const pairs = new Map<
+    PerformanceTransactionInput,
+    PerformanceTransactionInput
+  >();
+  // 已排入、還沒被分割轉入接手的分割轉出。
   const available: PerformanceTransactionInput[] = [];
   const related = (
     out: PerformanceTransactionInput,
     row: PerformanceTransactionInput,
   ) =>
     out.accountId === row.accountId && relatedSymbols(out.symbol, row.symbol);
+  const choose = (row: PerformanceTransactionInput) => {
+    const candidates = available.filter((out) => related(out, row));
+    if (candidates.length <= 1) return candidates[0];
+    const same = candidates.filter((out) =>
+      sameQuantity(out.quantity, row.quantity),
+    );
+    return same.length === 1 ? same[0] : undefined;
+  };
   // 分割轉入：有可接手的轉出就能處理；沒有、但之後還會有相關的轉出時才等待。
   const ready = (row: PerformanceTransactionInput) =>
     eventKind(row) !== "split_in" ||
-    available.some((out) => related(out, row)) ||
+    choose(row) != null ||
     !rows.some(
       (other) =>
         eventKind(other) === "split_out" &&
@@ -412,13 +427,16 @@ export function sameDaySequence(rows: PerformanceTransactionInput[]) {
     );
   const take = (queue: PerformanceTransactionInput[]) => {
     const row = queue.shift()!;
+    if (eventKind(row) === "split_in") {
+      const out = choose(row);
+      if (out) {
+        pairs.set(row, out);
+        available.splice(available.indexOf(out), 1);
+      }
+    }
     scheduled.add(row);
     sequence.push(row);
     if (eventKind(row) === "split_out") available.push(row);
-    if (eventKind(row) === "split_in") {
-      const index = available.findIndex((out) => related(out, row));
-      if (index >= 0) available.splice(index, 1);
-    }
   };
   while (queues.size > 0) {
     let progressed = false;
@@ -435,7 +453,7 @@ export function sameDaySequence(rows: PerformanceTransactionInput[]) {
       if (queue.length === 0) queues.delete(key);
     }
   }
-  return sequence;
+  return { rows: sequence, pairs };
 }
 
 /** 全部賣出或轉出後重新開始：之前缺價的不確定性不影響之後再買的部位（已實現損益仍維持未知）。 */
@@ -629,8 +647,9 @@ export function computeInvestmentPerformance(
   let order = 0;
   for (const date of dates) {
     const rows = orderedRows.filter((row) => row.date === date);
-    const pools = new Map<string, SplitPoolEntry[]>();
-    const sequence = sameDaySequence(rows);
+    // 分割轉出的成本，等配好的分割轉入接手。
+    const pools = new Map<PerformanceTransactionInput, SplitPoolEntry>();
+    const { rows: sequence, pairs } = sameDaySequence(rows);
     const touched = new Set<HoldingState>();
     for (const row of sequence) {
       const state = stateFor(row);
@@ -709,8 +728,7 @@ export function computeInvestmentPerformance(
       } else if (kind === "split_out") {
         const taken = takeCost(state, quantity);
         state.quantity -= quantity;
-        const pool = pools.get(row.accountId) ?? [];
-        pool.push({
+        pools.set(row, {
           symbol: row.symbol,
           cost: taken.cost,
           costKnown: state.costKnown,
@@ -720,7 +738,6 @@ export function computeInvestmentPerformance(
           missingDates: new Set(state.lotMissingDates),
           pendingPrice: state.lotPendingPrice,
         });
-        pools.set(row.accountId, pool);
         resetWhenEmpty(state);
         addEvent(
           state,
@@ -737,12 +754,10 @@ export function computeInvestmentPerformance(
           order,
         );
       } else if (kind === "split_in") {
-        const candidates = (pools.get(row.accountId) ?? []).filter(
-          (entry) => !entry.used && relatedSymbols(entry.symbol, row.symbol),
-        );
+        const paired = pairs.get(row);
+        const entry = paired ? pools.get(paired) : undefined;
         state.quantity += quantity;
-        if (candidates.length === 1) {
-          const entry = candidates[0]!;
+        if (entry && !entry.used) {
           entry.used = true;
           state.cost += entry.cost;
           for (const source of COST_SOURCES)
@@ -782,7 +797,7 @@ export function computeInvestmentPerformance(
         state.issues.add("unknown_event");
       }
     }
-    for (const entry of [...pools.values()].flat())
+    for (const entry of pools.values())
       if (!entry.used) entry.source.issues.add("split_unmatched");
     for (const state of touched) {
       state.costPoints.push({

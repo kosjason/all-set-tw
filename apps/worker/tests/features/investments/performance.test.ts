@@ -644,7 +644,7 @@ describe("審查回饋的邊界情況", () => {
     expect(holding!.issues).toEqual([]);
     expect(
       // 各部位已依餘額排好（0050：轉入→賣出），0050 排在前面也要等 0050O 轉出。
-      sameDaySequence([rows[4]!, rows[3]!, rows[5]!]).map(
+      sameDaySequence([rows[4]!, rows[3]!, rows[5]!]).rows.map(
         (row) => `${row.symbol}:${row.code}`,
       ),
     ).toEqual(["0050O:1G5", "0050:1F5", "0050:123"]);
@@ -860,5 +860,107 @@ describe("審查回饋的邊界情況", () => {
       costBasis: 1_001,
       issues: [],
     });
+  });
+
+  it("代號互為前綴的多段分割：依股數配對，不會兩邊都配不到", () => {
+    const day = "2025-06-18";
+    const result = run({
+      transactions: [
+        tx({
+          symbol: "0050O",
+          date: "2024-01-05",
+          code: "113",
+          quantity: 100,
+          balanceAfter: 100,
+        }),
+        tx({
+          symbol: "0050OO",
+          date: "2024-01-05",
+          code: "113",
+          quantity: 100,
+          balanceAfter: 100,
+        }),
+        tx({
+          symbol: "0050",
+          date: "2024-01-05",
+          code: "113",
+          quantity: 100,
+          balanceAfter: 100,
+        }),
+        tx({
+          symbol: "0050O",
+          date: day,
+          code: "1G5",
+          quantity: 100,
+          balanceAfter: 0,
+        }),
+        tx({
+          symbol: "0050O",
+          date: day,
+          code: "1F5",
+          quantity: 100,
+          balanceAfter: 100,
+        }),
+        tx({
+          symbol: "0050OO",
+          date: day,
+          code: "1F5",
+          quantity: 100,
+          balanceAfter: 200,
+        }),
+        tx({
+          symbol: "0050OO",
+          date: day,
+          code: "1G5",
+          quantity: 200,
+          balanceAfter: 0,
+        }),
+        tx({
+          symbol: "0050",
+          date: day,
+          code: "1G5",
+          quantity: 100,
+          balanceAfter: 0,
+        }),
+        tx({
+          symbol: "0050",
+          date: day,
+          code: "1F5",
+          quantity: 200,
+          balanceAfter: 200,
+        }),
+        tx({
+          symbol: "0050",
+          date: day,
+          code: "1G5",
+          quantity: 200,
+          balanceAfter: 0,
+        }),
+        tx({
+          symbol: "0050P",
+          date: day,
+          code: "1F5",
+          quantity: 200,
+          balanceAfter: 200,
+        }),
+      ],
+      positions: [
+        position({ symbol: "0050O", quantity: 100, marketValue: 1_000 }),
+        position({ symbol: "0050P", quantity: 200, marketValue: 2_000 }),
+      ],
+      prices: priceBook({
+        "0050O:2024-01-05": 10,
+        "0050OO:2024-01-05": 10,
+        "0050:2024-01-05": 10,
+      }),
+    });
+    expect(
+      Object.fromEntries(
+        result.holdings.map((holding) => [
+          holding.symbol,
+          [holding.costBasis, holding.issues],
+        ]),
+      ),
+    ).toEqual({ "0050O": [1_001, []], "0050P": [2_002, []] });
   });
 });

@@ -138,7 +138,35 @@ describe("pricesMonthsToFetch", () => {
         needs,
         months: months(PRICE_OPEN_MONTH_REFRESH_MS + 1),
       }).map((item) => item.month),
-    ).toEqual(["2026-10", "2026-11"]);
+      // 失敗過的 10 月排在後面。
+    ).toEqual(["2026-11", "2026-10"]);
+  });
+});
+
+describe("補抓順序", () => {
+  it("之前失敗過的月份排最後，不擋住其他月份", () => {
+    expect(
+      pricesMonthsToFetch({
+        needs: [
+          { symbol: "0050", date: "2023-01-06" },
+          { symbol: "0050", date: "2023-02-06" },
+        ],
+        exchanges: new Map([["0050", "twse" as const]]),
+        cached: new Set(),
+        months: [
+          {
+            symbol: "0050",
+            month: "2023-01",
+            status: "error",
+            final: false,
+            fetchedAt: new Date(
+              NOW.getTime() - PRICE_ERROR_RETRY_MS - 1,
+            ).toISOString(),
+          },
+        ],
+        now: NOW,
+      }).map((item) => item.month),
+    ).toEqual(["2023-02", "2023-01"]);
   });
 });
 
