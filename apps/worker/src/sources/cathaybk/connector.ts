@@ -1691,7 +1691,7 @@ export function appendCathayDepositTransactions(
     const income = typeof d.incomeAmt === "number" ? d.incomeAmt : 0;
     const expend = typeof d.expendAmt === "number" ? d.expendAmt : 0;
     const amount = income > 0 ? income : expend > 0 ? -expend : 0;
-    // 2026-11 起國泰說明的空白格式改變（例如「轉帳 科技優息」變成「轉帳     科技優息」），
+    // 國泰回傳的說明空白格式在不同次查詢之間不固定（2026-10 起出現，例如空白數不同），
     // 識別碼與說明一律合併空白；既有列由 sync 依正規化後的說明對回原本的 id。
     const desc =
       normalizeCathayDescription(

@@ -198,7 +198,7 @@ export async function syncCathaybk(
     );
   }
 
-  // 國泰存款說明的空白格式改變時，對回既有的列，並併掉已經重複保存的舊列。
+  // 國泰存款說明的空白格式不固定，依正規化說明對回既有的列，並併掉已經重複保存的舊列。
   const depositIdentity = await prepareCathayDepositIdentity(env.DB, records);
   const newRecords = await persistStagedSyncWrite(env.DB, {
     records: depositIdentity.records,
