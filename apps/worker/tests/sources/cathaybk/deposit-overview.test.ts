@@ -18,8 +18,12 @@ function accountButton(acctNo: string, rowText: string | null) {
   };
 }
 
-function setButtons(buttons: unknown[]) {
+function setButtons(
+  buttons: unknown[],
+  pathname = "/OnlineBanking/AcctInq/B0101_DepInq",
+) {
   vi.stubGlobal("document", { querySelectorAll: () => buttons });
+  vi.stubGlobal("location", { pathname });
 }
 
 afterEach(() => {
@@ -93,6 +97,23 @@ describe("cathayDepositOverviewComplete", () => {
     ]);
     expect(cathayDepositOverviewComplete()).toBe(false);
     vi.setSystemTime(1_500);
+    expect(cathayDepositOverviewComplete()).toBe(true);
+  });
+
+  it("only accepts the deposit overview page itself", () => {
+    vi.useFakeTimers({ now: 0 });
+    // 開頁逾時後還停在登入後首頁：首頁也列出帳戶與金額，但不能當成總覽。
+    const rows = [
+      accountButton("123456789012", "活期存款 123456789012 $12,345"),
+    ];
+    setButtons(rows, "/MyBank/Home");
+    expect(cathayDepositOverviewComplete()).toBe(false);
+    vi.setSystemTime(5_000);
+    expect(cathayDepositOverviewComplete()).toBe(false);
+    setButtons(rows);
+    vi.setSystemTime(6_000);
+    expect(cathayDepositOverviewComplete()).toBe(false);
+    vi.setSystemTime(7_500);
     expect(cathayDepositOverviewComplete()).toBe(true);
   });
 

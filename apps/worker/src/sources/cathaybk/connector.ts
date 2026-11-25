@@ -1289,12 +1289,21 @@ async function waitForInitialDepositQuery(
 }
 
 /**
- * 存款總覽是否已完整載入（在瀏覽器內執行，必須自成一體、不引用外部變數）。找帳戶列的方式與
+ * 存款總覽是否已完整載入（在瀏覽器內執行，必須自成一體、不引用外部變數）。必須是存款總覽頁
+ * 本身（開頁逾時後可能還停在前一頁）。找帳戶列的方式與
  * scrapeDomAccounts 相同：列上任何一個「$」後面還沒有數字，代表金額還在載入，不能讀成 0；找不到金額列
  * 的按鈕本來就不會被讀取，這裡也忽略。至少讀得到一個帳戶，且帳戶數連續 1.5 秒沒有變化才算
  * 完成，避免頁面分批畫出時少讀帳戶。
  */
 export function cathayDepositOverviewComplete() {
+  const state = globalThis as unknown as {
+    __cathayDepositOverview?: { count: number; since: number };
+  };
+  // 開頁逾時後可能還停在前一頁（例如登入後首頁也列出帳戶與金額），只認存款總覽本身。
+  if (!/\/OnlineBanking\/AcctInq\/B0101_DepInq/i.test(location.pathname)) {
+    state.__cathayDepositOverview = undefined;
+    return false;
+  }
   let count = 0;
   let loading = false;
   for (const button of Array.from(document.querySelectorAll("button"))) {
@@ -1312,9 +1321,6 @@ export function cathayDepositOverviewComplete() {
       }
     }
   }
-  const state = globalThis as unknown as {
-    __cathayDepositOverview?: { count: number; since: number };
-  };
   if (count === 0 || loading) {
     state.__cathayDepositOverview = undefined;
     return false;
