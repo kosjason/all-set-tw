@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
+  import { toStore } from "svelte/store";
   import { ChevronRight } from "@lucide/svelte";
   import type { Navigate } from "@/app/types";
   import {
@@ -9,9 +10,11 @@
   } from "@/data/assets/queries";
   import { bankQuery, creditCardBillsQuery } from "@/data/bank/queries";
   import {
+    investmentPerformanceQuery,
     investmentsQuery,
     investmentTransactionsQuery,
   } from "@/data/investments/queries";
+  import { formatSignedCurrency } from "./model/investment-performance";
   import type { ApiClient } from "@/shared/api/client";
   import {
     formatCompactTwd,
@@ -44,10 +47,26 @@
   const bills = createQuery(creditCardBillsQuery(() => api));
   const investments = createQuery(investmentsQuery(() => api));
   const trades = createQuery(investmentTransactionsQuery(() => api));
+  // 本金與損益只是標示用：淨資產照常以市值計算，讀不到也不影響頁面；沒有持倉時不讀取。
+  const performance = createQuery(
+    toStore(() => ({
+      ...investmentPerformanceQuery(() => api),
+      enabled: ($investments.data?.length ?? 0) > 0,
+      retry: false,
+    })),
+  );
   const manual = createQuery(manualAssetsQuery(() => api));
   const rates = createQuery(exchangeRatesQuery(() => api));
   const history = createQuery(netWorthHistoryQuery(() => api));
 
+  const investmentCount = $derived($investments.data?.length ?? 0);
+  /** 投資的說明：有本金時顯示「本金 X · 未實現 +Y」，否則顯示持倉數。 */
+  const investmentCaption = $derived.by(() => {
+    const totals = $performance.data?.totals;
+    if (totals?.costBasis != null && totals.unrealizedPnl != null)
+      return `本金 ${formatCurrency(totals.costBasis)} · 未實現 ${formatSignedCurrency(totals.unrealizedPnl)}`;
+    return `${investmentCount} 個持倉`;
+  });
   const summary = $derived(
     calculateAssetSummary({
       bank: $bank.data ?? { accounts: [], transactions: [] },
@@ -323,9 +342,9 @@
         ASSET_COLORS.bank,
       )}
       {@render kpi(
-        "投資",
+        "投資（未實現）",
         summary.investmentTotal,
-        `${$investments.data?.length ?? 0} 個持倉 · ${formatShare(summary.investmentTotal)}`,
+        `${investmentCaption} · ${formatShare(summary.investmentTotal)}`,
         ASSET_COLORS.investment,
       )}
       {@render kpi(
@@ -398,7 +417,7 @@
               {@render ledgerRow(
                 "investments",
                 "投資",
-                `${$investments.data?.length ?? 0} 個持倉 · 持倉與交易紀錄`,
+                `${investmentCount} 個持倉 · ${investmentCaption.startsWith("本金") ? investmentCaption : "持倉與交易紀錄"}`,
                 summary.investmentTotal,
                 null,
                 ASSET_COLORS.investment,
@@ -440,6 +459,7 @@
               total={summary.investmentTotal}
               tradesPending={$trades.isPending}
               tradesError={$trades.isError}
+              performance={$performance.data}
             />
           {:else if activeItem?.kind === "manual-assets"}
             <ManualAssets {api} variant="embedded" />
@@ -529,7 +549,7 @@
               <div class="min-w-0">
                 <h2 class="text-base font-semibold">投資</h2>
                 <p class="mt-1 text-caption text-subtle">
-                  {$investments.data?.length ?? 0} 個持倉 · 交易紀錄
+                  {investmentCaption}
                 </p>
               </div>
               <strong
@@ -544,6 +564,7 @@
               total={summary.investmentTotal}
               tradesPending={$trades.isPending}
               tradesError={$trades.isError}
+              performance={$performance.data}
               compact
             />
           </div>

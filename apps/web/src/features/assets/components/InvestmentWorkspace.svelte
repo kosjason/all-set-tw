@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { InvestmentPerformance } from "@taiwan-fin-hub/shared";
   import type {
     InvestmentRow,
     InvestmentTransactionRow,
@@ -9,6 +10,12 @@
     formatNumber,
   } from "@/shared/format/financial";
   import { investmentBrokerLabel } from "../model/investment-label";
+  import {
+    findHoldingPerformance,
+    formatSignedCurrency,
+    formatSignedPercent,
+    pnlTone,
+  } from "../model/investment-performance";
 
   let {
     positions,
@@ -17,6 +24,7 @@
     tradesPending = false,
     tradesError = false,
     compact = false,
+    performance,
   }: {
     positions: InvestmentRow[];
     trades: InvestmentTransactionRow[];
@@ -24,7 +32,19 @@
     tradesPending?: boolean;
     tradesError?: boolean;
     compact?: boolean;
+    /** 本金與損益（讀不到時只顯示市值）。 */
+    performance?: InvestmentPerformance;
   } = $props();
+
+  const totals = $derived(
+    performance?.totals.costBasis != null &&
+      performance.totals.unrealizedPnl != null
+      ? {
+          costBasis: performance.totals.costBasis,
+          unrealizedPnl: performance.totals.unrealizedPnl,
+        }
+      : null,
+  );
 
   let tab = $state<"holdings" | "transactions">("holdings");
 
@@ -45,17 +65,31 @@
     </header>
     <div class="grid grid-cols-2 gap-6 border-b border-ink/10 px-5 py-4">
       <div>
-        <p class="text-caption text-subtle">投資市值</p>
+        <p class="text-caption text-subtle">投資市值（未實現）</p>
         <p class="mt-2 text-lg font-medium tabular-nums text-steel">
           {formatCurrency(total)}
         </p>
       </div>
-      <div>
-        <p class="text-caption text-subtle">持倉</p>
-        <p class="mt-2 text-lg font-medium tabular-nums">
-          {positions.length} 筆
-        </p>
-      </div>
+      {#if totals}
+        <div>
+          <p class="text-caption text-subtle">本金 · 未實現損益</p>
+          <p class="mt-2 text-lg font-medium tabular-nums">
+            {formatCurrency(totals.costBasis)}
+          </p>
+          <p
+            class={`text-caption font-medium tabular-nums ${pnlTone(totals.unrealizedPnl)}`}
+          >
+            {formatSignedCurrency(totals.unrealizedPnl)}
+          </p>
+        </div>
+      {:else}
+        <div>
+          <p class="text-caption text-subtle">持倉</p>
+          <p class="mt-2 text-lg font-medium tabular-nums">
+            {positions.length} 筆
+          </p>
+        </div>
+      {/if}
     </div>
   {/if}
 
@@ -82,6 +116,12 @@
 
   <div class={compact ? "" : "min-h-0 flex-1 overflow-y-auto px-5 pb-4"}>
     {#if tab === "holdings"}
+      {#if positions.length > 0}
+        <a
+          class="mt-3 inline-block text-caption font-medium text-steel hover:underline"
+          href="#/investments">查看每檔的本金、損益、配息與時間軸 →</a
+        >
+      {/if}
       {#if positions.length === 0}
         <p class="py-8 text-center text-sm text-subtle">尚無投資持倉。</p>
       {:else}
@@ -102,6 +142,22 @@
                   ·
                   {formatNumber(position.quantity ?? 0)} 單位
                 </p>
+                {#if findHoldingPerformance(performance, position)?.unrealizedPnl != null}
+                  {@const holding = findHoldingPerformance(
+                    performance,
+                    position,
+                  )!}
+                  <p class="mt-0.5 text-caption text-subtle tabular-nums">
+                    本金 {formatCurrency(holding.costBasis ?? 0)} ·
+                    <span class={pnlTone(holding.unrealizedPnl)}
+                      >{formatSignedCurrency(
+                        holding.unrealizedPnl ?? 0,
+                      )}{#if holding.unrealizedPct != null}（{formatSignedPercent(
+                          holding.unrealizedPct,
+                        )}）{/if}</span
+                    >
+                  </p>
+                {/if}
               </div>
               <p class="text-right text-sm font-medium tabular-nums text-steel">
                 {formatCurrency(

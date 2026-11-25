@@ -14,6 +14,8 @@ export const queryKeys = {
   weeklyReview: (weekStart: string, today: string) =>
     ["bank", "budget", "week", weekStart, today] as const,
   investments: ["investments"] as const,
+  // 以 "investments" 開頭：同步後讓 investments 失效時一起重新讀取。
+  investmentPerformance: ["investments", "performance"] as const,
   investmentTransactions: ["investment-transactions"] as const,
   investmentTransactionsRange: (from: string, to: string) =>
     ["investment-transactions", "range", from, to] as const,

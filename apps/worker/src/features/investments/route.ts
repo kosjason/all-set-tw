@@ -76,7 +76,7 @@ function registerInvestmentRoutes(api: Hono<AppBindings>) {
         c.req.valid("param").key,
         c.req.valid("json").cost,
       );
-      return c.body(null, 204);
+      return c.json({ success: true });
     },
   );
 
@@ -89,7 +89,7 @@ function registerInvestmentRoutes(api: Hono<AppBindings>) {
     ),
     async (c) => {
       await clearInvestmentOpeningCost(c.env.DB, c.req.valid("param").key);
-      return c.body(null, 204);
+      return c.json({ success: true });
     },
   );
 

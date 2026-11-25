@@ -173,6 +173,14 @@ npm run verify:web
   `xl` 以下改為可展開的清單。
 - 下：左為資產走勢圖，右為資產配置（堆疊長條）、資料更新（各機構最後 `asOfAt`、投資持倉最後 `asOfDate`，超過 3 天以文字標示「已過期」）與
   幣別分布（`currencyBreakdown`，只有一種幣別時不顯示）。
+- 投資：淨資產照常以市值計算。KPI 標為「投資（未實現）」，說明列與投資明細顯示本金與未實現損益
+  （`investmentPerformanceQuery`，只有持倉時讀取、讀不到時只顯示市值）；明細附連結到投資頁。
+
+投資頁（`features/assets/Investments`，`#/investments`）：摘要列出市值（未實現）、本金、未實現與已實現損益、
+配息（註明銀行資料起始日）、含息總報酬與股票型／債券型比例，以及成本的估算方法。每檔可展開
+（`InvestmentHoldingDetail`）：本金來源、期初持股成本（可填入實際成本或改回估算）、市值與本金走勢
+（`InvestmentHistoryChart`）與時間軸；另列已出清、對不到持股的配息，集保原始交易紀錄預設收合。
+沒有對到配息的股票型持股顯示「未找到」，不顯示 0。顯示文字集中在 `model/investment-performance.ts`。
 
 ## 交易頁版面與網址狀態
 
