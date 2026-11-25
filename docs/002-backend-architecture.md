@@ -961,8 +961,10 @@ blocking 在前，同級依 kind 與時間排序。`id` 在資料未變動前保
 
 收盤價：`security_prices` 快取證交所 `STOCK_DAY` 與櫃買中心 `tradingStock` 的月資料，依集保上市櫃別（`stockExcg`）選來源。
 每次 Cron（`refreshScheduledSecurityPrices`）以「全部查不到」的價格簿跑一次計算收集需要的日期，最多抓 6 個月、間隔 3 秒；
-`security_price_months` 記錄每月狀態：已結束的月份不再重抓、本月每 6 小時重抓，回應異常記為 `error`、1 小時後重試且
-這次停止（可能被限流），不當成沒有資料。Demo 模式不抓。淨資產與月收支不受影響：投資照常以市值計入淨資產。
+`security_price_months` 記錄每月狀態，只補抓還缺價日期所在的月份：已結束的月份抓過就不再重抓，本月還缺價時每 6 小時重抓。
+回應異常（限流、格式改版、缺欄位）不當成沒有資料，這次補抓也停止：第一次就失敗的月份記為 `error`，1 小時後重試並排在
+其他月份之後；先前成功過的月份保留原狀態，只更新抓取時間。往前找價跨到上個月時補抓上個月。Demo 模式不抓。
+淨資產與月收支不受影響：投資照常以市值計入淨資產。
 
 `PUT／DELETE /api/investments/opening-costs/:key` 設定或清除期初成本（key 為 URL 編碼的部位 key）。
 
