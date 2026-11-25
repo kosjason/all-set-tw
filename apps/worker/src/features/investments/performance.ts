@@ -234,7 +234,11 @@ function emptyParts(): Record<InvestmentCostSource, number> {
   return { bank: 0, estimate: 0, opening: 0, manual: 0 };
 }
 
-type CostPoint = { date: string; cost: number | null };
+type CostPoint = {
+  date: string;
+  cost: number | null;
+  parts: Record<InvestmentCostSource, number>;
+};
 
 type HoldingState = {
   key: string;
@@ -389,24 +393,37 @@ export function sameDaySequence(rows: PerformanceTransactionInput[]) {
   }
   const scheduled = new Set<PerformanceTransactionInput>();
   const sequence: PerformanceTransactionInput[] = [];
-  const waitsForSplitOut = (row: PerformanceTransactionInput) =>
-    eventKind(row) === "split_in" &&
-    rows.some(
+  // 已排入、還沒被分割轉入接手的分割轉出（與計算時的分割池一致）。
+  const available: PerformanceTransactionInput[] = [];
+  const related = (
+    out: PerformanceTransactionInput,
+    row: PerformanceTransactionInput,
+  ) =>
+    out.accountId === row.accountId && relatedSymbols(out.symbol, row.symbol);
+  // 分割轉入：有可接手的轉出就能處理；沒有、但之後還會有相關的轉出時才等待。
+  const ready = (row: PerformanceTransactionInput) =>
+    eventKind(row) !== "split_in" ||
+    available.some((out) => related(out, row)) ||
+    !rows.some(
       (other) =>
         eventKind(other) === "split_out" &&
-        other.accountId === row.accountId &&
-        relatedSymbols(other.symbol, row.symbol) &&
+        related(other, row) &&
         !scheduled.has(other),
     );
   const take = (queue: PerformanceTransactionInput[]) => {
     const row = queue.shift()!;
     scheduled.add(row);
     sequence.push(row);
+    if (eventKind(row) === "split_out") available.push(row);
+    if (eventKind(row) === "split_in") {
+      const index = available.findIndex((out) => related(out, row));
+      if (index >= 0) available.splice(index, 1);
+    }
   };
   while (queues.size > 0) {
     let progressed = false;
     for (const [key, queue] of queues) {
-      while (queue.length > 0 && !waitsForSplitOut(queue[0]!)) {
+      while (queue.length > 0 && ready(queue[0]!)) {
         take(queue);
         progressed = true;
       }
@@ -771,6 +788,7 @@ export function computeInvestmentPerformance(
       state.costPoints.push({
         date,
         cost: state.costKnown ? state.cost : null,
+        parts: { ...state.parts },
       });
       state.quantityPoints.push({ date, quantity: state.quantity });
     }
@@ -1013,6 +1031,7 @@ function toHolding(
   const marketValue = position?.marketValue ?? 0;
   // 集保交易可能比持股快照新（同步時間不同）：本金取快照當天的，與股數、市值同一天。
   let currentCost: number | null = state.costKnown ? state.cost : null;
+  let currentParts = state.parts;
   if (
     position &&
     state.costPoints.some((point) => point.date > position.date)
@@ -1020,9 +1039,18 @@ function toHolding(
     const before = state.costPoints.filter(
       (point) => point.date <= position.date,
     );
-    currentCost = before.length
-      ? before[before.length - 1]!.cost
-      : (state.opening?.cost ?? null);
+    const point = before[before.length - 1];
+    if (point) {
+      currentCost = point.cost;
+      currentParts = point.parts;
+    } else {
+      // 快照早於第一筆交易：只有期初持股。
+      currentCost = state.opening?.cost ?? null;
+      currentParts = emptyParts();
+      if (currentCost != null)
+        currentParts[state.opening?.manual ? "manual" : "opening"] =
+          currentCost;
+    }
   }
   const consistent =
     !state.issues.has("quantity_mismatch") &&
@@ -1079,7 +1107,7 @@ function toHolding(
 
   const breakdown = emptyParts();
   for (const source of COST_SOURCES)
-    breakdown[source] = round(Math.max(0, state.parts[source]));
+    breakdown[source] = round(Math.max(0, currentParts[source]));
 
   return {
     key: state.key,

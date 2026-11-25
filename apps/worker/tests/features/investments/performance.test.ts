@@ -683,6 +683,8 @@ describe("審查回饋的邊界情況", () => {
     expect(holding!.costBasis).toBe(1_001);
     expect(holding!.averageCost).toBe(10.01);
     expect(holding!.unrealizedPnl).toBe(99);
+    // 本金來源也要是快照當天的。
+    expect(holding!.costBreakdown.estimate).toBe(1_001);
     expect(holding!.issues).toEqual([]);
   });
 
@@ -791,5 +793,72 @@ describe("審查回饋的邊界情況", () => {
     expect(attributeDividend("轉帳 0050FUND 基金配息", dominant)).toBe(
       dominant[0],
     );
+  });
+
+  it("同一天多段分割（0050 → 0050O → 0050 → 0050P）成本一路移轉", () => {
+    const day = "2025-06-18";
+    const result = run({
+      transactions: [
+        tx({
+          symbol: "0050",
+          date: "2024-01-05",
+          code: "113",
+          quantity: 100,
+          balanceAfter: 100,
+        }),
+        tx({
+          symbol: "0050",
+          date: day,
+          code: "1G5",
+          quantity: 100,
+          balanceAfter: 0,
+        }),
+        tx({
+          symbol: "0050O",
+          date: day,
+          code: "1F5",
+          quantity: 100,
+          balanceAfter: 100,
+        }),
+        tx({
+          symbol: "0050O",
+          date: day,
+          code: "1G5",
+          quantity: 100,
+          balanceAfter: 0,
+        }),
+        tx({
+          symbol: "0050",
+          date: day,
+          code: "1F5",
+          quantity: 400,
+          balanceAfter: 400,
+        }),
+        tx({
+          symbol: "0050",
+          date: day,
+          code: "1G5",
+          quantity: 400,
+          balanceAfter: 0,
+        }),
+        tx({
+          symbol: "0050P",
+          date: day,
+          code: "1F5",
+          quantity: 400,
+          balanceAfter: 400,
+        }),
+      ],
+      positions: [
+        position({ symbol: "0050P", quantity: 400, marketValue: 4_000 }),
+      ],
+      prices: priceBook({ "0050:2024-01-05": 10 }),
+    });
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0]).toMatchObject({
+      symbol: "0050P",
+      costBasis: 1_001,
+      issues: [],
+    });
   });
 });

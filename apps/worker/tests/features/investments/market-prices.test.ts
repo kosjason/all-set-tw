@@ -114,6 +114,14 @@ describe("交易所回應解析", () => {
         "2023-01",
       ),
     ).toThrow(MarketPriceUnavailableError);
+    // 缺收盤價欄位或空白也不能當成沒有成交。
+    for (const row of [
+      ["112/01/03"],
+      ["112/01/03", "1", "1", "1", "1", "1", ""],
+    ])
+      expect(() =>
+        parseTwseMonth({ ...twseOk, data: [row] }, "2023-01"),
+      ).toThrow(MarketPriceUnavailableError);
   });
 
   it("櫃買中心：欄位名稱含空白也能讀", () => {
