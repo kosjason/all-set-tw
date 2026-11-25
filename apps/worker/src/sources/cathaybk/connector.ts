@@ -21,6 +21,7 @@ import { BANK_SYNC_MONTHS } from "../sync-window";
 import { isNoCreditCardMessage } from "../credit-card-status";
 import {
   type CathaybkConfig,
+  normalizeCathayDescription,
   parseCathayCardStatus,
   parseCathayForeignDeposits,
 } from "./protocol";
@@ -1690,9 +1691,12 @@ export function appendCathayDepositTransactions(
     const income = typeof d.incomeAmt === "number" ? d.incomeAmt : 0;
     const expend = typeof d.expendAmt === "number" ? d.expendAmt : 0;
     const amount = income > 0 ? income : expend > 0 ? -expend : 0;
+    // 2026-11 起國泰說明的空白格式改變（例如「轉帳 科技優息」變成「轉帳     科技優息」），
+    // 識別碼與說明一律合併空白；既有列由 sync 依正規化後的說明對回原本的 id。
     const desc =
-      [d.description, d.memo].filter(Boolean).join(" ").trim() ||
-      "國泰世華交易";
+      normalizeCathayDescription(
+        [d.description, d.memo].filter(Boolean).join(" "),
+      ) || "國泰世華交易";
     const key = [date, accountId, amount, desc].join(":");
     const occ = (seen.get(key) ?? 0) + 1;
     seen.set(key, occ);
