@@ -80,28 +80,95 @@ describe("國泰存款說明正規化", () => {
     expect(plan.duplicatePairs).toEqual([[dup.id, old.id]]);
   });
 
-  it("銀行確實有兩筆相同交易時不合併", () => {
-    const first = rawId(OLD_DESC, 1);
-    const second = rawId(NEW_DESC, 1);
-    const existing = [first, second].map((row, index) => ({
-      ...row,
+  function existingRow(
+    row: { id: string; sourceId: string },
+    description: string,
+    createdAt: string,
+  ) {
+    return {
+      id: row.id,
       source_id: row.sourceId,
       account_id: ACCOUNT_ID,
       posted_date: WHEN,
       amount: 1890,
-      description: index === 0 ? OLD_DESC : NEW_DESC,
-      created_at: `2026-10-1${index}T00:00:00.000Z`,
-    }));
+      description,
+      created_at: createdAt,
+    };
+  }
+
+  it("兩筆真實交易只差在空白時仍是兩筆，一對一對回，不新增也不合併", () => {
+    // 舊版以原始說明各自編號，兩筆都是 occurrence 1；新版正規化後編成 1、2。
+    const first = rawId(OLD_DESC, 1);
+    const second = rawId(NEW_DESC, 1);
     const plan = planCathayDepositIdentity(
-      existing,
+      [
+        existingRow(first, OLD_DESC, "2026-10-10T00:00:00.000Z"),
+        existingRow(second, NEW_DESC, "2026-10-11T00:00:00.000Z"),
+      ],
       incoming([NEW_DESC, NEW_DESC]),
     );
     expect(plan.duplicatePairs).toEqual([]);
-    // 第一筆沿用最早的列，第二筆（occurrence 2）是新的列。
     expect(plan.records.map((record) => record.payload.id)).toEqual([
       first.id,
-      expect.stringMatching(/基金配息:2$/u),
+      second.id,
     ]);
+  });
+
+  it("既有 occurrence 2 以上的列依序對回", () => {
+    const first = rawId(OLD_DESC, 1);
+    const second = rawId(OLD_DESC, 2);
+    const plan = planCathayDepositIdentity(
+      [
+        existingRow(second, OLD_DESC, "2026-10-10T00:00:00.000Z"),
+        existingRow(first, OLD_DESC, "2026-10-10T00:00:00.000Z"),
+      ],
+      incoming([NEW_DESC, NEW_DESC]),
+    );
+    expect(plan.records.map((record) => record.payload.id)).toEqual([
+      first.id,
+      second.id,
+    ]);
+    expect(plan.duplicatePairs).toEqual([]);
+  });
+
+  it("三列重複時都併入最早那一列", () => {
+    const old = rawId(OLD_DESC);
+    const dupA = rawId(NEW_DESC);
+    const dupB = rawId("轉帳  科技優息 基金配息");
+    const plan = planCathayDepositIdentity(
+      [
+        existingRow(
+          dupB,
+          "轉帳  科技優息 基金配息",
+          "2026-11-20T00:00:00.000Z",
+        ),
+        existingRow(old, OLD_DESC, "2026-09-25T00:00:00.000Z"),
+        existingRow(dupA, NEW_DESC, "2026-11-12T00:00:00.000Z"),
+      ],
+      incoming([NEW_DESC]),
+    );
+    expect(plan.records[0]!.payload.id).toBe(old.id);
+    expect(plan.duplicatePairs).toEqual([
+      [dupA.id, old.id],
+      [dupB.id, old.id],
+    ]);
+  });
+
+  it("本次兩筆、既有三列時無法判斷哪列重複，不合併", () => {
+    const rows = [OLD_DESC, NEW_DESC, "轉帳  科技優息 基金配息"].map(
+      (description, index) =>
+        existingRow(
+          rawId(description),
+          description,
+          `2026-10-1${index}T00:00:00.000Z`,
+        ),
+    );
+    const plan = planCathayDepositIdentity(
+      rows,
+      incoming([NEW_DESC, NEW_DESC]),
+    );
+    expect(plan.duplicatePairs).toEqual([]);
+    expect(plan.ambiguousGroups).toBe(1);
   });
 });
 
@@ -203,6 +270,26 @@ describe("國泰重複存款交易的合併（隔離 D1）", () => {
           .all<{ target_id: string; note: string }>()
       ).results,
     ).toEqual([{ target_id: old.id, note: "00929 配息" }]);
+  });
+
+  it("三列重複時逐一合併，只留最早那一列", async () => {
+    const old = rawId(OLD_DESC);
+    const dupA = rawId(NEW_DESC);
+    const dupB = rawId("轉帳  科技優息 基金配息");
+    await insert(old, OLD_DESC, "2026-09-25T00:00:00.000Z");
+    await insert(dupA, NEW_DESC, "2026-11-12T00:00:00.000Z");
+    await insert(dupB, "轉帳  科技優息 基金配息", "2026-11-20T00:00:00.000Z");
+    await sync([NEW_DESC]);
+    expect((await rows()).map((row) => row.id)).toEqual([old.id]);
+  });
+
+  it("兩筆真實交易只差在空白時仍是兩筆", async () => {
+    const first = rawId(OLD_DESC);
+    const second = rawId(NEW_DESC);
+    await insert(first, OLD_DESC, "2026-10-10T00:00:00.000Z");
+    await insert(second, NEW_DESC, "2026-10-11T00:00:00.000Z");
+    await sync([NEW_DESC, NEW_DESC]);
+    expect((await rows()).map((row) => row.id)).toEqual([first.id, second.id]);
   });
 
   it("沒有重複的舊列只更新說明，不新增一筆", async () => {

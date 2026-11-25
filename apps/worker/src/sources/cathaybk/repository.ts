@@ -65,91 +65,92 @@ function depositBaseKey(
 export interface CathayDepositIdentityPlan {
   /** 改用既有列 id 的寫入紀錄。 */
   records: SyncWriteRecord[];
-  /** 已經重複保存的舊列併入最早那一列：`[重複列 id, 保留列 id]`。 */
+  /** 已經重複保存的舊列併入保留的那一列：`[重複列 id, 保留列 id]`。 */
   duplicatePairs: Array<[string, string]>;
+  /** 既有列比本次多、但本次不只一筆，無法判斷哪幾列重複而略過的組數。 */
+  ambiguousGroups: number;
 }
 
 /**
  * 國泰存款說明的空白格式改變後，同一筆交易會以不同的 sourceId 再寫一次（2026-09、10 月的
- * 配息與轉帳各多一筆）。依帳戶、時間、金額、正規化說明與 occurrence 找回既有的列：
- * 1. 本次寫入的列沿用既有列的 id 與 sourceId，不再新增一筆。
- * 2. 既有列已經重複時，併入最早建立的那一列。只在本次這組交易只有一筆時才併，
- *    銀行確實有兩筆相同交易（occurrence 2 以上）時不動。
+ * 配息與轉帳各多一筆）。依帳戶、時間、金額與正規化說明分組，把本次寫入的交易與既有列一對一
+ * 對回（雙方各自依 occurrence、建立時間排序），本次寫入沿用既有列的 id 與 sourceId：
+ * - 既有列比本次多、且本次這組只有一筆：多出來的舊列是重複，併入對回的那一列。
+ * - 本次這組有兩筆以上時不併（無法判斷哪幾列重複），只做一對一對回。
+ * - 本次比既有列多：多出來的照常新增。
  * existing 只應包含國泰存款帳戶的列。
  */
 export function planCathayDepositIdentity(
   existing: readonly ExistingDepositRow[],
   records: readonly SyncWriteRecord[],
 ): CathayDepositIdentityPlan {
-  const incomingPerBase = new Map<string, number>();
-  for (const record of records) {
-    if (record.entityType !== "bank_transaction") continue;
+  const incomingByBase = new Map<string, number[]>();
+  records.forEach((record, index) => {
+    if (record.entityType !== "bank_transaction") return;
     const p = record.payload as Record<string, unknown>;
+    if (!occurrenceOf(String(p.source_id))) return;
     const base = depositBaseKey(
       String(p.account_id),
       (p.posted_date as string | null) ?? null,
       Number(p.amount),
       p.description as string | null,
     );
-    incomingPerBase.set(base, (incomingPerBase.get(base) ?? 0) + 1);
-  }
-  const groups = new Map<string, ExistingDepositRow[]>();
+    incomingByBase.set(base, [...(incomingByBase.get(base) ?? []), index]);
+  });
+  const existingByBase = new Map<string, ExistingDepositRow[]>();
   for (const row of existing) {
-    const occurrence = occurrenceOf(row.source_id);
-    if (!occurrence) continue;
+    if (!occurrenceOf(row.source_id)) continue;
     const base = depositBaseKey(
       row.account_id,
       row.posted_date,
       row.amount,
       row.description,
     );
-    if (!incomingPerBase.has(base)) continue;
-    const key = `${base}\u0000${occurrence}`;
-    const group = groups.get(key) ?? [];
-    group.push(row);
-    groups.set(key, group);
+    if (!incomingByBase.has(base)) continue;
+    existingByBase.set(base, [...(existingByBase.get(base) ?? []), row]);
   }
-  const keepByKey = new Map<string, ExistingDepositRow>();
+  const mapped = [...records];
   const duplicatePairs: Array<[string, string]> = [];
-  for (const [key, group] of groups) {
-    group.sort(
+  let ambiguousGroups = 0;
+  const occurrence = (sourceId: string) => Number(occurrenceOf(sourceId));
+  for (const [base, indexes] of incomingByBase) {
+    const rows = (existingByBase.get(base) ?? []).sort(
       (a, b) =>
-        a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
+        occurrence(a.source_id) - occurrence(b.source_id) ||
+        a.created_at.localeCompare(b.created_at) ||
+        a.id.localeCompare(b.id),
     );
-    const keep = group[0]!;
-    keepByKey.set(key, keep);
-    const base = key.slice(0, key.lastIndexOf("\u0000"));
-    if (group.length > 1 && incomingPerBase.get(base) === 1)
-      for (const duplicate of group.slice(1))
-        duplicatePairs.push([duplicate.id, keep.id]);
+    if (rows.length === 0) continue;
+    const incoming = [...indexes].sort(
+      (a, b) =>
+        occurrence(String(records[a]!.payload.source_id)) -
+        occurrence(String(records[b]!.payload.source_id)),
+    );
+    incoming.forEach((recordIndex, position) => {
+      const keep = rows[position];
+      const record = records[recordIndex]!;
+      if (!keep || keep.id === record.payload.id) return;
+      mapped[recordIndex] = {
+        ...record,
+        recordKey: keep.id,
+        payload: { ...record.payload, id: keep.id, source_id: keep.source_id },
+      };
+    });
+    if (rows.length > incoming.length) {
+      if (incoming.length === 1)
+        for (const duplicate of rows.slice(1))
+          duplicatePairs.push([duplicate.id, rows[0]!.id]);
+      else ambiguousGroups += 1;
+    }
   }
-  const mapped = records.map((record) => {
-    if (record.entityType !== "bank_transaction") return record;
-    const p = record.payload as Record<string, unknown>;
-    const occurrence = occurrenceOf(String(p.source_id));
-    if (!occurrence) return record;
-    const keep = keepByKey.get(
-      `${depositBaseKey(
-        String(p.account_id),
-        (p.posted_date as string | null) ?? null,
-        Number(p.amount),
-        p.description as string | null,
-      )}\u0000${occurrence}`,
-    );
-    if (!keep || keep.id === p.id) return record;
-    return {
-      ...record,
-      recordKey: keep.id,
-      payload: { ...p, id: keep.id, source_id: keep.source_id },
-    };
-  });
-  return { records: mapped, duplicatePairs };
+  return { records: mapped, duplicatePairs, ambiguousGroups };
 }
 
 /**
  * 寫入國泰交易前，依正規化說明對回既有的存款交易（見 {@link planCathayDepositIdentity}），
- * 並回傳併掉重複舊列的 statements（沿用 `mergeLegacyTransactionStatements`，保留使用者的
- * 分類、角色、備註與發票關係），放在寫入之後執行。
+ * 並回傳併掉重複舊列的 statements，放在寫入之後執行。每組重複各自一次
+ * `mergeLegacyTransactionStatements`（保留使用者的分類、角色、備註與發票關係）：同一列有
+ * 三列以上重複時，一次只併一列才不會被它的一對一限制擋下。
  */
 export async function prepareCathayDepositIdentity(
   db: D1Database,
@@ -176,24 +177,24 @@ export async function prepareCathayDepositIdentity(
     .bind(dates[0], dates.at(-1))
     .all<ExistingDepositRow>();
   const plan = planCathayDepositIdentity(existing.results ?? [], records);
-  if (plan.duplicatePairs.length > 0)
+  if (plan.duplicatePairs.length > 0 || plan.ambiguousGroups > 0)
     console.log(
       JSON.stringify({
         event: "cathaybk_deposit_duplicate_merge",
         candidates: plan.duplicatePairs.length,
+        ambiguousGroups: plan.ambiguousGroups,
       }),
     );
   return {
     records: plan.records,
-    mergeStatements:
-      plan.duplicatePairs.length === 0
-        ? []
-        : mergeLegacyTransactionStatements(
-            db,
-            `SELECT json_extract(value, '$[0]') AS old_id,
-                    json_extract(value, '$[1]') AS new_id
-             FROM json_each(?)`,
-            [JSON.stringify(plan.duplicatePairs)],
-          ),
+    mergeStatements: plan.duplicatePairs.flatMap((pair) =>
+      mergeLegacyTransactionStatements(
+        db,
+        `SELECT json_extract(value, '$[0]') AS old_id,
+                json_extract(value, '$[1]') AS new_id
+         FROM json_each(?)`,
+        [JSON.stringify([pair])],
+      ),
+    ),
   };
 }
