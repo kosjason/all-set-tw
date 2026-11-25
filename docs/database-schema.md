@@ -8,10 +8,10 @@
 
 ## 目錄
 
-- Tables：39
+- Tables：42
 - Explicit indexes：47
 - Other objects：0
-- Migrations：71
+- Migrations：72
 
 ## Tables
 
@@ -35,6 +35,7 @@
 | [`einvoice_sync_run_items`](#einvoice_sync_run_items) | 電子發票持久化同步中，每張發票的明細擷取工作與待寫入資料。 | 17 | 1 | 1 |
 | [`einvoice_sync_runs`](#einvoice_sync_runs) | 電子發票跨 Queue invocation 執行的持久化同步記錄。 | 21 | 2 | 2 |
 | [`exchange_rates`](#exchange_rates) | 將外幣換算為新台幣時使用的最新匯率。 | 3 | 0 | 0 |
+| [`investment_opening_costs`](#investment_opening_costs) | 使用者填的期初持股成本：集保最早一筆紀錄之前就有的持股，預設以那天的收盤價估算，這裡可改成實際成本。 | 3 | 0 | 0 |
 | [`investment_positions`](#investment_positions) | 投資帳戶在特定日期的持倉與資產市值快照。 | 16 | 0 | 4 |
 | [`investment_transactions`](#investment_transactions) | 投資帳戶的買賣、配息或其他證券交易明細。 | 22 | 0 | 3 |
 | [`invoice_line_items`](#invoice_line_items) | 電子發票底下的商品或服務明細。 | 13 | 1 | 2 |
@@ -48,6 +49,8 @@
 | [`push_subscriptions`](#push_subscriptions) | 瀏覽器 Web Push 裝置訂閱資料。 | 6 | 0 | 0 |
 | [`scheduled_sync_batch_results`](#scheduled_sync_batch_results) | 預設排程同步批次中各工作的完成結果。 | 9 | 1 | 0 |
 | [`scheduled_sync_batches`](#scheduled_sync_batches) | 追蹤預設排程中需彙總推播的一輪同步工作。 | 12 | 0 | 2 |
+| [`security_price_months`](#security_price_months) | 每檔每個月的收盤價抓取紀錄，決定哪些月份還要抓。 | 6 | 0 | 0 |
+| [`security_prices`](#security_prices) | 證交所（上市）與櫃買中心（上櫃）的每日收盤價快取，用來推算集保交易的成本與賣出收入。價格為當時的實際成交價（未還原除權息與分割）。 | 5 | 0 | 0 |
 | [`sync_activity_changes`](#sync_activity_changes) | 與金融資料 promotion 同一 transaction 保存的新增紀錄與入帳事件。 | 5 | 1 | 0 |
 | [`sync_activity_details`](#sync_activity_details) | 報告完成時沿用活動配對規則產生的活動展示快照。 | 3 | 1 | 0 |
 | [`sync_activity_runs`](#sync_activity_runs) | 同步執行與排程報告的明確關聯，涵蓋原始同步及成功的手動補救。 | 7 | 1 | 1 |
@@ -996,6 +999,38 @@ CREATE TABLE "exchange_rates" (
 )
 ```
 
+### `investment_opening_costs`
+
+> 用途：使用者填的期初持股成本：集保最早一筆紀錄之前就有的持股，預設以那天的收盤價估算，這裡可改成實際成本。
+
+#### Columns
+
+| 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
+| ---: | --- | --- | --- | :---: | --- | ---: | --- |
+| 1 | `holding_key` | 部位識別「券商代號:帳號:代號」（同一檔分屬不同券商帳戶時各自一筆）。 | TEXT | NO | — | 1 | — |
+| 2 | `cost` | 期初持股的總成本（新台幣整數，1–10,000,000,000）。 | INTEGER | NO | — | — | — |
+| 3 | `updated_at` | 最後更新時間。 | TEXT | NO | — | — | — |
+
+#### Foreign keys
+
+—
+
+#### Indexes
+
+—
+
+#### DDL
+
+```sql
+CREATE TABLE investment_opening_costs (
+  holding_key TEXT NOT NULL PRIMARY KEY CHECK (length(holding_key) BETWEEN 1 AND 100),
+  cost INTEGER NOT NULL CHECK (
+    typeof(cost) = 'integer' AND cost BETWEEN 1 AND 10000000000
+  ),
+  updated_at TEXT NOT NULL
+)
+```
+
 ### `investment_positions`
 
 > 用途：投資帳戶在特定日期的持倉與資產市值快照。
@@ -1647,6 +1682,86 @@ CREATE TABLE "scheduled_sync_batches" (
 , completed_at TEXT, is_baseline INTEGER NOT NULL DEFAULT 0, assets_before_twd INTEGER, credit_card_debt_before_twd INTEGER, missing_currencies_before TEXT NOT NULL DEFAULT '[]', assets_after_twd INTEGER, credit_card_debt_after_twd INTEGER, missing_currencies_after TEXT NOT NULL DEFAULT '[]')
 ```
 
+### `security_price_months`
+
+> 用途：每檔每個月的收盤價抓取紀錄，決定哪些月份還要抓。
+> 注意：抓取失敗不會覆蓋先前成功的 status 與 final。
+
+#### Columns
+
+| 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
+| ---: | --- | --- | --- | :---: | --- | ---: | --- |
+| 1 | `symbol` | 證券代號。 | TEXT | NO | — | 1 | — |
+| 2 | `month` | 月份 YYYY-MM。 | TEXT | NO | — | 2 | — |
+| 3 | `exchange` | twse 或 tpex。 | TEXT | NO | — | — | — |
+| 4 | `status` | ok：有資料；empty：交易所明確回覆該月沒有資料；error：那次沒拿到（被限流、改版、網路錯誤），稍後重試。 | TEXT | NO | — | — | — |
+| 5 | `final` | 1 表示抓取時該月已結束，之後不再重抓；0 為尚未結束的月份，每 6 小時重抓一次以補上新交易日。 | INTEGER | NO | 0 | — | — |
+| 6 | `fetched_at` | 最後一次抓取時間（失敗也會更新，用於 1 小時的重試間隔）。 | TEXT | NO | — | — | — |
+
+#### Foreign keys
+
+—
+
+#### Indexes
+
+—
+
+#### DDL
+
+```sql
+CREATE TABLE security_price_months (
+  symbol TEXT NOT NULL CHECK (length(symbol) BETWEEN 1 AND 20),
+  month TEXT NOT NULL CHECK (
+    month GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'
+    AND date(month || '-01') IS NOT NULL
+  ),
+  exchange TEXT NOT NULL CHECK (exchange IN ('twse', 'tpex')),
+  status TEXT NOT NULL CHECK (status IN ('ok', 'empty', 'error')),
+  final INTEGER NOT NULL DEFAULT 0 CHECK (final IN (0, 1)),
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (symbol, month)
+)
+```
+
+### `security_prices`
+
+> 用途：證交所（上市）與櫃買中心（上櫃）的每日收盤價快取，用來推算集保交易的成本與賣出收入。價格為當時的實際成交價（未還原除權息與分割）。
+> 注意：由排程（每 10 分鐘的 cron）每次最多抓 6 個月、每次間隔 3 秒補齊；讀取投資績效的 API 只讀這張表，不連外。
+
+#### Columns
+
+| 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
+| ---: | --- | --- | --- | :---: | --- | ---: | --- |
+| 1 | `symbol` | 證券代號（例如 0050、00720B）。 | TEXT | NO | — | 1 | — |
+| 2 | `trade_date` | 交易日（台北日期 YYYY-MM-DD；CHECK 限制必須是實際存在的日期）。 | TEXT | NO | — | 2 | — |
+| 3 | `close` | 當天收盤價（新台幣，大於 0）。 | REAL | NO | — | — | — |
+| 4 | `exchange` | 資料來源：twse（證交所）或 tpex（櫃買中心），依集保的上市櫃別決定。 | TEXT | NO | — | — | — |
+| 5 | `fetched_at` | 抓取時間。 | TEXT | NO | — | — | — |
+
+#### Foreign keys
+
+—
+
+#### Indexes
+
+—
+
+#### DDL
+
+```sql
+CREATE TABLE security_prices (
+  symbol TEXT NOT NULL CHECK (length(symbol) BETWEEN 1 AND 20),
+  trade_date TEXT NOT NULL CHECK (
+    trade_date GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]'
+    AND trade_date IS date(trade_date)
+  ),
+  close REAL NOT NULL CHECK (close > 0),
+  exchange TEXT NOT NULL CHECK (exchange IN ('twse', 'tpex')),
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (symbol, trade_date)
+)
+```
+
 ### `sync_activity_changes`
 
 > 用途：與金融資料 promotion 同一 transaction 保存的新增紀錄與入帳事件。
@@ -2141,6 +2256,7 @@ Migration 是 schema 演進的 source of truth；若要了解某欄位的變更�
 - [`0073_activity_advances.sql`](../apps/worker/migrations/0073_activity_advances.sql)
 - [`0074_cash_expenses.sql`](../apps/worker/migrations/0074_cash_expenses.sql)
 - [`0075_merchant_paid_in_cash.sql`](../apps/worker/migrations/0075_merchant_paid_in_cash.sql)
+- [`0076_investment_performance.sql`](../apps/worker/migrations/0076_investment_performance.sql)
 
 ## 程式碼導覽
 
