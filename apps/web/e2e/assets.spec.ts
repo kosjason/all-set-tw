@@ -1,6 +1,94 @@
 import { expect, test } from "@playwright/test";
 import { routeNavigationApi } from "./activity-api";
 
+// 合成的投資績效：本金、損益與時間軸皆為虛構數字。
+function holding(input: {
+  symbol: string;
+  name: string;
+  quantity: number;
+  marketValue: number;
+  costBasis: number;
+}) {
+  const unrealizedPnl = input.marketValue - input.costBasis;
+  return {
+    key: `1234:1:${input.symbol}`,
+    symbol: input.symbol,
+    name: input.name,
+    assetType: "etf",
+    category: "equity",
+    brokerNo: null,
+    brokerName: null,
+    quantity: input.quantity,
+    marketValue: input.marketValue,
+    closePrice: input.marketValue / input.quantity,
+    asOfDate: "2026-08-08",
+    costBasis: input.costBasis,
+    averageCost: input.costBasis / input.quantity,
+    unrealizedPnl,
+    unrealizedPct: Math.round((unrealizedPnl / input.costBasis) * 10000) / 100,
+    realizedPnl: 0,
+    dividends: 0,
+    totalReturn: unrealizedPnl,
+    costBreakdown: {
+      bank: 0,
+      estimate: input.costBasis,
+      opening: 0,
+      manual: 0,
+    },
+    opening: null,
+    issues: [],
+    missingPriceDates: [],
+    events: [
+      {
+        date: "2026-08-01",
+        kind: "buy",
+        quantity: input.quantity,
+        price: input.costBasis / input.quantity,
+        amount: input.costBasis,
+        costSource: "estimate",
+        realizedPnl: null,
+        quantityAfter: input.quantity,
+      },
+    ],
+    history: [],
+  };
+}
+
+const investmentPerformance = {
+  asOfDate: "2026-08-08",
+  totals: {
+    marketValue: 1_193_800,
+    costBasis: 1_000_000,
+    unrealizedPnl: 193_800,
+    realizedPnl: 0,
+    dividends: 0,
+    dividendsThisYear: 0,
+    totalReturn: 193_800,
+    marketValueByCategory: { equity: 1_193_800, bond: 0 },
+  },
+  holdings: [
+    holding({
+      symbol: "0050",
+      name: "元大台灣50",
+      quantity: 1_000,
+      marketValue: 925_000,
+      costBasis: 800_000,
+    }),
+    holding({
+      symbol: "00878",
+      name: "國泰永續高股息",
+      quantity: 10_000,
+      marketValue: 268_800,
+      costBasis: 200_000,
+    }),
+  ],
+  closed: [],
+  unattributedDividends: [],
+  dividendsSince: "2026-06-01",
+  estimateCheck: { samples: 0, meanAbsErrorPct: null },
+  pricesPending: false,
+};
+
 const bankData = {
   accounts: [
     {
@@ -132,6 +220,8 @@ test.beforeEach(async ({ page }) => {
           currency: "TWD",
         },
       ];
+    else if (path === "/api/investments/performance")
+      body = investmentPerformance;
     else if (path === "/api/manual-assets" && method === "GET")
       body = manualAssets;
     else if (path === "/api/manual-assets" && method === "POST") {
@@ -191,9 +281,15 @@ test("uses the desktop asset ledger without losing detail workflows", async ({
   await expect(
     ledger.getByText("2026-07 · 期限 2026/7/20 · 狀態未提供"),
   ).toBeVisible();
+  await expect(
+    page.getByText(/本金 NT\$1,000,000 · 未實現 \+NT\$193,800/).first(),
+  ).toBeVisible();
   await ledger.getByRole("button", { name: /^投資/ }).click();
   await expect(
     page.getByRole("heading", { name: "投資組合", exact: true }),
+  ).toBeVisible();
+  await expect(
+    ledger.getByText(/本金 NT\$800,000 · \+NT\$125,000（\+15\.6%）/),
   ).toBeVisible();
   await page.getByRole("tab", { name: "交易紀錄", exact: true }).click();
   await expect(page.getByText("買進 · 2026/8/1")).toBeVisible();
@@ -358,4 +454,30 @@ test("labels an overpaid credit card total as overpayment, not debt", async ({
   await expect(
     page.getByText(/＋ 信用卡溢繳/).filter({ visible: true }),
   ).toBeVisible();
+});
+
+test("shows each holding's cost basis and unrealized gain on the investments page", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/#/investments");
+
+  const summary = page.locator('section[aria-label="投資摘要"]');
+  await expect(summary.getByText("未實現", { exact: true })).toBeVisible();
+  await expect(
+    summary.getByText(
+      /本金 NT\$1,000,000 · 未實現損益 \+NT\$193,800（\+19\.4%）/,
+    ),
+  ).toBeVisible();
+
+  const row = page.getByRole("button", { name: /0050 元大台灣50/ });
+  await row.click();
+  await expect(row).toHaveAttribute("aria-expanded", "true");
+  const detail = page.locator("[data-holding-detail]");
+  await expect(detail.getByText("平均成本")).toBeVisible();
+  await expect(detail.getByText("800.00", { exact: true })).toBeVisible();
+  await expect(
+    detail.getByText("本金來源：收盤價估算 NT$800,000"),
+  ).toBeVisible();
+  await expect(detail.getByText("2026/8/1 買進")).toBeVisible();
 });

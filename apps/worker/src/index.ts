@@ -13,6 +13,7 @@ import { dashboardRoutes } from "./features/dashboard/route";
 import { exchangeRateRoutes } from "./features/exchange-rates/route";
 import { inboxRoutes } from "./features/inbox/route";
 import { investmentRoutes } from "./features/investments/route";
+import { refreshScheduledSecurityPrices } from "./features/investments/performance-service";
 import { invoiceRoutes } from "./features/invoices/route";
 import { manualAssetRoutes } from "./features/manual-assets/route";
 import { merchantRoutes } from "./features/merchants/route";
@@ -76,6 +77,7 @@ export default {
   async scheduled(_controller, env, ctx) {
     ctx.waitUntil(enqueueScheduledSync(env));
     ctx.waitUntil(ensureScheduledBankDepositHistory(env));
+    ctx.waitUntil(refreshScheduledSecurityPrices(env));
   },
   async queue(batch: MessageBatch<ScheduledSyncQueueMessage>, env) {
     await consumeScheduledSyncQueue(batch, env);

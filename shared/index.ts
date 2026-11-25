@@ -9,6 +9,7 @@ export * from "./activity-flow";
 export * from "./activity-filter";
 export * from "./activity-items";
 export * from "./cash-expenses";
+export * from "./investment-performance";
 export * from "./economic-role";
 export * from "./categories";
 export * from "./merchant";

@@ -3,6 +3,7 @@ import type { CreateQueryOptions } from "@tanstack/svelte-query";
 import type { ApiClient } from "@/shared/api/client";
 import { queryKeys } from "@/shared/api/query-keys";
 import type { MonthRange } from "@/shared/date-range";
+import type { InvestmentPerformance } from "@taiwan-fin-hub/shared";
 import type { InvestmentRow, InvestmentTransactionRow } from "./types";
 
 type ApiProvider = () => ApiClient;
@@ -39,3 +40,11 @@ export const investmentTransactionsQuery = (
         : "/api/investment-transactions",
     ),
 });
+
+/** 持股的本金、損益與配息（收盤價由後端排程補抓）。 */
+export const investmentPerformanceQuery = (getApi: ApiProvider) =>
+  queryOptions({
+    queryKey: queryKeys.investmentPerformance,
+    queryFn: () =>
+      getApi().get<InvestmentPerformance>("/api/investments/performance"),
+  });

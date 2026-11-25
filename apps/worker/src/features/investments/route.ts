@@ -14,6 +14,11 @@ import {
 } from "../../platform/month-range";
 import { validationHook } from "../../platform/validation";
 import {
+  clearInvestmentOpeningCost,
+  getInvestmentPerformance,
+  setInvestmentOpeningCost,
+} from "./performance-service";
+import {
   getInvestmentPage,
   getInvestmentTransactionPage,
   getInvestmentTransactionsRange,
@@ -26,6 +31,18 @@ const investmentPageCursorSchema = z.object({
   id: z.string(),
 });
 
+const openingCostKeySchema = z.object({
+  key: z
+    .string()
+    .min(1)
+    .max(100)
+    .regex(/^[^\s:]+:[^\s:]+:[^\s:]+$/u),
+});
+
+const openingCostBodySchema = z
+  .object({ cost: z.number().int().min(1).max(10_000_000_000) })
+  .strict();
+
 const transactionPageCursorSchema = z.object({
   effectiveDate: z.string(),
   updatedAt: z.string(),
@@ -36,6 +53,46 @@ export const investmentRoutes = honoFactory.createApp();
 registerInvestmentRoutes(investmentRoutes);
 
 function registerInvestmentRoutes(api: Hono<AppBindings>) {
+  // 持股的本金、損益與配息；收盤價只讀快取（由排程補抓）。
+  api.get("/investments/performance", async (c) =>
+    c.json(await getInvestmentPerformance(c.env.DB)),
+  );
+
+  api.put(
+    "/investments/opening-costs/:key",
+    zValidator(
+      "param",
+      openingCostKeySchema,
+      validationHook("INVALID_REQUEST", "找不到這個持股。"),
+    ),
+    zValidator(
+      "json",
+      openingCostBodySchema,
+      validationHook("INVALID_REQUEST", "請輸入正整數的成本金額。"),
+    ),
+    async (c) => {
+      await setInvestmentOpeningCost(
+        c.env.DB,
+        c.req.valid("param").key,
+        c.req.valid("json").cost,
+      );
+      return c.json({ success: true });
+    },
+  );
+
+  api.delete(
+    "/investments/opening-costs/:key",
+    zValidator(
+      "param",
+      openingCostKeySchema,
+      validationHook("INVALID_REQUEST", "找不到這個持股。"),
+    ),
+    async (c) => {
+      await clearInvestmentOpeningCost(c.env.DB, c.req.valid("param").key);
+      return c.json({ success: true });
+    },
+  );
+
   api.get("/investments", async (c) => {
     const { limit, cursor } = parseKeysetPagination(
       c.req.query(),

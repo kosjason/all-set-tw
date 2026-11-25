@@ -104,3 +104,86 @@ export const investmentTransactions = sqliteTable(
     ),
   ],
 );
+
+/** 證交所／櫃買中心每日收盤價快取（0076）；排程補抓，讀取 API 不連外。 */
+export const securityPrices = sqliteTable(
+  "security_prices",
+  {
+    symbol: text("symbol").notNull(),
+    tradeDate: text("trade_date").notNull(),
+    close: real("close").notNull(),
+    exchange: text("exchange").notNull(),
+    fetchedAt: text("fetched_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.symbol, table.tradeDate] }),
+    check("security_prices_check_1", sql`length(symbol) BETWEEN 1 AND 20`),
+    check(
+      "security_prices_check_2",
+      sql`
+    trade_date GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]'
+    AND trade_date IS date(trade_date)
+  `,
+    ),
+    check("security_prices_check_3", sql`close > 0`),
+    check("security_prices_check_4", sql`exchange IN ('twse', 'tpex')`),
+  ],
+);
+
+/** 每檔每月的收盤價抓取紀錄（0076）。 */
+export const securityPriceMonths = sqliteTable(
+  "security_price_months",
+  {
+    symbol: text("symbol").notNull(),
+    month: text("month").notNull(),
+    exchange: text("exchange").notNull(),
+    status: text("status").notNull(),
+    final: integer("final", { mode: "boolean" })
+      .notNull()
+      .default(sql`0`),
+    fetchedAt: text("fetched_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.symbol, table.month] }),
+    check(
+      "security_price_months_check_1",
+      sql`length(symbol) BETWEEN 1 AND 20`,
+    ),
+    check(
+      "security_price_months_check_2",
+      sql`
+    month GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'
+    AND date(month || '-01') IS NOT NULL
+  `,
+    ),
+    check("security_price_months_check_3", sql`exchange IN ('twse', 'tpex')`),
+    check(
+      "security_price_months_check_4",
+      sql`status IN ('ok', 'empty', 'error')`,
+    ),
+    check("security_price_months_check_5", sql`final IN (0, 1)`),
+  ],
+);
+
+/** 使用者填的期初成本（0076），key 為「券商代號:帳號:代號」。 */
+export const investmentOpeningCosts = sqliteTable(
+  "investment_opening_costs",
+  {
+    holdingKey: text("holding_key").notNull(),
+    cost: integer("cost").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.holdingKey] }),
+    check(
+      "investment_opening_costs_check_1",
+      sql`length(holding_key) BETWEEN 1 AND 100`,
+    ),
+    check(
+      "investment_opening_costs_check_2",
+      sql`
+    typeof(cost) = 'integer' AND cost BETWEEN 1 AND 10000000000
+  `,
+    ),
+  ],
+);
