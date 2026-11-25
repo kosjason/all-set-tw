@@ -27,7 +27,7 @@
   import { investmentBrokerLabel } from "./model/investment-label";
   import {
     estimateNote,
-    findHoldingPerformance,
+    matchingHoldings,
     formatSharePrice,
     formatSignedCurrency,
     formatSignedPercent,
@@ -67,7 +67,7 @@
   const otherPositions = $derived(
     ($investments.data ?? []).filter(
       (position) =>
-        !findHoldingPerformance(perf, position) &&
+        matchingHoldings(perf, position).length === 0 &&
         matchesSearch(`${position.symbol ?? ""} ${position.name}`),
     ),
   );

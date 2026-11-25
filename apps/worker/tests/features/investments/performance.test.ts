@@ -4,6 +4,7 @@ import {
   brokerFee,
   computeInvestmentPerformance,
   openingQuantity,
+  sameDaySequence,
   transactionTax,
   type BankFlowInput,
   type PerformanceInput,
@@ -579,5 +580,216 @@ describe("attributeDividend", () => {
   });
   it("名稱片段對到多檔時不歸屬", () => {
     expect(attributeDividend("轉帳 元大 基金配息", holdings)).toBeUndefined();
+  });
+});
+
+describe("審查回饋的邊界情況", () => {
+  it("分割轉入後同一天賣出：先接手成本再賣", () => {
+    const rows = [
+      tx({
+        symbol: "0050",
+        date: "2024-01-05",
+        code: "113",
+        quantity: 100,
+        balanceAfter: 100,
+      }),
+      tx({
+        symbol: "0050",
+        date: "2025-06-13",
+        code: "1G5",
+        quantity: 100,
+        balanceAfter: 0,
+      }),
+      tx({
+        symbol: "0050O",
+        date: "2025-06-13",
+        code: "1F5",
+        quantity: 100,
+        balanceAfter: 100,
+      }),
+      // 賣出排在分割轉入前面（例如 id 排序），依餘額仍應先轉入再賣出。
+      tx({
+        symbol: "0050",
+        date: "2025-06-18",
+        code: "123",
+        quantity: 100,
+        balanceAfter: 300,
+      }),
+      tx({
+        symbol: "0050",
+        date: "2025-06-18",
+        code: "1F5",
+        quantity: 400,
+        balanceAfter: 400,
+      }),
+      tx({
+        symbol: "0050O",
+        date: "2025-06-18",
+        code: "1G5",
+        quantity: 100,
+        balanceAfter: 0,
+      }),
+    ];
+    const result = run({
+      transactions: rows,
+      positions: [
+        position({ symbol: "0050", quantity: 300, marketValue: 6_000 }),
+      ],
+      prices: priceBook({ "0050:2024-01-05": 10, "0050:2025-06-18": 20 }),
+    });
+    const [holding] = result.holdings;
+    // 成本 1,001（含手續費 1）分給 400 股，賣 100 股：剩 750.75；收入 2,000 − 2 − 2。
+    expect(holding!.costBasis).toBe(751);
+    expect(holding!.realizedPnl).toBe(1746);
+    expect(holding!.issues).toEqual([]);
+    expect(
+      // 各部位已依餘額排好（0050：轉入→賣出），0050 排在前面也要等 0050O 轉出。
+      sameDaySequence([rows[4]!, rows[3]!, rows[5]!]).map(
+        (row) => `${row.symbol}:${row.code}`,
+      ),
+    ).toEqual(["0050O:1G5", "0050:1F5", "0050:123"]);
+  });
+
+  it("交易比持股快照新時，本金取快照當天的", () => {
+    const result = run({
+      transactions: [
+        tx({
+          symbol: "0056",
+          date: "2026-11-20",
+          code: "113",
+          quantity: 100,
+          balanceAfter: 100,
+        }),
+        tx({
+          symbol: "0056",
+          date: "2026-11-25",
+          code: "113",
+          quantity: 100,
+          balanceAfter: 200,
+        }),
+      ],
+      positions: [
+        position({
+          symbol: "0056",
+          quantity: 100,
+          marketValue: 1_100,
+          date: "2026-11-24",
+        }),
+      ],
+      prices: priceBook({ "0056:2026-11-20": 10, "0056:2026-11-25": 20 }),
+    });
+    const [holding] = result.holdings;
+    expect(holding!.quantity).toBe(100);
+    expect(holding!.costBasis).toBe(1_001);
+    expect(holding!.averageCost).toBe(10.01);
+    expect(holding!.unrealizedPnl).toBe(99);
+    expect(holding!.issues).toEqual([]);
+  });
+
+  it("第一天先買後賣、順序不明時，不假設之前就有持股", () => {
+    expect(
+      openingQuantity([
+        tx({
+          symbol: "2486",
+          date: "2026-02-26",
+          code: "123",
+          quantity: 100,
+          balanceAfter: 0,
+        }),
+        tx({
+          symbol: "2486",
+          date: "2026-02-26",
+          code: "113",
+          quantity: 100,
+          balanceAfter: 100,
+        }),
+      ]),
+    ).toEqual({ quantity: 0, ok: true });
+  });
+
+  it("全部賣出後再買，之前缺價不影響新部位的本金", () => {
+    const result = run({
+      transactions: [
+        tx({
+          symbol: "0056",
+          date: "2023-05-08",
+          code: "113",
+          quantity: 10,
+          balanceAfter: 10,
+        }),
+        tx({
+          symbol: "0056",
+          date: "2024-05-08",
+          code: "123",
+          quantity: 10,
+          balanceAfter: 0,
+        }),
+        tx({
+          symbol: "0056",
+          date: "2026-05-08",
+          code: "113",
+          quantity: 100,
+          balanceAfter: 100,
+        }),
+      ],
+      positions: [
+        position({ symbol: "0056", quantity: 100, marketValue: 4_000 }),
+      ],
+      prices: priceBook(
+        { "0056:2024-05-08": 30, "0056:2026-05-08": 35 },
+        (_symbol, date) => date === "2023-05-08",
+      ),
+    });
+    const [holding] = result.holdings;
+    // 100 × 35 + 手續費 4。
+    expect(holding!.costBasis).toBe(3_504);
+    expect(holding!.realizedPnl).toBeNull();
+    // 已實現損益仍未知，說明原因。
+    expect(holding!.issues).toEqual(["prices_pending"]);
+    expect(holding!.missingPriceDates).toEqual(["2023-05-08"]);
+  });
+
+  it("賣出缺價只影響已實現損益，不擋剩下持股的本金", () => {
+    const result = run({
+      transactions: [
+        tx({
+          symbol: "0056",
+          date: "2023-05-08",
+          code: "113",
+          quantity: 20,
+          balanceAfter: 20,
+        }),
+        tx({
+          symbol: "0056",
+          date: "2024-05-08",
+          code: "123",
+          quantity: 10,
+          balanceAfter: 10,
+        }),
+      ],
+      positions: [position({ symbol: "0056", quantity: 10, marketValue: 400 })],
+      prices: priceBook({ "0056:2023-05-08": 30 }, () => false),
+    });
+    const [holding] = result.holdings;
+    expect(holding!.costBasis).toBe(301);
+    expect(holding!.realizedPnl).toBeNull();
+    expect(holding!.issues).toEqual(["price_missing"]);
+  });
+
+  it("同代號分屬兩個帳戶、股數相近時，配息不歸屬", () => {
+    const holdings = [
+      { symbol: "0050", name: "元大台灣50", quantity: 1000 },
+      { symbol: "0050", name: "元大台灣50", quantity: 400 },
+    ];
+    expect(
+      attributeDividend("轉帳 0050FUND 基金配息", holdings),
+    ).toBeUndefined();
+    const dominant = [
+      { symbol: "0050", name: "元大台灣50", quantity: 5090 },
+      { symbol: "0050", name: "元大台灣50", quantity: 1 },
+    ];
+    expect(attributeDividend("轉帳 0050FUND 基金配息", dominant)).toBe(
+      dominant[0],
+    );
   });
 });

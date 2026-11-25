@@ -38,6 +38,9 @@ const SELL_CODE = "123";
 const SPLIT_IN_CODE = "1F5";
 const SPLIT_OUT_CODE = "1G5";
 
+/** 配息歸給同代號持股九成以上的帳戶。 */
+const DOMINANT_ACCOUNT_SHARE = 0.9;
+
 /** 定期定額的銀行扣款（台幣、支出）。 */
 const REGULAR_INVESTMENT_DEBIT = /證券定期/u;
 /** 配息、收益分配的銀行入帳。 */
@@ -194,7 +197,11 @@ export function orderByBalance(
   return { rows: ordered, ok: true, end: running };
 }
 
-/** 由第一天的紀錄推出期初股數：找一個能讓當天所有紀錄逐筆接上的起點。 */
+/**
+ * 由第一天的紀錄推出期初股數：找一個能讓當天所有紀錄逐筆接上的起點。
+ * 同一天買進又賣出時可能有多個起點都接得上（例如先買 100 再賣 100，或先賣 100 再買 100），
+ * 取最小的：沒有證據時不假設之前就有持股。
+ */
 export function openingQuantity(firstDay: PerformanceTransactionInput[]) {
   const candidates = new Set<number>();
   for (const row of firstDay) {
@@ -202,7 +209,7 @@ export function openingQuantity(firstDay: PerformanceTransactionInput[]) {
     if (signed != null && row.balanceAfter != null)
       candidates.add(row.balanceAfter - signed);
   }
-  for (const candidate of candidates) {
+  for (const candidate of [...candidates].sort((a, b) => a - b)) {
     if (candidate < -1e-6) continue;
     if (orderByBalance(firstDay, candidate).ok)
       return { quantity: Math.max(0, candidate), ok: true };
@@ -246,8 +253,12 @@ type HoldingState = {
   dividends: number;
   events: (InvestmentEvent & { order: number })[];
   issues: Set<InvestmentCostIssue>;
+  /** 曾經缺收盤價的日期（含已賣出的部分，影響已實現損益）。 */
   missingDates: Set<string>;
   pendingPrice: boolean;
+  /** 目前這批持股（上次歸零之後）缺收盤價的日期，影響本金。 */
+  lotMissingDates: Set<string>;
+  lotPendingPrice: boolean;
   opening: InvestmentHolding["opening"];
   costPoints: CostPoint[];
   /** 每個日期結束時的股數（核對持股快照用）。 */
@@ -261,6 +272,8 @@ type SplitPoolEntry = {
   parts: Record<InvestmentCostSource, number>;
   used: boolean;
   source: HoldingState;
+  missingDates: Set<string>;
+  pendingPrice: boolean;
 };
 
 type BuyCost = {
@@ -347,13 +360,76 @@ function addEvent(
   state.events.push({ ...event, order });
 }
 
+/** 記錄缺價的日期；賣出缺價只影響已實現損益，不影響剩下持股的本金（affectsCost = false）。 */
 function recordMissingPrice(
   state: HoldingState,
   prices: PriceBook,
   date: string,
+  affectsCost = true,
 ) {
+  const pending = prices.pending(state.symbol, date);
   state.missingDates.add(date);
-  if (prices.pending(state.symbol, date)) state.pendingPrice = true;
+  if (pending) state.pendingPrice = true;
+  if (!affectsCost) return;
+  state.lotMissingDates.add(date);
+  if (pending) state.lotPendingPrice = true;
+}
+
+/**
+ * 同一天的處理順序：每個部位維持依餘額排好的順序；分割轉入要等同帳戶、相關代號的
+ * 分割轉出先處理（成本才能移轉），其他部位不受影響。互相等待時依序放行（之後標為配對不到）。
+ */
+export function sameDaySequence(rows: PerformanceTransactionInput[]) {
+  const queues = new Map<string, PerformanceTransactionInput[]>();
+  for (const row of rows) {
+    const key = holdingKey(row.accountId, row.symbol);
+    const queue = queues.get(key) ?? [];
+    queue.push(row);
+    queues.set(key, queue);
+  }
+  const scheduled = new Set<PerformanceTransactionInput>();
+  const sequence: PerformanceTransactionInput[] = [];
+  const waitsForSplitOut = (row: PerformanceTransactionInput) =>
+    eventKind(row) === "split_in" &&
+    rows.some(
+      (other) =>
+        eventKind(other) === "split_out" &&
+        other.accountId === row.accountId &&
+        relatedSymbols(other.symbol, row.symbol) &&
+        !scheduled.has(other),
+    );
+  const take = (queue: PerformanceTransactionInput[]) => {
+    const row = queue.shift()!;
+    scheduled.add(row);
+    sequence.push(row);
+  };
+  while (queues.size > 0) {
+    let progressed = false;
+    for (const [key, queue] of queues) {
+      while (queue.length > 0 && !waitsForSplitOut(queue[0]!)) {
+        take(queue);
+        progressed = true;
+      }
+      if (queue.length === 0) queues.delete(key);
+    }
+    if (!progressed) {
+      const [key, queue] = queues.entries().next().value!;
+      take(queue);
+      if (queue.length === 0) queues.delete(key);
+    }
+  }
+  return sequence;
+}
+
+/** 全部賣出或轉出後重新開始：之前缺價的不確定性不影響之後再買的部位（已實現損益仍維持未知）。 */
+function resetWhenEmpty(state: HoldingState) {
+  if (state.quantity > 1e-6) return;
+  state.quantity = 0;
+  state.cost = 0;
+  state.parts = emptyParts();
+  state.costKnown = true;
+  state.lotMissingDates = new Set();
+  state.lotPendingPrice = false;
 }
 
 /** 依目前持股比例取出部分成本（賣出、分割轉出用）。 */
@@ -412,6 +488,8 @@ export function computeInvestmentPerformance(
         issues: new Set(),
         missingDates: new Set(),
         pendingPrice: false,
+        lotMissingDates: new Set(),
+        lotPendingPrice: false,
         opening: null,
         costPoints: [],
         quantityPoints: [],
@@ -529,16 +607,13 @@ export function computeInvestmentPerformance(
     for (const [id, cost] of allocation.costs ?? []) buyCosts.set(id, cost);
   }
 
-  // 4. 依日期處理事件；同一天先處理分割轉出，分割轉入最後處理以便接手成本。
+  // 4. 依日期處理事件。
   const dates = [...new Set(orderedRows.map((row) => row.date))].sort();
   let order = 0;
   for (const date of dates) {
     const rows = orderedRows.filter((row) => row.date === date);
     const pools = new Map<string, SplitPoolEntry[]>();
-    const sequence = [
-      ...rows.filter((row) => eventKind(row) !== "split_in"),
-      ...rows.filter((row) => eventKind(row) === "split_in"),
-    ];
+    const sequence = sameDaySequence(rows);
     const touched = new Set<HoldingState>();
     for (const row of sequence) {
       const state = stateFor(row);
@@ -595,10 +670,11 @@ export function computeInvestmentPerformance(
             transactionTax(gross, row.symbol, state.assetType);
           if (state.costKnown) realized = proceeds - taken.cost;
         } else {
-          recordMissingPrice(state, prices, date);
+          recordMissingPrice(state, prices, date, false);
         }
         if (realized == null) state.realizedKnown = false;
         else state.realized += realized;
+        resetWhenEmpty(state);
         addEvent(
           state,
           {
@@ -624,8 +700,11 @@ export function computeInvestmentPerformance(
           parts: taken.parts,
           used: false,
           source: state,
+          missingDates: new Set(state.lotMissingDates),
+          pendingPrice: state.lotPendingPrice,
         });
         pools.set(row.accountId, pool);
+        resetWhenEmpty(state);
         addEvent(
           state,
           {
@@ -652,9 +731,14 @@ export function computeInvestmentPerformance(
           for (const source of COST_SOURCES)
             state.parts[source] += entry.parts[source];
           if (!entry.costKnown) state.costKnown = false;
-          for (const missing of entry.source.missingDates)
+          for (const missing of entry.missingDates) {
             state.missingDates.add(missing);
-          if (entry.source.pendingPrice) state.pendingPrice = true;
+            state.lotMissingDates.add(missing);
+          }
+          if (entry.pendingPrice) {
+            state.pendingPrice = true;
+            state.lotPendingPrice = true;
+          }
         } else {
           state.costKnown = false;
           state.issues.add("split_unmatched");
@@ -893,12 +977,19 @@ export function attributeDividend<
     .split(/\s+/u)
     .map((token) => token.replace(/FUND$/iu, "").trim())
     .filter((token) => token.length >= 2);
-  const pick = (matches: T[]) =>
-    matches.length === 0
-      ? undefined
-      : matches.reduce((best, holding) =>
-          holding.quantity > best.quantity ? holding : best,
-        );
+  // 同一代號分屬多個帳戶時，入帳說明分不出是哪個帳戶：只有一個帳戶持有九成以上股數時
+  // 才歸給它（例如另一個帳戶只有 1 股），否則不歸屬。
+  const pick = (matches: T[]) => {
+    if (matches.length === 0) return undefined;
+    const best = matches.reduce((top, holding) =>
+      holding.quantity > top.quantity ? holding : top,
+    );
+    if (matches.length === 1) return best;
+    const total = matches.reduce((sum, holding) => sum + holding.quantity, 0);
+    return total > 0 && best.quantity / total >= DOMINANT_ACCOUNT_SHARE
+      ? best
+      : undefined;
+  };
   const bySymbol = holdings.filter((holding) =>
     tokens.some((token) => token.toUpperCase() === holding.symbol),
   );
@@ -920,18 +1011,38 @@ function toHolding(
 ): InvestmentHolding {
   const quantity = position?.quantity ?? state.quantity;
   const marketValue = position?.marketValue ?? 0;
-  const reliable =
-    state.costKnown &&
+  // 集保交易可能比持股快照新（同步時間不同）：本金取快照當天的，與股數、市值同一天。
+  let currentCost: number | null = state.costKnown ? state.cost : null;
+  if (
+    position &&
+    state.costPoints.some((point) => point.date > position.date)
+  ) {
+    const before = state.costPoints.filter(
+      (point) => point.date <= position.date,
+    );
+    currentCost = before.length
+      ? before[before.length - 1]!.cost
+      : (state.opening?.cost ?? null);
+  }
+  const consistent =
     !state.issues.has("quantity_mismatch") &&
     !state.issues.has("unknown_event");
-  const costBasis = reliable ? (quantity > 0 ? round(state.cost) : 0) : null;
+  const reliable = consistent && currentCost != null;
+  const costBasis = reliable ? (quantity > 0 ? round(currentCost!) : 0) : null;
   const unrealizedPnl =
     costBasis == null ? null : quantity > 0 ? marketValue - costBasis : 0;
   const realizedPnl =
-    reliable && state.realizedKnown ? round(state.realized) : null;
+    consistent && state.realizedKnown ? round(state.realized) : null;
   const issues = new Set(state.issues);
-  if (state.missingDates.size > 0)
-    issues.add(state.pendingPrice ? "prices_pending" : "price_missing");
+  // 本金缺價看目前這批持股；已實現損益未知時看全部。
+  const priceGap =
+    state.lotMissingDates.size > 0
+      ? { dates: state.lotMissingDates, pending: state.lotPendingPrice }
+      : !state.realizedKnown && state.missingDates.size > 0
+        ? { dates: state.missingDates, pending: state.pendingPrice }
+        : null;
+  if (priceGap)
+    issues.add(priceGap.pending ? "prices_pending" : "price_missing");
 
   // 配息事件依日期插入，股數沿用當時的持股。
   const timeline = [
@@ -962,7 +1073,7 @@ function toHolding(
       return {
         date,
         marketValue: value,
-        costBasis: reliable && cost != null ? round(cost) : null,
+        costBasis: consistent && cost != null ? round(cost) : null,
       };
     });
 
@@ -989,7 +1100,7 @@ function toHolding(
     costBasis,
     averageCost:
       costBasis != null && quantity > 0
-        ? roundPrice(state.cost / quantity)
+        ? roundPrice(currentCost! / quantity)
         : null,
     unrealizedPnl,
     unrealizedPct:
@@ -1005,7 +1116,7 @@ function toHolding(
     costBreakdown: breakdown,
     opening: state.opening,
     issues: [...issues],
-    missingPriceDates: [...state.missingDates].sort().slice(0, 10),
+    missingPriceDates: [...(priceGap?.dates ?? [])].sort().slice(0, 10),
     events,
     history: points,
   };

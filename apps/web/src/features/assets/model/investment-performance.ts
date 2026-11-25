@@ -156,17 +156,28 @@ export function estimateNote(performance: InvestmentPerformance) {
   return parts.join("");
 }
 
-/** 依券商代號與代號找出持股的績效（資產頁的持倉列用）。 */
-export function findHoldingPerformance(
+/**
+ * 持倉（/api/investments 的列，只有券商代號沒有帳號）對應的持股績效。同一券商兩個帳戶
+ * 持有同一檔時會有多筆。
+ */
+export function matchingHoldings(
   performance: InvestmentPerformance | undefined,
   position: { brokerNo?: string | null; symbol?: string },
 ) {
   const symbol = position.symbol?.trim();
-  if (!performance || !symbol) return undefined;
-  const matches = performance.holdings.filter(
+  if (!performance || !symbol) return [];
+  return performance.holdings.filter(
     (holding) =>
       holding.symbol === symbol &&
       (holding.brokerNo ?? "") === (position.brokerNo ?? ""),
   );
+}
+
+/** 唯一對應的持股績效（資產頁的持倉列用）；對不到或有多筆時為 undefined。 */
+export function findHoldingPerformance(
+  performance: InvestmentPerformance | undefined,
+  position: { brokerNo?: string | null; symbol?: string },
+) {
+  const matches = matchingHoldings(performance, position);
   return matches.length === 1 ? matches[0] : undefined;
 }

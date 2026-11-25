@@ -101,6 +101,19 @@ describe("交易所回應解析", () => {
     expect(() =>
       parseTwseMonth({ ...twseOk, fields: ["日期", "成交股數"] }, "2023-01"),
     ).toThrow(MarketPriceUnavailableError);
+    // 日期或收盤價格式改版：不能變成 empty 被當成「沒有資料」永久快取。
+    expect(() =>
+      parseTwseMonth(
+        { ...twseOk, data: [["2023-01-03", "1", "1", "1", "1", "1", "100"]] },
+        "2023-01",
+      ),
+    ).toThrow(MarketPriceUnavailableError);
+    expect(() =>
+      parseTwseMonth(
+        { ...twseOk, data: [["112/01/03", "1", "1", "1", "1", "1", "N/A"]] },
+        "2023-01",
+      ),
+    ).toThrow(MarketPriceUnavailableError);
   });
 
   it("櫃買中心：欄位名稱含空白也能讀", () => {

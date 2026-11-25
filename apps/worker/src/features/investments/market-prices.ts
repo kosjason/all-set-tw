@@ -99,10 +99,15 @@ function closesFrom(
   const closes: DailyClose[] = [];
   for (const row of rows) {
     const date = rocDate(row[dateIndex] ?? "");
-    const close = parseClose(row[closeIndex]);
-    // 當天沒有成交時收盤價為「--」，略過。
-    if (date && close != null && date.startsWith(month))
-      closes.push({ date, close });
+    // 日期格式或月份不對代表回應改版，不能當成沒有資料快取。
+    if (!date || !date.startsWith(month))
+      throw new MarketPriceUnavailableError("價格日期格式與預期不同");
+    const raw = (row[closeIndex] ?? "").trim();
+    const close = parseClose(raw);
+    if (close != null) closes.push({ date, close });
+    // 當天沒有成交時收盤價為「--」，略過；其他無法解析的值視為改版。
+    else if (!/^-*$/u.test(raw))
+      throw new MarketPriceUnavailableError("收盤價格式與預期不同");
   }
   return closes;
 }

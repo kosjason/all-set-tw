@@ -10,6 +10,7 @@ import {
   eventDetail,
   estimateNote,
   findHoldingPerformance,
+  matchingHoldings,
   formatSignedCurrency,
   formatSignedPercent,
   openingText,
@@ -160,6 +161,16 @@ describe("投資績效的顯示文字", () => {
     ).toBe("9X9X:1:0056");
     expect(
       findHoldingPerformance(performance, { brokerNo: null, symbol: "0056" }),
+    ).toBeUndefined();
+    // 同一券商兩個帳戶都有這檔：找得到但不唯一，持倉列不顯示損益、也不重複列出。
+    const twoAccounts = {
+      holdings: [holding(), holding({ key: "1234:2:0056" })],
+    } as InvestmentPerformance;
+    expect(
+      matchingHoldings(twoAccounts, { brokerNo: "1234", symbol: "0056" }),
+    ).toHaveLength(2);
+    expect(
+      findHoldingPerformance(twoAccounts, { brokerNo: "1234", symbol: "0056" }),
     ).toBeUndefined();
   });
 });

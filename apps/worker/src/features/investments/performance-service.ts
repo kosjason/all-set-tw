@@ -174,8 +174,11 @@ export function createPriceBook(
       return undefined;
     },
     pending(symbol, date) {
-      const row = monthRows.get(`${symbol}:${monthOf(date)}`);
-      return !row || !row.final || row.status === "error";
+      // 往前找的天數可能跨到上個月：兩個月份都抓完才算確定缺價。
+      return [date, addDays(date, -PRICE_LOOKBACK_DAYS)].some((day) => {
+        const row = monthRows.get(`${symbol}:${monthOf(day)}`);
+        return !row || !row.final || row.status === "error";
+      });
     },
   };
 }
@@ -234,23 +237,32 @@ export function pricesMonthsToFetch(input: {
     string,
     { symbol: string; month: string; exchange: MarketExchange }
   >();
+  const due = (symbol: string, month: string) => {
+    const row = monthRows.get(`${symbol}:${month}`);
+    if (!row) return true;
+    const age = input.now.getTime() - Date.parse(row.fetchedAt);
+    if (row.status === "error") return age >= PRICE_ERROR_RETRY_MS;
+    if (row.final) return false;
+    return age >= PRICE_OPEN_MONTH_REFRESH_MS;
+  };
+  const want = (symbol: string, month: string) =>
+    wanted.set(`${symbol}:${month}`, {
+      symbol,
+      month,
+      exchange: input.exchanges.get(symbol) ?? "twse",
+    });
   for (const need of input.needs) {
     const month = monthOf(need.date);
     if (month > currentMonth) continue;
     if (input.cached.has(`${need.symbol}:${need.date}`)) continue;
-    const row = monthRows.get(`${need.symbol}:${month}`);
-    if (row) {
-      const age = input.now.getTime() - Date.parse(row.fetchedAt);
-      if (row.status === "error") {
-        if (age < PRICE_ERROR_RETRY_MS) continue;
-      } else if (row.final) continue;
-      else if (age < PRICE_OPEN_MONTH_REFRESH_MS) continue;
+    if (due(need.symbol, month)) {
+      want(need.symbol, month);
+      continue;
     }
-    wanted.set(`${need.symbol}:${month}`, {
-      symbol: need.symbol,
-      month,
-      exchange: input.exchanges.get(need.symbol) ?? "twse",
-    });
+    // 當月已抓完仍沒有這天：往前找的日子落在上個月時，補抓上個月。
+    const previous = monthOf(addDays(need.date, -PRICE_LOOKBACK_DAYS));
+    if (previous !== month && due(need.symbol, previous))
+      want(need.symbol, previous);
   }
   return [...wanted.values()].sort((a, b) =>
     a.month === b.month

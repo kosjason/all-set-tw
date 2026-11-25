@@ -10,6 +10,7 @@ import {
 import { createTestD1 } from "../../helpers/d1";
 import {
   clearInvestmentOpeningCost,
+  createPriceBook,
   getInvestmentPerformance,
   positionAccountId,
   pricesMonthsToFetch,
@@ -83,6 +84,13 @@ describe("pricesMonthsToFetch", () => {
         months: [
           {
             symbol: "0050",
+            month: "2023-01",
+            status: "ok",
+            final: true,
+            fetchedAt: ago(1000),
+          },
+          {
+            symbol: "0050",
             month: "2023-02",
             status: "empty",
             final: true,
@@ -131,6 +139,33 @@ describe("pricesMonthsToFetch", () => {
         months: months(PRICE_OPEN_MONTH_REFRESH_MS + 1),
       }).map((item) => item.month),
     ).toEqual(["2026-10", "2026-11"]);
+  });
+});
+
+describe("跨月往前找收盤價", () => {
+  const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
+  it("月初那天沒有收盤價時補抓上個月，並在抓到前視為補抓中", () => {
+    const months = [
+      {
+        symbol: "0050",
+        month: "2026-10",
+        status: "ok",
+        final: true,
+        fetchedAt: ago(1000),
+      },
+    ];
+    expect(
+      pricesMonthsToFetch({
+        needs: [{ symbol: "0050", date: "2026-10-02" }],
+        exchanges: new Map([["0050", "twse" as const]]),
+        cached: new Set(),
+        months,
+        now: NOW,
+      }),
+    ).toEqual([{ symbol: "0050", month: "2026-09", exchange: "twse" }]);
+    const book = createPriceBook([], months);
+    expect(book.pending("0050", "2026-10-02")).toBe(true);
+    expect(book.pending("0050", "2026-10-20")).toBe(false);
   });
 });
 
