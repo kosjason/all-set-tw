@@ -126,20 +126,37 @@ export function planCathayDepositIdentity(
         occurrence(String(records[a]!.payload.source_id)) -
         occurrence(String(records[b]!.payload.source_id)),
     );
-    incoming.forEach((recordIndex, position) => {
-      const keep = rows[position];
+    // 先配 id 完全相同的（已是正規化識別碼的列），剩下的再依序一對一；未配到的本次交易
+    // 照常新增，它的 id 不會和任何既有列相同，也就不會撞到已分配的 id。
+    const unusedRows = new Set(rows);
+    const unmatched: number[] = [];
+    const used: ExistingDepositRow[] = [];
+    for (const recordIndex of incoming) {
+      const exact = rows.find(
+        (row) =>
+          unusedRows.has(row) && row.id === records[recordIndex]!.payload.id,
+      );
+      if (exact) {
+        unusedRows.delete(exact);
+        used.push(exact);
+      } else unmatched.push(recordIndex);
+    }
+    for (const recordIndex of unmatched) {
+      const keep = rows.find((row) => unusedRows.has(row));
+      if (!keep) break;
+      unusedRows.delete(keep);
+      used.push(keep);
       const record = records[recordIndex]!;
-      if (!keep || keep.id === record.payload.id) return;
       mapped[recordIndex] = {
         ...record,
         recordKey: keep.id,
         payload: { ...record.payload, id: keep.id, source_id: keep.source_id },
       };
-    });
-    if (rows.length > incoming.length) {
+    }
+    if (unusedRows.size > 0) {
       if (incoming.length === 1)
-        for (const duplicate of rows.slice(1))
-          duplicatePairs.push([duplicate.id, rows[0]!.id]);
+        for (const duplicate of unusedRows)
+          duplicatePairs.push([duplicate.id, used[0]!.id]);
       else ambiguousGroups += 1;
     }
   }

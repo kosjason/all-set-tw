@@ -131,6 +131,24 @@ describe("國泰存款說明正規化", () => {
     expect(plan.duplicatePairs).toEqual([]);
   });
 
+  it("既有 occurrence 有缺號時不會撞到已分配的 id", () => {
+    // 既有列已是正規化識別碼的 1、3（2 曾被刪除），本次銀行回 1、2、3。
+    const normalized = "轉帳 科技優息 基金配息";
+    const one = rawId(normalized, 1);
+    const three = rawId(normalized, 3);
+    const plan = planCathayDepositIdentity(
+      [
+        existingRow(one, normalized, "2026-10-10T00:00:00.000Z"),
+        existingRow(three, normalized, "2026-10-10T00:00:00.000Z"),
+      ],
+      incoming([NEW_DESC, NEW_DESC, NEW_DESC]),
+    );
+    const ids = plan.records.map((record) => record.payload.id);
+    expect(ids).toEqual([one.id, rawId(normalized, 2).id, three.id]);
+    expect(new Set(ids).size).toBe(3);
+    expect(plan.duplicatePairs).toEqual([]);
+  });
+
   it("三列重複時都併入最早那一列", () => {
     const old = rawId(OLD_DESC);
     const dupA = rawId(NEW_DESC);
